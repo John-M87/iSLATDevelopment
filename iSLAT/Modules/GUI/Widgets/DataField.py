@@ -14,7 +14,7 @@ class DataField(ttk.Frame):
         self.value = value
         self.clear_before_next = False
 
-        self.label_frame = tk.LabelFrame(self, relief="solid", borderwidth=1, text="iSLAT Text Output")
+        self.label_frame = tk.LabelFrame(self, relief="solid", borderwidth=1, text="iSLAT Text Output", )
         self.label_frame.pack(fill="both", pady=0)
 
         self.label_frame.rowconfigure(0, weight=1)

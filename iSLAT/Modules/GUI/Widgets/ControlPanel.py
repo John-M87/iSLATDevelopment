@@ -29,7 +29,7 @@ class ControlPanel(ttk.Frame):
             "Color": "change color\nfor this model"
             }
         
-        self.label_frame = tk.LabelFrame(self, text="Spectrum and Models Control Panel", relief="solid", borderwidth=1)
+        self.label_frame = ttk.LabelFrame(self, text="Spectrum and Models Control Panel", relief="solid", borderwidth=1)
         self.label_frame.grid(row=0, column=0, sticky="nsew", pady=0)
         self.label_frame.grid_rowconfigure(0,weight=1)
 
@@ -91,10 +91,10 @@ class ControlPanel(ttk.Frame):
         return color_vis_frame
 
     def _create_selected_frame(self, parent, row, col):
-        selected_frame = tk.Frame(parent, bg = "darkgrey")
+        selected_frame = ttk.Frame(parent)
         selected_frame.grid(row=row, column = col, sticky="nsew")
 
-        self.selected_label = tk.Label(selected_frame, background="darkgrey", anchor="center", justify="center")
+        self.selected_label = ttk.Label(selected_frame, background="darkgrey", anchor="center", justify="center")
         self.selected_label.grid(row=0, column=0, sticky="nsew")
 
         selected_frame.grid_rowconfigure(0, weight=1)
@@ -115,7 +115,7 @@ class ControlPanel(ttk.Frame):
         
         var.set(value_str)
         
-        entry = tk.Entry(
+        entry = ttk.Entry(
             parent, 
             textvariable=var, 
             width=width, 
@@ -264,15 +264,15 @@ class ControlPanel(ttk.Frame):
         parent.grid_columnconfigure(0, weight=1)
         self.mol_frames = {}
 
-        header_frame = tk.Frame(parent)
+        header_frame = ttk.Frame(parent)
         header_frame.grid(row=0, column= 0, sticky="ew")
 
-        content_frame = tk.Frame(parent)
+        content_frame = ttk.Frame(parent)
         content_frame.grid(row=1, column=0, sticky="nsew")
  
         for col, (label, tip_text) in enumerate(self.column_labels.items()):
             padx = 0
-            label_widget = tk.Label(header_frame, text=label)
+            label_widget = ttk.Label(header_frame, text=label)
             if tip_text:
                 CreateToolTip(label_widget, tip_text)    
             if label == "Del.":
@@ -304,7 +304,7 @@ class ControlPanel(ttk.Frame):
             if mol_name not in self.mol_visibility:
                 self.mol_visibility[mol_name] = visibility_var
 
-            btn_frame = tk.Frame(mol_frame)
+            btn_frame = ttk.Frame(mol_frame)
             btn_frame.grid(row=0, column=1, pady=2, sticky="nsew")
             mol_btn = tk.Button(btn_frame, 
                                 text=mol_name, 

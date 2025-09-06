@@ -6,7 +6,6 @@ def create_button(frame, theme, text, command, row, column, tip_text = None):
         btn_theme = theme["buttons"].get(
             text.replace(" ", ""), theme["buttons"]["DefaultBotton"]
         )
-
         
         btn = tk.Button(
             frame, text=text,
@@ -20,9 +19,8 @@ def create_button(frame, theme, text, command, row, column, tip_text = None):
         return btn
 
 def create_menu_btn(frame, theme, text, row, column):
-        drpdwn = tk.Menubutton(
+        drpdwn = ttk.Menubutton(
             frame, text=text,
-            relief=tk.RAISED, 
         )
         drpdwn.grid(row=row, column=column, padx=1, pady=2, sticky="nsew")
         return drpdwn
@@ -38,11 +36,11 @@ def create_scrollable_frame(parent, height = 150, width = 300, vertical = False,
         canvasscroll = tk.Canvas(canvas_frame, height=height, width=width, highlightthickness=0)
         canvasscroll.grid(row=0, column=0, sticky="nsew")
         if vertical is True:
-                vscrollbar = tk.Scrollbar(canvas_frame, orient="vertical", command=canvasscroll.yview)
+                vscrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvasscroll.yview)
                 vscrollbar.grid(row=0, column=1, sticky="ns")
                 canvasscroll.configure(yscrollcommand=vscrollbar.set)
         if horizontal is True:
-                hscrollbar = tk.Scrollbar(canvas_frame, orient="horizontal", command=canvasscroll.xview)
+                hscrollbar = ttk.Scrollbar(canvas_frame, orient="horizontal", command=canvasscroll.xview)
                 hscrollbar.grid(row=1, column=0, columnspan= 2, sticky="ew")
                 canvasscroll.configure(xscrollcommand=hscrollbar.set)
         
@@ -66,7 +64,7 @@ def create_scrollable_frame(parent, height = 150, width = 300, vertical = False,
         return data_frame
 
 def create_wrapper_frame(parent, row, col, bg = "darkgrey", sticky = "nsew", columnspan = 1) -> tk.Frame:
-        wrapper = tk.Frame(parent, borderwidth=1, relief="flat", bg=bg)
+        wrapper = ttk.Frame(parent, borderwidth=1, relief="flat") 
         wrapper.grid(row = row, column=col, sticky= sticky, columnspan=columnspan)
         wrapper.grid_rowconfigure(0, weight=1)
         wrapper.grid_columnconfigure(0, weight=1)

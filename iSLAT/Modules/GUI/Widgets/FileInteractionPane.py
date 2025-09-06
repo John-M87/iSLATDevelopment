@@ -43,7 +43,7 @@ class FileInteractionPane(ttk.Frame):
         self.islat_class = islat_class
         
         # Create the label frame for grouping
-        self.label_frame = tk.LabelFrame(self, text="Input/Output Files", relief="solid", borderwidth=1)
+        self.label_frame = ttk.LabelFrame(self, text="Input/Output Files", relief="solid", borderwidth=1)
         self.label_frame.grid(row=0, column=0, sticky="nsew")
 
         # Let row 0 and column 0 expand inside FileInteractionPane

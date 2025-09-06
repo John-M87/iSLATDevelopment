@@ -10,13 +10,17 @@ from .Widgets.ControlPanel import ControlPanel
 from .Widgets.TopBar import TopBar
 from .Widgets.FileInteractionPane import FileInteractionPane
 
+from ttkthemes import ThemedTk
+
 class GUI:
     def __init__(self, master, molecule_data, wave_data, flux_data, config, islat_class_ref):
         if master is None:
-            self.master = tk.Tk()
+            # self.master = tk.Tk()
+            
+            # self._style_config()
+            self.master = ThemedTk(theme="equilux")
             self.style = ttk.Style()
-            self._style_config()
-            # self.master = ThemedTk()
+            self.set_global_font_size(self.master, 13)
             self.master.title("iSLAT - Interactive Spectral-Line Analysis Tool")
             self.master.resizable(True, True)
             # Set minimum size to maintain usability
@@ -37,6 +41,29 @@ class GUI:
         
         # Apply theme to root window
         # self._apply_theme_to_widget(self.master)
+
+
+    def set_global_font_size(self, root, size):
+        """
+        Increase font size for all ttk and tk widgets in a ThemedTk GUI.
+        """
+        # 1. Update the default Tk font
+        default_font = font.nametofont("TkDefaultFont")
+        default_font.configure(size=size)
+        
+        # 2. Optionally update other named Tk fonts
+        for f in ["TkTextFont", "TkHeadingFont", "TkMenuFont", "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"]:
+            try:
+                font.nametofont(f).configure(size=size)
+            except tk.TclError:
+                pass  # Some fonts may not exist on all platforms
+
+        # 3. Ensure new widgets use updated font
+        root.option_add("*Font", default_font)
+
+        # 4. Update ttk style default
+        style = ttk.Style(root)
+        style.configure(".", font=default_font)
 
     def _style_config(self):
         self.style.configure("Small.TButton", padding=(0, 5))
@@ -293,10 +320,10 @@ class GUI:
         main_container.grid(row=1, column=0, sticky="nsew")
 
         # Create frames for left panel and right panel (plot)
-        left_main_frame = tk.Frame(main_container)
+        left_main_frame = ttk.Frame(main_container)
         left_main_frame.grid(row= 0, column= 0, sticky="nsew")
 
-        right_main_frame = tk.Frame(main_container)
+        right_main_frame = ttk.Frame(main_container)
         right_main_frame.grid(row= 0, column= 1, sticky="nsew")
         
         # Configure right frame for responsive plot

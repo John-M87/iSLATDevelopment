@@ -44,14 +44,14 @@ class TopBar(ResizableFrame):
 
         self.atomic_lines = []
 
-        self.button_frame = tk.Frame(self)
+        self.button_frame = ttk.Frame(self)
         self.button_frame.grid(row=0, column=1)
 
         # Create buttons for options
         self._create_buttons()
         
         # Create and add toolbar 
-        toolbar_frame = tk.Frame(self)
+        toolbar_frame = ttk.Frame(self)
         toolbar_frame.grid(row=0, column=2, sticky="nsew")
         self.toolbar = self.main_plot.create_toolbar(toolbar_frame)
         
@@ -463,7 +463,7 @@ class TopBar(ResizableFrame):
         export_window.attributes("-topmost", True)
 
         # Create a label in the new window
-        label = tk.Label(export_window, text="Select a molecule:")
+        label = ttk.Label(export_window, text="Select a molecule:")
         label.grid(row=0, column=0)
 
         # Create a dropdown menu in the new window
