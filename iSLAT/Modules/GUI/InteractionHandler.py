@@ -58,6 +58,9 @@ class InteractionHandler:
         self.canvas.mpl_connect('motion_notify_event', self._on_mouse_move)
         self.canvas.mpl_connect('pick_event', self._on_pick)
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
+        
+        # Connect to draw events to catch navigation changes
+        self.canvas.mpl_connect('draw_event', self._on_draw)
     
     def _setup_keyboard_events(self):
         """Set up keyboard event handlers"""
@@ -69,10 +72,14 @@ class InteractionHandler:
         # Connect to axis limit changes
         self.ax1.callbacks.connect('xlim_changed', self._on_xlim_changed)
         self.ax1.callbacks.connect('ylim_changed', self._on_ylim_changed)
+        
+        # Store the last known xlim to detect changes during draw events
+        self._last_xlim = self.ax1.get_xlim() if self.ax1 else None
     
     def _on_span_select(self, xmin: float, xmax: float):
         """Handle span selection on main plot"""
         if xmin == xmax:
+            self.clear_current_selection()
             return
         
         # Ensure proper order
@@ -89,7 +96,6 @@ class InteractionHandler:
         self._trigger_selection_callbacks('span_select', xmin, xmax)
         
         # Update displays
-        self._update_line_inspection(xmin, xmax)
         self._update_population_diagram_highlights(xmin, xmax)
     
     def _on_mouse_press(self, event):
@@ -111,7 +117,7 @@ class InteractionHandler:
         
         # Handle different types of clicks
         if event.button == 1:  # Left click
-            if is_double_click and event.inaxes != self.ax1:  # No double-click zoom on main plot
+            if is_double_click and event.inaxes != self.ax1:
                 self._on_double_click(event)
             elif not is_double_click:  # Single click
                 self._on_single_click(event)
@@ -144,7 +150,6 @@ class InteractionHandler:
     
     def _on_double_click(self, event):
         """Handle double click events"""
-        # Disable double-click zoom as requested by user
         pass
     
     def _on_right_click(self, event):
@@ -223,31 +228,20 @@ class InteractionHandler:
             if line_info['tau'] != 'N/A':
                 info_text += f"Optical Depth: {line_info['tau']:.3f}\n"
             
-            data_field.insert_text(info_text, console_print=True, clear_first=False)
+            data_field.insert_text(info_text, console_print=True, clear_after=False)
     
     def _on_scroll(self, event):
-        """Handle scroll events for zooming"""
-        # Disable scroll zoom as requested by user
+        """Handle scroll events for zooming"""        
         pass
     
     def _on_key_press(self, event):
         """Handle key press events"""
-        if event.key == 'r':
-            # Reset zoom
-            self._reset_zoom()
-        elif event.key == 'h':
+        if event.key == 'h':
             # Toggle grid
             self._toggle_grid()
         elif event.key == 'l':
             # Toggle legend
             self._toggle_legend()
-        elif event.key == 's':
-            # Save current selection
-            if self.selected_range:
-                self._save_current_selection()
-        elif event.key == 'escape':
-            # Clear selection
-            self._clear_selection()
     
     def _on_key_release(self, event):
         """Handle key release events"""
@@ -256,11 +250,19 @@ class InteractionHandler:
     def _on_xlim_changed(self, ax):
         """Handle x-axis limit changes"""
         new_xlim = ax.get_xlim()
+        xone = new_xlim[0]
+        xtwo = new_xlim[1]
         
-        # Update display range in iSLAT
+        # Update display range in iSLAT (only if changed to prevent infinite loops)
         if hasattr(self.islat, 'display_range'):
-            self.islat.display_range = tuple(new_xlim)
-        
+            current_range = self.islat.display_range
+            new_range = (xone, xtwo)
+            # Only update if the values are actually different (with small tolerance for floating point)
+            if (not current_range or 
+                abs(current_range[0] - new_range[0]) > 1e-10 or 
+                abs(current_range[1] - new_range[1]) > 1e-10):
+                self.islat.display_range = new_range
+
         # Trigger zoom callbacks
         self._trigger_zoom_callbacks('xlim_changed', new_xlim)
     
@@ -269,20 +271,23 @@ class InteractionHandler:
         new_ylim = ax.get_ylim()
         self._trigger_zoom_callbacks('ylim_changed', new_ylim)
     
-    def _update_line_inspection(self, xmin: float, xmax: float):
-        """Update the line inspection plot based on selection"""
-        if hasattr(self.plot_manager, 'data_processor'):
-            # Get data in range
-            if hasattr(self.islat, 'wave_data') and hasattr(self.islat, 'flux_data'):
-                wave_range, flux_range = self.plot_manager.data_processor.interpolate_flux_to_range(
-                    self.islat.wave_data, self.islat.flux_data, xmin, xmax
-                )
-                
-                # Render line inspection
-                if hasattr(self.plot_manager, 'renderer'):
-                    self.plot_manager.renderer.render_line_inspection_plot(
-                        wave_range, flux_range, f"Range: {xmin:.3f} - {xmax:.3f} μm"
-                    )
+    def _on_draw(self, event):
+        """Handle draw events to catch navigation changes that don't trigger axis callbacks"""
+        # Check if xlim has changed since last draw
+        current_xlim = self.ax1.get_xlim()
+        
+        if self._last_xlim is None:
+            # First time, just store the current xlim
+            self._last_xlim = current_xlim
+            return
+            
+        # Check if xlim has actually changed (with small tolerance for floating point)
+        if (abs(current_xlim[0] - self._last_xlim[0]) > 1e-10 or 
+            abs(current_xlim[1] - self._last_xlim[1]) > 1e-10):
+            
+            # xlim has changed, update display range
+            self._last_xlim = current_xlim
+            self._on_xlim_changed(self.ax1)
     
     def _update_population_diagram_highlights(self, xmin: float, xmax: float):
         """Update population diagram to highlight lines in selected range"""
@@ -365,24 +370,6 @@ class InteractionHandler:
             legend.set_visible(not legend.get_visible())
         self.canvas.draw_idle()
     
-    def _show_context_menu(self, event):
-        """Show context menu at event location"""
-        # This would implement a context menu
-        # For now, just print the options available
-        print(f"Context menu at ({event.xdata:.3f}, {event.ydata:.3f})")
-        print("Available actions: Save point, Zoom here, Reset zoom, Export data")
-    
-    def _save_current_selection(self):
-        """Save the current selection"""
-        if self.selected_range and hasattr(self.plot_manager, 'save_selection'):
-            self.plot_manager.save_selection(*self.selected_range)
-    
-    def _clear_selection(self):
-        """Clear current selection"""
-        self.selected_range = None
-        if hasattr(self.plot_manager, 'clear_selection'):
-            self.plot_manager.clear_selection()
-    
     # Callback management
     def add_selection_callback(self, name: str, callback: Callable):
         """Add a callback for selection events"""
@@ -462,7 +449,9 @@ class InteractionHandler:
     
     def clear_current_selection(self):
         """Clear the current selection"""
-        self._clear_selection()
+        self.selected_range = None
+        if hasattr(self.plot_manager, 'clear_selection'):
+            self.plot_manager.clear_selection()
     
     def get_interaction_info(self) -> Dict[str, Any]:
         """Get information about current interaction state"""

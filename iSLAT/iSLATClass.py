@@ -1,55 +1,20 @@
 iSLAT_version = 'v5.00.00'
-print(' ')
-print('Loading iSLAT ' + iSLAT_version + ': Please Wait ...')
 
 # Import necessary modules
 import numpy as np
 import pandas as pd
 import os
 import time
+import sys
 
-from .Modules.FileHandling.iSLATFileHandling import load_user_settings, read_default_molecule_parameters, read_initial_molecule_parameters, read_save_data, read_HITRAN_data, read_from_user_csv, read_default_csv, read_spectral_data
+from .Modules.FileHandling.iSLATFileHandling import load_user_settings, read_default_molecule_parameters, read_initial_molecule_parameters, read_full_molecule_parameters, read_HITRAN_data, read_from_user_csv, read_default_csv, read_spectral_data
+from .Modules.FileHandling.iSLATFileHandling import molsave_file_name, save_folder_path, hitran_data_folder_path, hitran_data_folder_name
 
 import iSLAT.Constants as c
 from .Modules.GUI import *
 from .Modules.DataTypes.Molecule import Molecule
 from .Modules.DataTypes.MoleculeDict import MoleculeDict
 from .Modules.Debug.DebugConfig import debug_config
-
-class UpdateCoordinator:
-    """Centralized update coordinator to manage and debounce plot updates"""
-    
-    def __init__(self, islat_instance : 'iSLAT'):
-        self.islat = islat_instance
-        self._update_after_id = None
-        self._pending_updates = set()
-        
-    def request_update(self, update_type):
-        """Request an update of a specific type, with debouncing"""
-        self._pending_updates.add(update_type)
-        
-        # Cancel previous pending update
-        if self._update_after_id is not None:
-            self.islat.GUI.master.after_cancel(self._update_after_id)
-        
-        # Schedule new update
-        self._update_after_id = self.islat.GUI.master.after(50, self._execute_updates)
-    
-    def _execute_updates(self):
-        """Execute all pending updates in the correct order"""
-        if not self._pending_updates:
-            return
-            
-        updates = self._pending_updates.copy()
-        self._pending_updates.clear()
-        self._update_after_id = None
-        
-        # Execute updates in dependency order
-        if 'model_spectrum' in updates and hasattr(self.islat, 'molecules_dict') and hasattr(self.islat, 'wave_data'):
-            self.islat.molecules_dict.update_molecule_fluxes(self.islat.wave_data)
-        
-        if 'plots' in updates and hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'plot'):
-            self.islat.GUI.plot.update_all_plots()
 
 class iSLAT:
     """
@@ -59,223 +24,122 @@ class iSLAT:
 
     def __init__(self):
         """
-        Initialize the iSLAT application.
+        Initialize the iSLAT application with minimal setup.
         """
-        # Core initialization
-        self._active_molecule_change_callbacks = []
+        # === CORE STATE ===
+        self._user_settings = None
         self._active_molecule = None
+        self.GUI = None
         
-        # Load settings once
-        self.user_settings = load_user_settings()
-        self.initial_molecule_parameters = read_initial_molecule_parameters()
-        self.molecules_parameters_default = read_default_molecule_parameters()
+        # Initialize collections
+        self.molecules_dict = MoleculeDict()
+        self.callbacks = {}
         
+        # === CALLBACK SYSTEM ===
+        self._active_molecule_change_callbacks = []
+        
+        # === LAZY LOADING FLAGS ===
+        self._initial_molecule_parameters = None
+        self._molecules_parameters_default = None
+        self._default_molecule_csv_data = None
+        self._user_saved_molecules = None
+        self._molecules_data_default = None
+        self._molecules_loaded = False  # Track if molecules have been initialized
+        
+        # === MOLECULE CONSTANTS ===
         # Define molecule constants (use tuples for immutability and performance)
         self.mols = ("H2", "HD", "H2O", "H218O", "CO2", "13CO2", "CO", "13CO", "C18O", "CH4", "HCN", "H13CN", "NH3", "OH", "C2H2", "13CCH2", "C2H4", "C4H2", "C2H6", "HC3N")
         self.basem = ("H2", "H2", "H2O", "H2O", "CO2", "CO2", "CO", "CO", "CO", "CH4", "HCN", "HCN", "NH3", "OH", "C2H2", "C2H2", "C2H4", "C4H2", "C2H6", "HC3N")
         self.isot = (1, 2, 1, 2, 1, 2, 1, 2, 3, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 1)
-        
-        # Physical parameters
-        self.wavelength_range = c.WAVELENGTH_RANGE
-        self._display_range = (23.52, 25.41)
-        self._dist = c.DEFAULT_DISTANCE
-        self._star_rv = c.DEFAULT_STELLAR_RV
-        self._fwhm = c.DEFAULT_FWHM
-        self._intrinsic_line_width = c.INTRINSIC_LINE_WIDTH
 
-        # Initialize containers (lazy loading)
+        # === DATA CONTAINERS ===
         self.hitran_data = {}
-        self._molecules_data_default = None  # Load on demand
-        self.deleted_molecules = []
-        
-        # Lazy load these expensive operations
-        self._default_molecule_csv_data = None
-        self._user_saved_molecules = None
-        
+        #self._hitran_file_cache = {}  # Cache for HITRAN file data to avoid re-reading
         self.input_line_list = None
         self.output_line_measurements = None
-
-        # Initialize update coordinator (will be set up after GUI init)
-        self.update_coordinator = None
         
-        # Parallel processing disabled by default for stability
+        # === PERFORMANCE FLAGS ===
         self._use_parallel_processing = False
 
-    def init_gui(self):
-        """
-        Initialize the GUI components of iSLAT.
-        This function sets up the main window, menus, and other GUI elements.
-        """
-        # Initialize update coordinator once
-        if self.update_coordinator is None:
-            self.update_coordinator = UpdateCoordinator(self)
-
-        if not hasattr(self, "GUI"):
-            self.GUI = GUI(
-                master=None,
-                molecule_data=getattr(self, 'molecules_dict', None),
-                wave_data=getattr(self, 'wave_data', None),
-                flux_data=getattr(self, 'flux_data', None),
-                config=self.user_settings,
-                islat_class_ref=self
-            )
-        
-        self.GUI.start()
-
-    def init_molecules(self, mole_save_data=None, use_optimized_loading=False):
-        """
-        Initialize molecules with sequential loading by default.
-        
-        Parameters
-        ----------
-        mole_save_data : dict, list, or None
-            Molecule data to load. If None, uses user_saved_molecules.
-        use_optimized_loading : bool, default False
-            Whether to use the ultra-fast optimized loading method (multiprocessing).
-            Set to False by default to avoid multiprocessing/threading.
-        """
-        # Lazy load user_saved_molecules if needed
-        if mole_save_data is None:
-            if self.user_saved_molecules is None:
-                self.user_saved_molecules = read_from_user_csv()
-            mole_save_data = self.user_saved_molecules
-
-        # Initialize molecules_dict if needed
-        if not hasattr(self, "molecules_dict"):
-            self.molecules_dict = MoleculeDict()
-            # Set global parameters efficiently
-            for attr, value in [
-                ('global_dist', self._dist),
-                ('global_star_rv', self._star_rv),
-                ('global_fwhm', self._fwhm),
-                ('global_intrinsic_line_width', self._intrinsic_line_width),
-                ('global_wavelength_range', self.wavelength_range)
-            ]:
-                setattr(self.molecules_dict, attr, value)
-        
-        # Validate and process input data
-        if not mole_save_data:
-            print("Warning: No molecule data provided to init_molecules")
-            return
-
-        # Convert to list format efficiently
-        if isinstance(mole_save_data, dict):
-            molecules_list = [mol for mol in mole_save_data.values() 
-                            if mol.get("Molecule Name") and mol.get("Molecule Name") not in self.molecules_dict]
-        elif isinstance(mole_save_data, list):
-            molecules_list = [mol for mol in mole_save_data 
-                            if mol.get("Molecule Name") and mol.get("Molecule Name") not in self.molecules_dict]
-        else:
-            print(f"Warning: Unsupported molecule data format: {type(mole_save_data)}")
-            return
-
-        if not molecules_list:
-            print("No new molecules to load.")
-            return
-
-        # Load molecules using sequential method by default
-        try:
-            # Use parallel processing only if explicitly enabled
-            use_optimized = use_optimized_loading or self.use_parallel_processing
-            
-            if use_optimized:
-                print(f"Loading {len(molecules_list)} molecules using parallel method...")
-                start_time = time.time()
-                
-                results = self.molecules_dict.load_molecules_ultra_fast(
-                    molecules_list, 
-                    self.initial_molecule_parameters,
-                    force_multiprocessing=self.use_parallel_processing
-                )
-                
-                elapsed_time = time.time() - start_time
-                print(f"Parallel loading completed in {elapsed_time:.3f}s")
-                
-                if results["success"] > 0:
-                    print(f"Successfully loaded {results['success']} molecules")
-                    
-                if results["failed"] > 0:
-                    print(f"Failed to load {results['failed']} molecules:")
-                    for error in results["errors"]:
-                        print(f"  - {error}")
-            else:
-                # Sequential loading (default, no multiprocessing/threading)
-                print(f"Loading {len(molecules_list)} molecules sequentially...")
-                start_time = time.time()
-                
-                success_count = 0
-                for mol_data in molecules_list:
-                    mol_name = mol_data.get("Molecule Name")
-                    try:
-                        new_molecule = Molecule(
-                            user_save_data=mol_data,
-                            wavelength_range=self.wavelength_range,
-                            initial_molecule_parameters=self.initial_molecule_parameters.get(mol_name, self.molecules_parameters_default)
-                        )
-                        self.molecules_dict[mol_name] = new_molecule
-                        success_count += 1
-                        print(f"Successfully loaded molecule: {mol_name}")
-                    except Exception as e:
-                        print(f"Error creating molecule '{mol_name}': {e}")
-                
-                elapsed_time = time.time() - start_time
-                print(f"Sequential loading completed in {elapsed_time:.3f}s")
-                print(f"Successfully loaded {success_count}/{len(molecules_list)} molecules")
-
-            # Initialize the active molecule
-            self._set_initial_active_molecule()
-                    
-        except Exception as e:
-            print(f"Error in init_molecules: {e}")
-            raise
-
+    # === MOLECULE MANAGEMENT METHODS ===
     def _set_initial_active_molecule(self):
         """Set the initial active molecule based on user settings and available molecules."""
         active_molecule_name = self.user_settings.get("default_active_molecule", "H2O")
         
         if active_molecule_name in self.molecules_dict:
             self._active_molecule = self.molecules_dict[active_molecule_name]
-        else:
-            # Try to fall back to H2O
-            if "H2O" in self.molecules_dict:
-                print(f"Active molecule '{active_molecule_name}' not found. Defaulting to 'H2O'.")
-                self._active_molecule = self.molecules_dict["H2O"]
-            elif len(self.molecules_dict) > 0:
-                # Use the first available molecule
-                first_molecule = next(iter(self.molecules_dict.values()))
-                print(f"Neither '{active_molecule_name}' nor 'H2O' found. Using '{first_molecule.name}'.")
-                self._active_molecule = first_molecule
-            else:
-                print("No molecules available to set as active.")
-                self._active_molecule = None
 
-    def run(self):
+    def init_molecules(self, mole_save_data=None, use_parallel=False):
         """
-        Run the iSLAT application.
-        This function starts the main event loop of the Tkinter application.
+        Initialize molecules with automatic optimization and spectrum-aware loading.
+        
+        Parameters
+        ----------
+        mole_save_data : dict, list, or None
+            Molecule data to load. If None, loads from user_saved_molecules.
+        spectrum_optimized : bool, default False
+            If True, optimizes loading for the loaded spectrum's wavelength range.
+        use_parallel : bool, default False
+            If True, uses parallel processing for loading.
         """
-        # Initialize data and components in optimal order
+        # Use parallel processing setting if not explicitly provided
+        if not use_parallel:
+            use_parallel = self._use_parallel_processing if hasattr(self, '_use_parallel_processing') else False
+        
+        # Lazy load user_saved_molecules if needed
+        if mole_save_data is None:
+            mole_save_data = self.user_saved_molecules
+
+        # Validate and process input data
+        if not mole_save_data:
+            print("Warning: No molecule data provided for initialization")
+            return False
+
+        # Convert to list format efficiently
+        if isinstance(mole_save_data, dict):
+            molecules_list = [mol for mol in mole_save_data.values() if mol.get("Molecule Name") and mol.get("Molecule Name") not in self.molecules_dict]
+            parms = self.initial_molecule_parameters
+        elif isinstance(mole_save_data, list):
+            molecules_list = mole_save_data
+            parms = self.initial_molecule_parameters
+            parms['default'] = self.molecules_parameters_default
+
+        if not molecules_list:
+            print("No new molecules to load.")
+            return False
+
         try:
-            # Load save data first (lightweight)
-            self.savedata = read_save_data()
+            start_time = time.time()
+            results = self.molecules_dict.load_molecules(
+                molecules_list, 
+                parms,
+            )
             
-            # Initialize molecules (can be heavy, done after basic setup)
-            self.init_molecules()
+            elapsed_time = time.time() - start_time
+            print(f"Loaded {len(results)} molecules in {elapsed_time:.3f}s")
             
-            # Load spectrum data (usually fast)
-            self.load_spectrum()
+            if results["success"] > 0:
+                print(f"Loaded {results['success']} molecules")
             
-            # Finally initialize GUI (requires other components)
-            self.init_gui()
-            
+            if results["failed"] > 0:
+                print(f"Failed to load {results['failed']} molecules")
+                for error in results["errors"]:
+                    print(f"  - {error}")
+
+            self._set_initial_active_molecule()
+
+            if hasattr(self, "wavedata"):
+                spectrum_range = (self.wave_data.min(), self.wave_data.max())
+                self.molecules_dict.global_wavelength_range = spectrum_range
+
+            return True
+                    
         except Exception as e:
-            print(f"Error during iSLAT initialization: {e}")
-            raise
-    
-    def add_molecule_from_hitran(self, refresh=True, hitran_files=None, molecule_names=None, 
-                                base_molecules=None, isotopes=None, use_parallel=False):
+            print(f"Error loading molecules: {e}")
+
+    def add_molecule_from_hitran(self, refresh=True, hitran_files=None, molecule_names=None, use_parallel=False, name_popups=True):
         """
-        Adds one or more molecules to the iSLAT instance from HITRAN files with sequential loading by default.
+        Adds one or more molecules to the iSLAT instance from HITRAN files.
         
         Parameters:
         -----------
@@ -285,21 +149,19 @@ class iSLAT:
             Single file path or list of file paths. If None, opens file dialog for multiple selection
         molecule_names : str or list
             Single molecule name or list of molecule names corresponding to files
-        base_molecules : str or list
-            Single base molecule or list of base molecules (currently unused)
-        isotopes : int or list
-            Single isotope or list of isotopes (currently unused)
         use_parallel : bool, default False
-            Whether to use parallel loading (multiprocessing). Default is False for sequential loading.
+            Whether to prefer parallel loading when beneficial
         """
         if hitran_files is None:
             hitran_files = GUI.file_selector(title='Choose HITRAN Data Files (select multiple with Ctrl/Cmd)',
                                                   filetypes=[('PAR Files', '*.par')],
-                                                  initialdir=os.path.abspath("DATAFILES/HITRANdata"))
+                                                  initialdir=hitran_data_folder_path,
+                                                  allow_multiple=True,
+                                                  use_abspath=True)
             
         if not hitran_files:
             print("No HITRAN files selected.")
-            return
+            return False
         
         # Convert single file to list for consistent processing
         if isinstance(hitran_files, str):
@@ -308,17 +170,31 @@ class iSLAT:
         # Convert molecule_names to list if provided as single string
         if molecule_names is not None and isinstance(molecule_names, str):
             molecule_names = [molecule_names]
+
+        if molecule_names is None and name_popups:
+            # Use popups to get names for each molecule
+            molecule_names = []
+            for i, hitran_file in enumerate(hitran_files):
+                molecule_name = GUI.add_molecule_name_popup(title=f"Assign label for {os.path.basename(hitran_file)}")
+                if molecule_name:
+                    molecule_names.append(molecule_name)
+                else:
+                    print(f"No name provided for {hitran_file}, using default.")
+                    molecule_names.append(None)
         
-        # Prepare molecule data for parallel processing
+        # Prepare molecule data
         molecules_data = []
-        
         for i, hitran_file in enumerate(hitran_files):
             # Get molecule name for this file
+            molecule_file_name = os.path.basename(hitran_file)
+            molecule_file_path = hitran_data_folder_name / molecule_file_name
             if molecule_names is not None and i < len(molecule_names):
-                molecule_name = molecule_names[i]
+                molecule_label = molecule_names[i]
+                
+                molecule_name = molecule_names[i].translate({ord(i): None for i in '_$^{}'})
+                molecule_name = molecule_name.translate({ord(i): "_" for i in ' -'})
             else:
-                # Extract molecule name from file name
-                molecule_file_name = os.path.basename(hitran_file)
+                # Extract and clean molecule name from file name
                 molecule_name = molecule_file_name
                 # Clean up the molecule name for use as a Python identifier and display
                 molecule_name = molecule_name.translate({ord(i): None for i in '_$^{}'})
@@ -326,72 +202,61 @@ class iSLAT:
                 if molecule_name and molecule_name[0].isdigit():
                     molecule_name = 'm_' + molecule_name
                 molecule_name = molecule_name.upper()
+                molecule_label = molecule_name
             
-            # Prepare molecule data dictionary for parallel processing
+            # Create molecule data dictionary using existing format
             mol_data = {
                 "name": molecule_name,
                 "Molecule Name": molecule_name,
-                "file": hitran_file,
+                "file": molecule_file_path,
                 "hitran_data": hitran_file,
-                "label": molecule_name,
-                "Molecule Label": molecule_name
+                "label": molecule_label,
+                "Molecule Label": molecule_label
             }
             molecules_data.append(mol_data)
+            print(f"mol_data is: {mol_data}")
         
-        # Use sequential loading by default, parallel only if explicitly enabled
-        success_count = 0
-        use_parallel_loading = use_parallel or self.use_parallel_processing
+        print(f"Loading {len(molecules_data)} HITRAN molecule(s)...")
         
-        if use_parallel_loading and len(molecules_data) > 1:
-            print(f"Loading {len(molecules_data)} HITRAN molecules using parallel method...")
-            results = self.molecules_dict.load_molecules_ultra_fast(
-                molecules_data, 
-                self.initial_molecule_parameters,
-                force_multiprocessing=True
-            )
-            success_count = results["success"]
-            
-            if results["failed"] > 0:
-                print(f"Failed to load {results['failed']} molecules:")
-                for error in results["errors"]:
-                    print(f"  - {error}")
-        else:
-            # Sequential loading (default)
-            print(f"Loading {len(molecules_data)} HITRAN molecule(s) sequentially...")
+        try:
             start_time = time.time()
-            
-            for mol_data in molecules_data:
-                molecule_name = mol_data["name"]
-                hitran_file = mol_data["file"]
-                
-                print(f"Loading molecule '{molecule_name}' from file: {hitran_file}")
-                
-                try:
-                    new_molecule = Molecule(
-                        hitran_data=hitran_file,
-                        name=molecule_name,
-                        wavelength_range=self.wavelength_range,
-                        initial_molecule_parameters=self.initial_molecule_parameters.get(molecule_name, self.molecules_parameters_default)
-                    )
-                    self.molecules_dict[molecule_name] = new_molecule
-                    success_count += 1
-                    print(f"Successfully created molecule: {molecule_name}")
-                    
-                except Exception as e:
-                    print(f"Error loading molecule '{molecule_name}' from {hitran_file}: {str(e)}")
-                    continue
-            
+            results = self.molecules_dict.load_molecules(
+                molecules_data, 
+                read_full_molecule_parameters(),
+                update_global_parameters=False,
+                strategy="auto",
+                force_multiprocessing=use_parallel or getattr(self, '_use_parallel_processing', False)
+            )
             elapsed_time = time.time() - start_time
-            print(f"Sequential loading completed in {elapsed_time:.3f}s")
-        
-        if success_count > 0:
-            print(f"Successfully loaded {success_count} molecules.")
             
-            # Use the optimized update system
-            if refresh:
-                self._update_gui_after_molecule_load()
-        else:
-            print("No molecules were successfully loaded.")
+            print(f"Loading completed in {elapsed_time:.3f}s")
+            
+            success_count = results.get("success", 0)
+            if success_count > 0:
+                print(f"Successfully loaded {success_count} molecules.")
+                
+                # Refresh GUI if requested using existing GUI methods
+                if refresh and hasattr(self, 'GUI') and self.GUI is not None:
+                    try:
+                        self.GUI.plot.update_model_plot()
+                        self.GUI.control_panel.refresh_from_molecules_dict()
+                        print("GUI molecule list and plot refreshed.")
+                    except Exception as e:
+                        print(f"Warning: Could not refresh GUI: {e}")
+            else:
+                print("No molecules were successfully loaded.")
+            
+            if results.get("failed", 0) > 0:
+                print(f"Failed to load {results['failed']} molecules:")
+                for error in results.get("errors", []):
+                    print(f"  - {error}")
+            
+            return success_count > 0
+                    
+        except Exception as e:
+            print(f"Error during molecule loading: {e}")
+            print("No molecules were loaded due to the error.")
+            return False
 
     def check_HITRAN(self):
         """
@@ -428,7 +293,7 @@ class iSLAT:
 
         print("Finished HITRAN file check.\n")
     
-    def load_default_molecules(self, reset=True, use_parallel=False):
+    def load_default_molecules(self, reset=True, use_parallel=False): # Needs updated
         """
         Loads default molecules into the molecules_dict with sequential loading by default.
         
@@ -439,24 +304,13 @@ class iSLAT:
         use_parallel : bool, optional
             If True, uses parallel loading. Default is False for sequential loading.
         """
-        print("Loading default molecules...")
-        
         # Initialize molecules_dict if needed
         if not hasattr(self, "molecules_dict"):
             self.molecules_dict = MoleculeDict()
-            # Set global parameters efficiently
-            for attr, value in [
-                ('global_dist', self._dist),
-                ('global_star_rv', self._star_rv),
-                ('global_fwhm', self._fwhm),
-                ('global_intrinsic_line_width', self._intrinsic_line_width),
-                ('global_wavelength_range', self.wavelength_range)
-            ]:
-                setattr(self.molecules_dict, attr, value)
 
         if reset:
-            self.molecules_dict.clear()
             print("Resetting molecules_dict to empty.")
+            self.molecules_dict.clear()
 
         try:
             # Lazy load default molecule data
@@ -468,41 +322,105 @@ class iSLAT:
                 print("Error: Could not load default molecule CSV data.")
                 return
             
-            # Use sequential loading by default
+            # Use parallel loading setting
             use_parallel_loading = use_parallel or self.use_parallel_processing
-            self.init_molecules(self.default_molecule_csv_data, use_optimized_loading=use_parallel_loading)
+            self.init_molecules(self.default_molecule_csv_data, use_parallel=use_parallel_loading)
+            # Update GUI components
+            if hasattr(self, 'GUI'):
+                if hasattr(self.GUI, 'plot'):
+                    self.GUI.plot.update_all_plots()
+                if hasattr(self.GUI, 'control_panel'):
+                    self.GUI.control_panel.refresh_from_molecules_dict()
+                if hasattr(self.GUI, 'data_field'):
+                    self.GUI.data_field.insert_text(
+                        f'Successfully loaded parameters from defaults',
+                        clear_after=True
+                    )
             print(f"Successfully loaded {len(self.molecules_dict)} default molecules.")
-            
-            # Update GUI components if they exist
-            if hasattr(self, "GUI") and self.GUI is not None:
-                self._update_gui_after_molecule_load()
                 
         except Exception as e:
             print(f"Error loading default molecules: {e}")
             raise
 
-    def _update_gui_after_molecule_load(self):
+    def get_mole_save_data(self):
+        # Check to see if a save for the current spectrum file exists
+        if hasattr(self, 'loaded_spectrum_file') and self.loaded_spectrum_file:
+            spectrum_base_name = os.path.splitext(self.loaded_spectrum_name)[0]
+            formatted_mol_save_file_name = f"{spectrum_base_name}-{molsave_file_name}"
+            molsave_path = save_folder_path
+            full_path = os.path.join(molsave_path, formatted_mol_save_file_name)
+            alternative_path = os.path.join(molsave_path, f"{spectrum_base_name}.csv-{molsave_file_name}")
+            if os.path.exists(full_path):
+                print(f"Loading molecules from saved file: {full_path}")
+                mole_save_data = read_from_user_csv(molsave_path, formatted_mol_save_file_name)
+            elif os.path.exists(alternative_path):
+                print(f"Loading molecules from old format saved file: {alternative_path}")
+                mole_save_data = read_from_user_csv(molsave_path, f"{spectrum_base_name}.csv-{molsave_file_name}")
+            else:
+                print(f"Warning: Mole save path does not exist: {molsave_path}")
+                mole_save_data = None
+        else:
+            mole_save_data = None   
+        
+        return mole_save_data
+
+    def _initialize_molecules_for_spectrum(self):
         """
-        Helper method to update GUI components after molecules are loaded.
+        Initialize molecules optimized for the loaded spectrum's wavelength range.
+        This method is called automatically after a spectrum is loaded.
         """
+        if not hasattr(self, 'wave_data'):
+            print("Warning: No spectrum data available for molecule optimization")
+            return
+            
+        # Optimize wavelength range for the loaded spectrum
+        spectrum_range = (self.wave_data.min(), self.wave_data.max())
+        print(f"Initializing molecules for spectrum range: {spectrum_range[0]:.1f} - {spectrum_range[1]:.1f} µm")
+
+        mole_save_data = self.user_saved_molecules
+        
         try:
-            # Update molecule table if it exists
-            if (hasattr(self.GUI, "molecule_table") and self.GUI.molecule_table is not None):
-                self.GUI.molecule_table.update_table()
+            # Initialize molecules with spectrum-optimized settings
+            start_time = time.time()
             
-            # Update control panel dropdown if it exists
-            if (hasattr(self.GUI, "control_panel") and self.GUI.control_panel is not None and
-                hasattr(self.GUI.control_panel, "reload_molecule_dropdown")):
-                self.GUI.control_panel.reload_molecule_dropdown()
+            # Use the most efficient initialization method with spectrum optimization
+            self.init_molecules(mole_save_data=mole_save_data)
+
+            elapsed_time = time.time() - start_time
+            self._molecules_loaded = True
             
-            # Update plots if they exist
-            if (hasattr(self.GUI, "plot") and self.GUI.plot is not None):
-                self.GUI.plot.update_all_plots()
+            print(f"Molecule initialization completed in {elapsed_time:.3f}s")
+            print(f"Loaded {len(self.molecules_dict)} molecules optimized for spectrum")
+            
+            # Print performance summary
+            self._print_performance_summary(elapsed_time)
                 
         except Exception as e:
-            print(f"Warning: Error updating GUI after molecule load: {e}")
+            print(f"Error initializing molecules for spectrum: {e}")
+            self._molecules_loaded = False
 
+    # === SPECTRUM METHODS ===
     def load_spectrum(self, file_path=None):
+        """
+        Load a spectrum from file or show file dialog.
+        
+        Parameters
+        ----------
+        file_path : str, optional
+            Path to spectrum file. If None, shows file dialog.
+            
+        Returns
+        -------
+        bool
+            True if spectrum loaded successfully, False otherwise.
+            
+        Raises
+        ------
+        FileNotFoundError
+            If file_path doesn't exist.
+        ValueError  
+            If file format is not supported.
+        """
         #filetypes = [('CSV Files', '*.csv'), ('TXT Files', '*.txt'), ('DAT Files', '*.dat')]
         spectra_directory = os.path.abspath("DATAFILES/EXAMPLE-data")
         if file_path is None:
@@ -512,12 +430,24 @@ class iSLAT:
             )
 
         if file_path:
-            # Use the new read_spectral_data function
-            df = read_spectral_data(file_path)
-            
-            if df.empty:
-                print(f"Failed to load spectrum from {file_path}")
-                return
+            try:
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"Spectrum file not found: {file_path}")
+                
+                # Use the new read_spectral_data function
+                df = read_spectral_data(file_path)
+                
+                if df.empty:
+                    print(f"Failed to load spectrum from {file_path}")
+                    return False
+                
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                return False
+            except Exception as e:
+                print(f"Error loading spectrum from {file_path}: {e}")
+                return False
             
             # Check if required columns exist
             required_columns = ['wave', 'flux']
@@ -526,7 +456,7 @@ class iSLAT:
             if not all(col in df.columns for col in required_columns):
                 print(f"Error: Required columns {required_columns} not found in {file_path}")
                 print(f"Available columns: {list(df.columns)}")
-                return
+                return False
             
             # Load required data
             self.wave_data = np.array(df['wave'].values) * self.user_settings.get("wave_data_scalar", 1.0)
@@ -556,19 +486,64 @@ class iSLAT:
             self.loaded_spectrum_file = file_path
             self.loaded_spectrum_name = os.path.basename(file_path)
 
-            # Update any dependent components if spectrum is loaded after first start
-            if hasattr(self, "GUI"):
-                if hasattr(self.GUI, "plot"):
-                    self.GUI.plot.update_all_plots()
-                if hasattr(self.GUI, "file_interaction_pane"):
-                    self.GUI.file_interaction_pane.update_file_label(self.loaded_spectrum_name)
-            # If model spectrum or other calculations depend on spectrum, update them
-            if hasattr(self, "update_model_spectrum"):
+            # Initialize molecules after spectrum is loaded (most efficient approach)
+            if not self._molecules_loaded:
+                self._initialize_molecules_for_spectrum()
+                spectrum_range = (self.wave_data.min(), self.wave_data.max())
+                self.molecules_dict.global_wavelength_range = spectrum_range
+                self.molecules_dict.global_model_pixel_res = np.median(self.wave_data[1:-1] - self.wave_data[0:-2])
+            else:
+                # Update existing molecules with new wavelength range if needed
+                spectrum_range = (self.wave_data.min(), self.wave_data.max())
+                self.molecules_dict.global_wavelength_range = spectrum_range
+                self.molecules_dict.global_model_pixel_res = np.median(self.wave_data[1:-1] - self.wave_data[0:-2])
                 self.update_model_spectrum()
-        else:
-            print("No file selected.")
+                print(f"Updated existing molecules for new wavelength range: {spectrum_range[0]:.3f} - {spectrum_range[1]:.3f}")
 
-    def update_model_spectrum(self, force_recalculate=False, use_parallel=False):
+            if not hasattr(self, "display_range") or self.display_range[0] < self.wave_data.min() or self.display_range[1] > self.wave_data.max():
+                # Set display limits based on loaded spectrum
+                fig_max_limit = np.nanmax(self.wave_data)
+                fig_min_limit = np.nanmin(self.wave_data)
+
+                display_first_entry = round((fig_min_limit + (fig_max_limit - fig_min_limit) / 2), 2)
+                display_second_entry = round((display_first_entry + (fig_max_limit - fig_min_limit) / 10), 2)
+
+                self.display_range = (display_first_entry, display_second_entry)
+
+            else:
+                # trigger display range setter
+                self.display_range = self.display_range
+
+            # Initialize GUI after molecules are loaded
+            if not hasattr(self, "GUI") or self.GUI is None:
+                pass
+
+            else:
+                # GUI already exists, just update the spectrum display
+                print("Updating existing GUI with new spectrum...")
+                if hasattr(self.GUI, "plot") and self.GUI.plot is not None:
+                    self.GUI.plot.update_model_plot()
+                    self.GUI.plot.match_display_range(match_y=True)
+                    if hasattr(self.GUI.plot, 'canvas'):
+                        self.GUI.plot.canvas.draw()
+                
+                # Update control panel
+                if hasattr(self.GUI, "control_panel") and self.GUI.control_panel is not None:
+                    self.GUI.control_panel.refresh_from_molecules_dict()
+
+                # Update file label
+                if (hasattr(self.GUI, "file_interaction_pane") and 
+                    hasattr(self, 'loaded_spectrum_name')):
+                    self.GUI.file_interaction_pane.update_file_label(self.loaded_spectrum_name)
+                self.update_model_spectrum()
+            
+            print("Spectrum loaded successfully")
+            return True
+        else:
+            print("No spectrum was loaded")
+            return False
+
+    def update_model_spectrum(self, force_recalculate=False):
         """
         Update model spectrum using sequential calculations by default.
         
@@ -578,115 +553,217 @@ class iSLAT:
             If True, forces recalculation of all molecule intensities and spectra.
         use_parallel : bool, default False
             If True, uses parallel recalculation. Default is False for sequential processing.
+            
+        Returns
+        -------
+        None
+            Updates self.sum_spectrum_flux with the calculated model spectrum.
         """
         if not hasattr(self, 'molecules_dict') or not hasattr(self, 'wave_data'):
             self.sum_spectrum_flux = np.array([])
             return
         
         if force_recalculate:
-            use_parallel_calc = use_parallel or self.use_parallel_processing
-            
-            if use_parallel_calc:
-                # Use parallel recalculation only if explicitly enabled
-                print("Force recalculating all molecule spectra using parallel processing...")
-                self.molecules_dict.bulk_recalculate_parallel()
-            else:
-                # Sequential recalculation (default)
-                print("Force recalculating all molecule spectra sequentially...")
-                self.molecules_dict.bulk_recalculate_sequential()
+            self.molecules_dict.bulk_recalculate()
         
         try:
-            # Use the optimized cached summed flux from MoleculeDict
-            self.sum_spectrum_flux = self.molecules_dict.get_summed_flux(self.wave_data, visible_only=True)
-            
-            # Update individual molecule fluxes if needed
-            self.molecules_dict.update_molecule_fluxes(self.wave_data)
+            # Use the optimized cached summed flux from MoleculeDict - now returns (wavelengths, flux)
+            self.sum_spectrum_wavelengths, self.sum_spectrum_flux = self.molecules_dict.get_summed_flux(self.wave_data, visible_only=True)
             
         except Exception as e:
             print(f"Error updating model spectrum: {e}")
             self.sum_spectrum_flux = np.zeros_like(self.wave_data) if hasattr(self, 'wave_data') else np.array([])
+
+    # === CALLBACK SYSTEM ===
+    def register_callback(self, event_type, callback_func):
+        """Register a callback for specific events."""
+        if event_type not in self.callbacks:
+            self.callbacks[event_type] = []
+        
+        if callback_func not in self.callbacks[event_type]:
+            self.callbacks[event_type].append(callback_func)
+
+    def unregister_callback(self, event_type, callback_func):
+        """Remove a callback for specific events.""" 
+        if event_type in self.callbacks:
+            self.callbacks[event_type] = [cb for cb in self.callbacks[event_type] if cb != callback_func]
+
+    def _trigger_callbacks(self, event_type, *args, **kwargs):
+        """Trigger all callbacks for an event type."""
+        for callback in self.callbacks.get(event_type, []):
+            try:
+                callback(*args, **kwargs)
+            except Exception as e:
+                print(f"Callback error in {event_type}: {e}")
     
-    def request_update(self, update_type='plots'):
-        """
-        Request an update through the optimized coordinator system.
-        
-        Parameters
-        ----------
-        update_type : str
-            Type of update to request ('plots', 'model_spectrum', etc.)
-        """
-        if self.update_coordinator:
-            self.update_coordinator.request_update(update_type)
-        elif update_type == 'model_spectrum':
-            # Fallback for direct model spectrum update
-            self.update_model_spectrum()
+    def add_active_molecule_change_callback(self, callback):
+        """Add a callback function to be called when active molecule changes"""
+        self._active_molecule_change_callbacks.append(callback)
     
-    def bulk_update_molecule_parameters(self, parameter_dict, molecule_names=None, update_plots=True):
-        """
-        Bulk update parameters for multiple molecules using the optimized MoleculeDict methods.
-        
-        Parameters
-        ----------
-        parameter_dict : dict
-            Dictionary of parameter names and values to update
-        molecule_names : list, optional
-            List of molecule names to update (None for all molecules)
-        update_plots : bool, default True
-            Whether to update plots after parameter changes
-        """
-        if not hasattr(self, 'molecules_dict'):
-            print("No molecules_dict available for bulk update")
-            return
-        
+    def remove_active_molecule_change_callback(self, callback):
+        """Remove a callback function for active molecule changes"""
+        if callback in self._active_molecule_change_callbacks:
+            self._active_molecule_change_callbacks.remove(callback)
+    
+    def _notify_active_molecule_change(self, old_molecule, new_molecule):
+        """Notify all callbacks that the active molecule has changed"""
+        debug_config.verbose("active_molecule", f"Notifying {len(self._active_molecule_change_callbacks)} callbacks")
+        for i, callback in enumerate(self._active_molecule_change_callbacks):
+            try:
+                callback_name = callback.__name__ if hasattr(callback, '__name__') else str(callback)
+                debug_config.trace("active_molecule", f"Calling callback {i+1}: {callback_name}")
+                callback(old_molecule, new_molecule)
+                debug_config.trace("active_molecule", f"Callback {i+1} completed successfully")
+            except Exception as e:
+                debug_config.error("active_molecule", f"Error in callback {i+1}: {e}")
+        debug_config.verbose("active_molecule", "All callbacks completed")
+
+    # === UTILITY METHODS ===
+    def _safe_load_data(self, loader_func, cache_attr, error_message):
+        """Helper method to safely load and cache data."""
         try:
-            # Use the optimized bulk parameter update
-            self.molecules_dict.bulk_update_parameters(parameter_dict, molecule_names)
+            if not hasattr(self, cache_attr) or getattr(self, cache_attr) is None:
+                data = loader_func()
+                setattr(self, cache_attr, data)
+            return getattr(self, cache_attr)
+        except Exception as e:
+            print(f"{error_message}: {e}")
+            return None
+
+    # === GUI METHODS ===
+    def init_gui(self):
+        """
+        Initialize the GUI components of iSLAT.
+        This function sets up the main window, menus, and other GUI elements.
+        """
+        try:
+            if not hasattr(self, "GUI") or self.GUI is None:
+                from .Modules.GUI import GUI as GUIClass
+                
+                self.GUI = GUIClass(
+                    master=None,
+                    molecule_data=getattr(self, 'molecules_dict', None),
+                    wave_data=getattr(self, 'wave_data', None),
+                    flux_data=getattr(self, 'flux_data', None),
+                    config=self.user_settings,
+                    islat_class_ref=self
+                )
+                
+                if self.GUI is None:
+                    raise RuntimeError("Failed to create GUI object")
             
-            # Update model spectrum and plots if requested
-            if update_plots:
-                self.update_model_spectrum()
-                self.request_update('plots')
+            if hasattr(self.GUI, 'start') and callable(self.GUI.start):
+                self.GUI.start()
+                
+                # Immediately display spectrum after GUI starts if we have data
+                if (hasattr(self, 'wave_data') and hasattr(self, 'flux_data') and 
+                    hasattr(self.GUI, "plot") and self.GUI.plot is not None):
+                    try:
+                        print("Displaying spectrum in GUI...")
+                        self.GUI.plot.update_model_plot()
+                        
+                        # Force immediate canvas update to ensure spectrum is visible
+                        if hasattr(self.GUI.plot, 'canvas'):
+                            self.GUI.plot.canvas.draw()
+                            
+                        print("Spectrum displayed successfully")
+                        
+                        # Update file label if available
+                        if (hasattr(self.GUI, "file_interaction_pane") and 
+                            hasattr(self, 'loaded_spectrum_name')):
+                            self.GUI.file_interaction_pane.update_file_label(self.loaded_spectrum_name)
+                            
+                    except Exception as e:
+                        print(f"Warning: Error displaying spectrum during GUI init: {e}")
+                        
+            else:
+                raise AttributeError(f"GUI object does not have a callable 'start' method")
                 
         except Exception as e:
-            print(f"Error in bulk parameter update: {e}")
-    
-    def set_global_parameters(self, **kwargs):
+            print(f"Error initializing GUI: {e}")
+            import traceback
+            traceback.print_exc()
+            print("GUI initialization failed. Running in headless mode.")
+            self.GUI = None
+            raise
+
+    def run(self):
         """
-        Set global parameters that affect all molecules using the optimized system.
-        
-        Parameters
-        ----------
-        **kwargs : dict
-            Global parameters to set (distance, fwhm, stellar_rv, etc.)
+        Run the iSLAT application.
         """
-        if not hasattr(self, 'molecules_dict'):
-            return
+        print("\n" + "="*60)
+        print(f"iSLAT {iSLAT_version} - interactive Spectral-Line Analysis Tool")
+        print("="*60)
         
         try:
-            # Update global parameters using the new system
-            for param_name, value in kwargs.items():
-                if param_name == 'distance':
-                    self.molecules_dict.global_dist = value
-                    self._dist = value
-                elif param_name == 'fwhm':
-                    self.molecules_dict.global_fwhm = value
-                    self._fwhm = value
-                elif param_name == 'stellar_rv':
-                    self.molecules_dict.global_star_rv = value
-                    self._star_rv = value
-                elif param_name == 'intrinsic_line_width':
-                    self.molecules_dict.global_intrinsic_line_width = value
-                    self._intrinsic_line_width = value
-                elif param_name == 'wavelength_range':
-                    self.molecules_dict.global_wavelength_range = value
-                    self.wavelength_range = value
-            
-            # Update model spectrum and plots
-            self.update_model_spectrum()
-            self.request_update('plots')
+            print("\n" + "="*60)
+            print("Please select a spectrum file to load.")
+            print("="*60)
+            continue_init = self.load_spectrum()
+            if not continue_init:
+                print("No spectrum selected. Exiting...")
+                sys.exit(0)
+            self.init_gui()
             
         except Exception as e:
-            print(f"Error setting global parameters: {e}")
+            print(f"Error during iSLAT initialization: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    # === LAZY LOADING PROPERTIES ===
+    @property
+    def user_settings(self):
+        """Lazy load user settings only when needed."""
+        if self._user_settings is None:
+            self._user_settings = load_user_settings()
+        return self._user_settings
+
+    @property
+    def initial_molecule_parameters(self):
+        """Lazy load initial molecule parameters only when needed."""
+        if self._initial_molecule_parameters is None:
+            self._initial_molecule_parameters = read_initial_molecule_parameters()
+        return self._initial_molecule_parameters
+
+    @property
+    def molecules_parameters_default(self):
+        """Lazy load default molecule parameters only when needed."""
+        if self._molecules_parameters_default is None:
+            self._molecules_parameters_default = read_default_molecule_parameters()
+        return self._molecules_parameters_default
+
+    @property
+    def default_molecule_csv_data(self):
+        """Lazy load default molecule CSV data with safe error handling."""
+        return self._safe_load_data(read_default_csv,'_default_molecule_csv_data', "Failed to load default molecules")
+    
+    @default_molecule_csv_data.setter
+    def default_molecule_csv_data(self, value):
+        self._default_molecule_csv_data = value
+
+    @property
+    def molecules_data_default(self):
+        """Lazy load default molecules data only when needed."""
+        if self._molecules_data_default is None:
+            self._molecules_data_default = c.MOLECULES_DATA.copy()
+        return self._molecules_data_default
+    
+    @property
+    def user_saved_molecules(self):
+        """Lazy load user saved molecules data with safe error handling."""
+        return self._safe_load_data(read_from_user_csv, '_user_saved_molecules', "Failed to load user molecules")
+        
+    @user_saved_molecules.setter 
+    def user_saved_molecules(self, value):
+        """Set user saved molecules data."""
+        self._user_saved_molecules = value
+
+    # === REMAINING PROPERTIES ===
+    @property
+    def use_parallel_processing(self):
+        """Check if parallel processing is enabled"""
+        return getattr(self, '_use_parallel_processing', False)
     
     @property
     def active_molecule(self):
@@ -714,8 +791,10 @@ class iSLAT:
             else:
                 raise TypeError("Active molecule must be a Molecule object or a string representing the molecule name.")
             
-            # Only notify callbacks - let them handle plot updates
-            # This prevents double calls to plot update methods
+            # Trigger callbacks using the new unified callback system
+            self._trigger_callbacks('active_molecule_changed', old_molecule, self._active_molecule)
+            
+            # Also maintain backwards compatibility with old callback system
             debug_config.verbose("active_molecule", f"Notifying {len(self._active_molecule_change_callbacks)} callbacks of change")
             self._notify_active_molecule_change(old_molecule, self._active_molecule)
                 
@@ -737,79 +816,20 @@ class iSLAT:
         if isinstance(value, tuple) and len(value) == 2:
             self._display_range = value
             if hasattr(self, "GUI") and hasattr(self.GUI, "plot"):
-                self.GUI.plot.match_display_range()
+                self.GUI.plot.match_display_range(match_y=False)
+            if hasattr(self, "GUI") and hasattr(self.GUI, "control_panel"):
+                self.GUI.control_panel._update_display_range(self._display_range)
         else:
             raise ValueError("Display range must be a tuple of two floats (start, end).")
     
-    def add_active_molecule_change_callback(self, callback):
-        """Add a callback function to be called when active molecule changes"""
-        self._active_molecule_change_callbacks.append(callback)
-    
-    def remove_active_molecule_change_callback(self, callback):
-        """Remove a callback function for active molecule changes"""
-        if callback in self._active_molecule_change_callbacks:
-            self._active_molecule_change_callbacks.remove(callback)
-    
-    def _notify_active_molecule_change(self, old_molecule, new_molecule):
-        """Notify all callbacks that the active molecule has changed"""
-        debug_config.verbose("active_molecule", f"Notifying {len(self._active_molecule_change_callbacks)} callbacks")
-        for i, callback in enumerate(self._active_molecule_change_callbacks):
-            try:
-                callback_name = callback.__name__ if hasattr(callback, '__name__') else str(callback)
-                debug_config.trace("active_molecule", f"Calling callback {i+1}: {callback_name}")
-                callback(old_molecule, new_molecule)
-                debug_config.trace("active_molecule", f"Callback {i+1} completed successfully")
-            except Exception as e:
-                debug_config.error("active_molecule", f"Error in callback {i+1}: {e}")
-        debug_config.verbose("active_molecule", "All callbacks completed")
-    
-    # Lazy loading properties for performance optimization
-    @property
-    def default_molecule_csv_data(self):
-        """Lazy load default molecule CSV data only when needed"""
-        if self._default_molecule_csv_data is None:
-            self._default_molecule_csv_data = read_default_csv()
-        return self._default_molecule_csv_data
-    
-    @default_molecule_csv_data.setter
-    def default_molecule_csv_data(self, value):
-        self._default_molecule_csv_data = value
-    
-    @property
-    def user_saved_molecules(self):
-        """Lazy load user saved molecules only when needed"""
-        if self._user_saved_molecules is None:
-            self._user_saved_molecules = read_from_user_csv()
-        return self._user_saved_molecules
-    
-    @user_saved_molecules.setter
-    def user_saved_molecules(self, value):
-        self._user_saved_molecules = value
-    
-    @property
-    def molecules_data_default(self):
-        """Lazy load default molecules data only when needed"""
-        if self._molecules_data_default is None:
-            self._molecules_data_default = c.MOLECULES_DATA.copy()
-        return self._molecules_data_default
-
-    def enable_parallel_processing(self):
-        """
-        Enable parallel processing for molecule loading and calculations.
-        Call this method if you want to use multiprocessing/threading for better performance
-        with large datasets. By default, iSLAT uses sequential processing for stability.
-        """
-        print("Enabling parallel processing for iSLAT operations...")
-        self._use_parallel_processing = True
-        
-    def disable_parallel_processing(self):
-        """
-        Disable parallel processing and use sequential processing (default behavior).
-        """
-        print("Disabling parallel processing - using sequential processing...")
-        self._use_parallel_processing = False
-    
-    @property
-    def use_parallel_processing(self):
-        """Check if parallel processing is enabled"""
-        return getattr(self, '_use_parallel_processing', False)
+    def _print_performance_summary(self, molecule_load_time):
+        """Print a summary of performance optimizations and timings"""
+        print(f"\n--- Performance Summary ---")
+        print(f"Molecule loading time: {molecule_load_time:.3f}s")
+        if hasattr(self, '_use_parallel_processing') and self._use_parallel_processing:
+            print("Parallel processing enabled")
+        if hasattr(self, '_hitran_file_cache') and len(self._hitran_file_cache) > 0:
+            print(f"HITRAN file caching active ({len(self._hitran_file_cache)} files cached)")
+        if hasattr(self, 'molecules_dict') and hasattr(self.molecules_dict, 'global_wavelength_range'):
+            print(f"Optimized for spectrum range: {self.molecules_dict.global_wavelength_range[0]:.1f} - {self.molecules_dict.global_wavelength_range[1]:.1f} µm")
+        print("--- Ready for Analysis ---\n")
