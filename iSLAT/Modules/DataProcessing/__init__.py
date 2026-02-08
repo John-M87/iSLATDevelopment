@@ -12,6 +12,7 @@ from .LineAnalyzer import LineAnalyzer
 from .BatchFittingService import BatchFittingService
 from .DeblendingService import DeblendingService
 from .LineSaveService import LineSaveService
+from .LineListMaker import LineListMaker
 
 __all__ = [
     "Chi2Spectrum",
@@ -22,4 +23,5 @@ __all__ = [
     "BatchFittingService",
     "DeblendingService",
     "LineSaveService",
+    "LineListMaker",
 ]

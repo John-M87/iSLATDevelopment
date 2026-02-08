@@ -150,8 +150,7 @@ def _fit_task_worker(task_data: Dict[str, Any]) -> Tuple[int, int, Dict, Any, An
         lam_range = wave_data[wavelength_mask]
         flux_range = flux_data[wavelength_mask]
         if len(lam_range) >= 2:
-            SPEED_OF_LIGHT_MICRONS = 2.99792458e14  # μm/s
-            freq_range = SPEED_OF_LIGHT_MICRONS / lam_range[::-1]
+            freq_range = c.SPEED_OF_LIGHT_MICRONS / lam_range[::-1]
             flux_data_integral = -np.trapezoid(flux_range[::-1], x=freq_range[::-1]) * 1e-23
             if err_data is not None:
                 err_range = err_data[wavelength_mask]
