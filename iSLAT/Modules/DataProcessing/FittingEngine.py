@@ -7,6 +7,7 @@ from lmfit.models import GaussianModel
 from lmfit import Parameters
 from iSLAT.Modules.DataProcessing.Slabfit import SlabFit
 import iSLAT.Constants as c
+import sys
 
 class FittingEngine:
     """
@@ -15,6 +16,9 @@ class FittingEngine:
     This class provides a unified interface for various fitting operations
     including line fitting, deblending, and slab model fitting.
     """
+    
+    # Class-level setting to control verbose fit output
+    VERBOSE_FIT_OUTPUT: bool = False
     
     def __init__(self, islat_instance):
         """
@@ -60,8 +64,8 @@ class FittingEngine:
         fit_wave = wave_data
         fit_flux = flux_data
             
-        if len(fit_wave) < 3:
-            raise ValueError("Insufficient data points for fitting")
+        #if len(fit_wave) < 3:
+        #    raise ValueError("Insufficient data points for fitting")
         
         # Set xmin/xmax from data if not provided (for multi-gaussian detection)
         if xmin is None:
@@ -81,43 +85,48 @@ class FittingEngine:
         flux_fit = flux_data
         calc_err_data = err_data #if err_data is not None else self.islat.err_data
         
-        # Use gaussian model from LMFIT
-        model = GaussianModel()
-        
-        # Get initial guess for parameters (let LMFIT do the guessing)
-        params = model.guess(flux_fit, x=x_fit)
-        
-        # Get error data for weights if available
-        weights = None
-        if calc_err_data is not None:
-            # Need to get error data for the same range
-            if xmin is not None and xmax is not None:
-                #err_mask = (wave_data >= xmin) & (wave_data <= xmax)
-                err_fit = calc_err_data#[err_mask]
-                # Following LMFIT docs: use 1/error as weights, avoiding division by zero
-                if len(err_fit) == len(flux_fit) and len(err_fit) > 0:
-                    max_err = np.max(err_fit)
-                    if max_err > 0:
-                        err_fit_safe = np.where(err_fit <= 0, max_err * 0.01, err_fit)
-                        weights = 1.0 / err_fit_safe
-        
-        # Make the fit, using error data as weights and ignoring nans
-        if weights is not None:
-            result = model.fit(flux_fit, params, x=x_fit, weights=weights, nan_policy='omit')
-        else:
-            result = model.fit(flux_fit, params, x=x_fit, nan_policy='omit')
-        
-        print(result.fit_report())
+        try:
+            # Use gaussian model from LMFIT
+            model = GaussianModel()
+            
+            # Get initial guess for parameters (let LMFIT do the guessing)
+            params = model.guess(flux_fit, x=x_fit)
+            
+            # Get error data for weights if available
+            weights = None
+            if calc_err_data is not None:
+                # Need to get error data for the same range
+                if xmin is not None and xmax is not None:
+                    #err_mask = (wave_data >= xmin) & (wave_data <= xmax)
+                    err_fit = calc_err_data#[err_mask]
+                    # Following LMFIT docs: use 1/error as weights, avoiding division by zero
+                    if len(err_fit) == len(flux_fit) and len(err_fit) > 0:
+                        max_err = np.max(err_fit)
+                        if max_err > 0:
+                            err_fit_safe = np.where(err_fit <= 0, max_err * 0.01, err_fit)
+                            weights = 1.0 / err_fit_safe
+            
+            # Make the fit, using error data as weights and ignoring nans
+            if weights is not None:
+                result = model.fit(flux_fit, params, x=x_fit, weights=weights, nan_policy='omit')
+            else:
+                result = model.fit(flux_fit, params, x=x_fit, nan_policy='omit')
+            
+            if self.VERBOSE_FIT_OUTPUT:
+                sys.stdout.write(result.fit_report() + '\n')
 
-        # Generate fitted curve on original wavelength grid
-        fitted_wave = wave_data
-        fitted_flux = result.eval(x=fitted_wave)
-        
-        self.last_fit_result = result
-        self.last_fit_params = result.params
-        
-        return result, fitted_wave, fitted_flux
-    
+            # Generate fitted curve on original wavelength grid
+            fitted_wave = wave_data
+            fitted_flux = result.eval(x=fitted_wave)
+            
+            self.last_fit_result = result
+            self.last_fit_params = result.params
+            
+            return result, fitted_wave, fitted_flux
+        except Exception as e:
+            if self.VERBOSE_FIT_OUTPUT:
+                print(f"Error during single Gaussian fit: {e}")
+            return None, None, None
 
     def _fit_multi_gaussian(self, wave_data, flux_data, initial_guess=None, xmin=None, xmax=None):
         """Fit multiple Gaussian components for deblending"""
@@ -167,8 +176,8 @@ class FittingEngine:
         
         # Calculate initial amplitude estimate
         # Total integrated flux divided by number of lines
-        total_flux = np.trapz(flux_data, wave_data)
-        #total_flux = np.trapz(flux_data, wave_data)
+        total_flux = np.trapezoid(flux_data, wave_data)
+        #total_flux = np.trapezoid(flux_data, wave_data)
         garea_fg = total_flux / len(line_centers) * 1e11  # Scaling factor
         
         # Set up parameter bounds based on tolerances
@@ -217,7 +226,8 @@ class FittingEngine:
         result = model.fit(flux_data, params, x=wave_data, weights=weights, 
                           method='leastsq', nan_policy='omit')
         
-        print(result.fit_report())
+        if self.VERBOSE_FIT_OUTPUT:
+            sys.stdout.write(result.fit_report() + '\n')
         self.fit_results_summary = result.summary()
         
         # Generate fitted curve from x min and x max and wave data
@@ -504,17 +514,24 @@ class FittingEngine:
             #'intens': line_info.get('intens', 0.0),
             'a_stein': line_info.get('a_stein', 0.0),
             'e_up': line_info.get('e_up', 0.0),
+            'e_low': line_info.get('e_low', 0.0),
             'g_up': line_info.get('g_up', 1.0),
+            'g_low': line_info.get('g_low', 1.0),
             'xmin': xmin,
             'xmax': xmax,
+        }
+
+        result_entry.update({key: line_info[key] for key in line_info if key not in result_entry})  # Include all line info fields
+
+        result_entry.update({
             'Flux_data': np.float64(f'{flux_data_integral:.{3}e}'),
             'Err_data': np.float64(f'{err_data_integral:.{3}e}'),
             'Line_SN': np.round(line_sn, decimals=1),
             'Line_det': bool(line_det),
             'Flux_islat': np.float64(f'{flux_data_integral:.{3}e}'),  # Default to data values
             'Err_islat': np.float64(f'{err_data_integral:.{3}e}')     # Will be overwritten if fit succeeds
-        }
-        
+        })
+
         # Process fit results if successful
         if fit_result and fit_result.success:
             # Extract fit parameters using the helper method
@@ -543,7 +560,8 @@ class FittingEngine:
                 'Centr_fit': np.round(center, decimals=5) if fit_det else np.nan,
                 'Centr_err': np.round(center_err, decimals=5) if fit_det else np.nan,
                 'Doppler': np.round(doppler, decimals=1) if fit_det else np.nan,
-                'Red-chisq': np.round(fit_result.redchi, decimals=2)
+                'Red-chisq': np.float64(f'{fit_result.redchi:.{3}e}' if fit_result.redchi is not None else np.nan),
+                'Fit_success': bool(True)
             })
             
             # Update iSLAT flux values if fit is good and detected
@@ -554,15 +572,17 @@ class FittingEngine:
             # Fit failed - fill with NaN values but keep data measurements
             result_entry.update({
                 #'Fit_SN': np.round(flux_data_integral / err_data_integral if err_data_integral > 0 else 0.0, decimals=1),
+                'Fit_SN': 0.0,
                 'Fit_det': False,
-                'Flux_fit': np.float64(f'{flux_data_integral:.{3}e}'),  # Use data flux for failed fit
-                'Err_fit': np.float64(f'{err_data_integral:.{3}e}'),
+                'Flux_fit': np.nan, #np.float64(f'{flux_data_integral:.{3}e}'),  # Use data flux for failed fit
+                'Err_fit': np.nan, #np.float64(f'{err_data_integral:.{3}e}'),
                 'FWHM_fit': np.nan,
                 'FWHM_err': np.nan,
                 'Centr_fit': np.nan,
                 'Centr_err': np.nan,
                 'Doppler': np.nan,
-                'Red-chisq': np.nan
+                'Red-chisq': np.nan,
+                'Fit_success': bool(False)
             })
         
         return result_entry

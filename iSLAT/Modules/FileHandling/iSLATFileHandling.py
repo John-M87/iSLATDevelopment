@@ -6,7 +6,6 @@ import numpy as np
 from ...Constants import MOLECULES_DATA
 from .molecular_data_reader import read_molecular_data
 
-
 #from pathlib import Path
 
 from iSLAT.Modules.FileHandling import *
@@ -39,6 +38,17 @@ def load_user_settings(file_path=user_configuration_file_path, file_name=user_co
         with open(theme_file, 'r') as f:
             theme_settings = json.load(f)
         user_settings["theme"] = theme_settings
+
+    # convert intensity_opacity_overlap_setting to method to be used in intensity calculations
+    if user_settings.get("intensity_opacity_overlap_setting", True) == True or user_settings.get("intensity_opacity_overlap_setting", "curve_growth") == "curve_growth":
+        user_settings["intensity_calculation_method"] = "curve_growth"
+    elif user_settings.get("intensity_opacity_overlap_setting", False) == False or user_settings.get("intensity_opacity_overlap_setting", "curve_growth_no_overlap") == "curve_growth_no_overlap":
+        user_settings["intensity_calculation_method"] = "curve_growth_no_overlap"
+    elif user_settings.get("intensity_opacity_overlap_setting", "radex") == "radex":
+        user_settings["intensity_calculation_method"] = "radex"
+    else:
+        user_settings["intensity_calculation_method"] = "curve_growth" # default fallback 
+    
     return user_settings
 
 def read_from_csv(file_path=save_folder_path, file_name=molsave_file_name):
@@ -63,14 +73,30 @@ def read_default_csv(file_path=defaults_file_path, file_name=defaults_file_name)
             pass
     return MOLECULES_DATA
 
-def read_from_user_csv(file_path=save_folder_path, file_name=molecule_list_file_name):
+def read_from_user_csv(file_path: str = save_folder_path, file_name: str = molecule_list_file_name, update_save_file_names: bool = False) -> Dict[str, Dict[str, Any]]:
     file = os.path.join(file_path, file_name)
     defaults_file = os.path.join(defaults_file_path, defaults_file_name)
     if os.path.exists(file):
         try:
             with open(file, 'r') as csvfile:
                 reader = csv.DictReader(csvfile)
-                return {row['Molecule Name']: row for row in reader if 'Molecule Name' in row}
+                rows = list(reader)  # Read all rows into memory first
+                
+                if update_save_file_names:
+                    # replace any occurance of "HITRANdata/data_Hitran_2020_" with "HITRANdata/data_Hitran_"
+                    for row in rows:
+                        if "File Path" in row and row["File Path"]:
+                            row["File Path"] = row["File Path"].replace("data_Hitran_2020_", "data_Hitran_")
+                    
+                    # save the updated file back to disk
+                    with open(file, 'w', newline='') as csvfile_write:
+                        fieldnames = reader.fieldnames
+                        writer = csv.DictWriter(csvfile_write, fieldnames=fieldnames)
+                        writer.writeheader()
+                        for row in rows:
+                            writer.writerow(row)
+
+                return {row['Molecule Name']: row for row in rows if 'Molecule Name' in row}
         except FileNotFoundError:
             pass
     #return MOLECULES_DATA
@@ -159,22 +185,43 @@ def read_HITRAN_data(file_path):
         return []
 
 def read_line_saves(file_path=save_folder_path, file_name=line_saves_file_name) -> pd.DataFrame:
-    if not file_path or not file_name:
+    if not file_name:
         return pd.DataFrame()
     
-    print(f"joining {file_path} and {file_name}")
-
-    filename = os.path.join(file_path, file_name)
+    # Check if file_name is already an absolute path
+    if os.path.isabs(file_name):
+        filename = file_name
+    elif file_path:
+        filename = os.path.join(file_path, file_name)
+    else:
+        filename = file_name
+    
     if os.path.exists(filename):
         try:
             return pd.read_csv(filename)
         except Exception as e:
             print(f"Error reading line saves file: {e}")
             return pd.DataFrame()
+    else:
+        print(f"Line saves file not found: {filename}")
     return pd.DataFrame()
 
-def save_line(line_info, file_path=line_saves_file_path, file_name=line_saves_file_name, overwritefile=False):
-    """Save a line to the line saves file."""
+def save_line(line_info, file_path=line_saves_file_path, file_name=line_saves_file_name, overwritefile=False, silent=False):
+    """Save a line to the line saves file.
+    
+    Parameters
+    ----------
+    line_info : dict
+        Line information to save
+    file_path : str
+        Directory path
+    file_name : str
+        File name
+    overwritefile : bool
+        Whether to overwrite existing file
+    silent : bool
+        If True, suppress per-line print output
+    """
     filename = os.path.join(file_path, file_name)
     
     # Sanitize line_info to ensure no objects get saved as strings
@@ -186,9 +233,14 @@ def save_line(line_info, file_path=line_saves_file_path, file_name=line_saves_fi
         elif isinstance(value, (int, float, str, bool)) or value is None:
             # Only save basic types
             clean_line_info[key] = value
+        elif isinstance(value, (np.bool_, np.integer, np.floating)):
+            # Handle numpy scalar types - convert to Python native types
+            clean_line_info[key] = value.item()
+        elif hasattr(value, 'value'):
+            # Handle lmfit Parameter objects (and similar) - extract the numeric value
+            clean_line_info[key] = value.value
         else:
-            # Convert other types to string but warn
-            print(f"Warning: Converting {key}={type(value)} to string in saved line")
+            # Convert other types to their native Python equivalent silently
             clean_line_info[key] = str(value)
     
     #print(f"Saving line to {filename}")
@@ -208,9 +260,13 @@ def save_line(line_info, file_path=line_saves_file_path, file_name=line_saves_fi
         df.to_csv(filename, mode='w', header=True, index=False)
     else:
         df.to_csv(filename, mode='a', header=do_header, index=False)
-    print(f"Saved line at ~{clean_line_info['lam']:.4f} μm to {filename}")
+    
+    if not silent:
+        print(f"Saved line at ~{clean_line_info['lam']:.4f} μm to {filename}")
+    
+    return filename
 
-def save_fit_results(fit_results_data, file_path = line_saves_file_path, file_name= fit_save_lines_file_name, overwritefile=True):
+def save_fit_results(fit_results_data, file_path = line_saves_file_path, file_name= fit_save_lines_file_name, overwritefile=True, silent=True):
     """
     Save fit results data to CSV file.
     
@@ -222,6 +278,8 @@ def save_fit_results(fit_results_data, file_path = line_saves_file_path, file_na
         Directory path to save the file
     file_name : str
         Name of the CSV file
+    silent : bool
+        If True, print summary instead of per-line messages (default: True)
         
     Returns
     -------
@@ -237,7 +295,11 @@ def save_fit_results(fit_results_data, file_path = line_saves_file_path, file_na
         # Clear the output but do not delete the file
         open(full_path, 'w').close()
     for fit_result in fit_results_data:
-        save_line(fit_result, file_path=file_path, file_name=file_name)
+        save_line(fit_result, file_path=file_path, file_name=file_name, silent=silent)
+    
+    # Print summary if in silent mode
+    if silent and fit_results_data:
+        print(f"Saved {len(fit_results_data)} lines to {full_path}")
     
     return full_path
 
@@ -337,12 +399,35 @@ def read_spectral_data(file_path : str):
     if os.path.exists(file_path):
         try:
             if (file_path.endswith('.csv') or file_path.endswith('.txt')) and os.path.isfile(file_path):
-                df = pd.read_csv(file_path)
-                return df
+                # check if it is a txt file and if it is check if the first line is % Object Names and Observation Date
+                # if this is the first line, assume spexodisks format and skip to the line % Primary Spectrum
+                if file_path.endswith('.txt'):
+                    with open(file_path, 'r') as f:
+                        first_line = f.readline().strip()
+                    if first_line.startswith('% Object Names'):
+                        # now find the line number of % Primary Spectrum and read from there
+                        with open(file_path, 'r') as f:
+                            lines = f.readlines()
+                        for i, line in enumerate(lines):
+                            if line.strip().startswith('% Primary Spectrum'):
+                                skiprows = i + 1
+                                break
+                        df = pd.read_csv(file_path, skiprows=skiprows)
+                        # change the name of the wavelength column to wave
+                        # change the name of the flux_error column to err
+                        df.rename(columns=lambda x: x.strip().lower(), inplace=True)
+                        if 'wavelength' in df.columns:
+                            df.rename(columns={'wavelength': 'wave'}, inplace=True)
+                        if 'flux_error' in df.columns:
+                            df.rename(columns={'flux_error': 'err'}, inplace=True)
+                        return df
+                    else:
+                        return pd.read_csv(file_path, delim_whitespace=True)
+                else:
+                    return pd.read_csv(file_path)
             elif file_path.endswith('.dat') and os.path.isfile(file_path):
                 columns_to_load = ['wave', 'flux']
-                df = pd.DataFrame(np.loadtxt(file_path), columns=columns_to_load)
-                return df
+                return pd.DataFrame(np.loadtxt(file_path), columns=columns_to_load)
         except Exception as e:
             print(f"Error reading spectral data: {e}")
             return pd.DataFrame()

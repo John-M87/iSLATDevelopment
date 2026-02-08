@@ -1,15 +1,15 @@
-import traceback
+#import traceback
 import tkinter as tk
 from tkinter import ttk, colorchooser
+import numpy as np
 from iSLAT.Modules.DataTypes.Molecule import Molecule
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_control_panel_fields_config
 from ..GUIFunctions import create_wrapper_frame, create_scrollable_frame, ColorButton
-from .RegularFrame import RegularFrame
+#from .RegularFrame import RegularFrame
 from ..Tooltips import CreateToolTip
 
 class ControlPanel(ttk.Frame):
     def __init__(self, master, islat, plot, data_field, font):
-
         super().__init__(master)
         
         self.master = master
@@ -23,20 +23,21 @@ class ControlPanel(ttk.Frame):
 
         self.mol_visibility = {}
         self.column_labels = {
-            "On": "turn on/off this\nmodel in the plot ",
+            "On": "Turn on/off this\nmodel in the plot ",
             "Molecule": "Select active molecule", 
-            "Del.": "remove this model\nfrom the GUI",
-            "Color": "change color\nfor this model"
+            "Del.": "Remove this model\nfrom the GUI",
+            "Color": "Change color\nfor this model"
             }
         
         self.label_frame = tk.LabelFrame(self, text="Spectrum and Models Control Panel", relief="solid", borderwidth=1)
         self.label_frame.grid(row=0, column=0, sticky="nsew", pady=0)
         self.label_frame.grid_rowconfigure(0,weight=1)
 
-
-        bg_frame = tk.Frame(self)
-        self.bg_color = bg_frame.cget('bg')
-        bg_frame.destroy()
+        temp_label = tk.Label(self)
+        self.bg_color = temp_label.cget('bg')
+        self.fg_color = temp_label.cget('fg')
+        temp_label.destroy()
+        fg_text = tk.Text()
         self.selected_color = "#007BFF"
         
         self.max_name_len = 4
@@ -118,7 +119,7 @@ class ControlPanel(ttk.Frame):
         entry = tk.Entry(
             parent, 
             textvariable=var, 
-            width=width, 
+            width=width, # Turn back on to use the width from the json config
             justify="left", 
         )
         
@@ -146,7 +147,7 @@ class ControlPanel(ttk.Frame):
                 on_change_callback(value)
                 value_str = self._format_value(value, param_name)
                 var.set(value_str)
-                entry.configure(fg="black", font=(self.font.cget("family"), self.font.cget("size"), "roman"))
+                entry.configure(fg=self.fg_color, font=(self.font.cget("family"), self.font.cget("size"), "roman"))
             except ValueError as e:
                 print(f"Error with new value: {e}")
                 self.data_field.insert_text(f"Error with new value: {e}")
@@ -155,7 +156,7 @@ class ControlPanel(ttk.Frame):
         
         def on_write(*args):
             if self.updating: # Updating means that the entry variable is being updated from iSLAT and should not turn grey
-                entry.configure(fg="black", font=(self.font.cget("family"), self.font.cget("size"), "roman"))
+                entry.configure(fg=self.fg_color, font=(self.font.cget("family"), self.font.cget("size"), "roman"))
                 return
             try:
                 new_entry = float(entry.get())
@@ -165,7 +166,7 @@ class ControlPanel(ttk.Frame):
                 return
             
             if new_entry == old_entry:
-                entry.configure(fg="black", font=(self.font.cget("family"), self.font.cget("size"), "roman"))
+                entry.configure(fg=self.fg_color, font=(self.font.cget("family"), self.font.cget("size"), "roman"))
             else:
                 entry.configure(fg="grey", font=(self.font.cget("family"), self.font.cget("size"), "italic"))
 
@@ -194,20 +195,20 @@ class ControlPanel(ttk.Frame):
         
         return self._create_simple_entry(self, label_text, current_value, row, col, update_parameter, width, param_name=param_name)
 
-    def _create_display_controls(self,parent, start_row, start_col):
+    def _create_display_controls(self, parent, start_row, start_col):
         """Create plot start and range controls for display view"""
         plot_start_tip = "Start wavelength\nfor the upper plot\nunits: μm"
         plot_range_tip = "Wavelength range\nfor the upper plot\nunits: μm"
 
         # Plot start
         initial_start = getattr(self.islat, 'display_range', [4.5, 5.5])[0]
-        self.plot_start_entry, self.plot_start_var = self._create_simple_entry( parent,
+        self.plot_start_entry, self.plot_start_var = self._create_simple_entry(parent,
             "Plot start:", initial_start, start_row, start_col, lambda _: self._update_display_range(), param_name="display_range_start", tip_text=plot_start_tip)
         
         # Plot range  
         display_range = getattr(self.islat, 'display_range', [4.5, 5.5])
         initial_range = round(display_range[1] - display_range[0], 2) # round to 2 decimal places
-        self.plot_range_entry, self.plot_range_var = self._create_simple_entry( parent,
+        self.plot_range_entry, self.plot_range_var = self._create_simple_entry(parent,
             "Plot range:", initial_range, start_row, start_col + 2, lambda _: self._update_display_range(), param_name="display_range_range", tip_text=plot_range_tip)
 
     def _create_wavelength_controls(self, parent, start_row, start_col):
@@ -256,9 +257,23 @@ class ControlPanel(ttk.Frame):
             if entry and var:
                 self._global_parameter_entries[field_config['property']] = (entry, var)
             
+            # Add "Match Spectral Sampling" button next to model_pixel_res field
+            if field_key == 'model_pixel_res':
+                self._match_sampling_btn = ttk.Button(
+                    parent, 
+                    text="Match Pix. Sampling", 
+                    command=self._toggle_match_spectral_sampling
+                )
+                self._match_sampling_btn.grid(row=row, column=col + 2, padx=1, sticky="w")
+                match_tip = ("Toggle matched spectral sampling.\n"
+                             "When enabled, model flux is interpolated\n"
+                             "pixel-by-pixel to match the spectrum's\n"
+                             "wavelength grid") #(for data-model subtraction).\n"
+                             #"MIRI and other spectra have uneven\n"
+                             #"pixel sampling that varies with wavelength.")
+                CreateToolTip(self._match_sampling_btn, match_tip)
+            
             col_offset += 1
-
-        
 
     def _build_color_and_vis_controls(self, parent):
         parent.grid_columnconfigure(0, weight=1)
@@ -277,6 +292,10 @@ class ControlPanel(ttk.Frame):
                 CreateToolTip(label_widget, tip_text)    
             if label == "Del.":
                 padx = (7,0)
+            # Make the "On" label clickable to toggle all molecule visibility
+            if label == "On":
+                label_widget.config(cursor="hand2", fg="blue")
+                label_widget.bind("<Button-1>", lambda e: self._toggle_all_molecule_visibility())
             label_widget.grid(row=0, column=col, sticky="ew", padx=padx)
             header_frame.grid_columnconfigure(col, weight=1)
     
@@ -387,6 +406,37 @@ class ControlPanel(ttk.Frame):
         
         return self._create_simple_entry(parent, label_text, current_value, row, col, update_global_parameter, width, param_name=property_name, tip_text=tip_text)
 
+    def _toggle_match_spectral_sampling(self):
+        """Toggle matched spectral sampling mode.
+        
+        When enabled, model flux is interpolated pixel-by-pixel to match
+        the spectrum's wavelength grid. This is essential for accurate
+        data-model subtraction, especially for MIRI and other spectra
+        with uneven pixel sampling that varies with wavelength.
+        """
+        if not hasattr(self.islat, 'wave_data') or self.islat.wave_data is None:
+            self.data_field.insert_text("No spectrum loaded.")
+            return
+        
+        if not hasattr(self.islat, 'molecules_dict') or not self.islat.molecules_dict:
+            self.data_field.insert_text("No molecules loaded.")
+            return
+        
+        # Toggle the flag - this will trigger the callback that updates plots
+        current_state = self.islat.molecules_dict.match_spectral_sampling
+        new_state = not current_state
+        self.islat.molecules_dict.match_spectral_sampling = new_state
+        
+        # Update button appearance to indicate state
+        if hasattr(self, '_match_sampling_btn'):
+            if new_state:
+                self._match_sampling_btn.configure(text="✓ Match Pix. Sampling")
+            else:
+                self._match_sampling_btn.configure(text="Match Pix. Sampling")
+        
+        state_text = "enabled" if new_state else "disabled"
+        self.data_field.insert_text(f"Matched spectral sampling {state_text}.")
+
     def _create_molecule_specific_controls(self, parent, start_row, start_col):
         """Create controls for molecule-specific parameters that update with active molecule"""
         # Store references for later updates
@@ -401,8 +451,7 @@ class ControlPanel(ttk.Frame):
         col = 0
         row = start_row 
         for field_key, field_config in self.MOLECULE_FIELDS.items():
-            
-            
+             
             entry, var = self._create_molecule_parameter_entry(
                 parameters_frame,
                 field_config['label'], 
@@ -430,7 +479,6 @@ class ControlPanel(ttk.Frame):
         mol_name = mol_name
         active_mol = self._get_active_molecule_object().name
         default_mol = self.islat.user_settings.get("default_active_molecule", "H2O")
- 
 
         if mol_name == default_mol:
             # print(f"Cannot delete {mol_name}!")
@@ -452,6 +500,11 @@ class ControlPanel(ttk.Frame):
         self.mol_visibility.pop(mol_name, None)
         self.plot.plot_renderer.remove_molecule_lines(mol_name)
         del self.islat.molecules_dict[mol_name]
+
+        # Update summed spectrum to reflect molecule removal
+        self.plot.plot_renderer._update_summed_spectrum_with_molecules(
+            self.islat.molecules_dict, self.islat.wave_data
+        )
 
         self.plot.canvas.draw_idle()
 
@@ -673,6 +726,39 @@ class ControlPanel(ttk.Frame):
             self.islat.GUI.plot.on_molecule_visibility_changed(molecule_name, new_visibility)
             print(f"ControlPanel: Triggered selective plot refresh for visibility change")
 
+    def _toggle_all_molecule_visibility(self):
+        """Toggle the visibility of all molecules at once"""
+        if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
+            return
+        
+        # Determine new visibility state: if any molecule is visible, turn all off; otherwise turn all on
+        any_visible = any(mol.is_visible for mol in self.islat.molecules_dict.values())
+        new_visibility = not any_visible
+        
+        # Get all molecule names
+        all_molecule_names = list(self.islat.molecules_dict.keys())
+        
+        # Update visibility for all molecules
+        self.islat.molecules_dict.bulk_set_visibility(new_visibility, all_molecule_names)
+        
+        # Update all visibility checkboxes in the UI
+        for mol_name in all_molecule_names:
+            if mol_name in self.mol_visibility:
+                self.mol_visibility[mol_name].set(new_visibility)
+        
+        # Trigger plot refresh - handle both normal and full spectrum modes
+        if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'plot'):
+            plot = self.islat.GUI.plot
+            # Check if full spectrum mode is active
+            if hasattr(plot, 'is_full_spectrum') and plot.is_full_spectrum:
+                if hasattr(plot, 'full_spectrum_plot') and hasattr(plot, 'full_spectrum_plot_canvas'):
+                    plot.full_spectrum_plot.reload_data()
+                    plot.full_spectrum_plot_canvas.draw_idle()
+            else:
+                plot.update_model_plot()
+        
+        #print(f"ControlPanel: Toggled all molecules to visibility={new_visibility}")
+
     def _on_color_button_clicked(self, mol_name, btn):
         """Handle color button clicks to open color chooser"""
         if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
@@ -700,7 +786,7 @@ class ControlPanel(ttk.Frame):
             if hasattr(selected_mol, '_notify_my_parameter_change'):
                 selected_mol._notify_my_parameter_change('color', old_color, color_code)
 
-    def _get_active_molecule_object(self):
+    def _get_active_molecule_object(self) -> Molecule:
         """Get the active molecule object, similar to MoleculeWindow logic"""
         if not hasattr(self.islat, 'active_molecule') or not self.islat.active_molecule:
             return None
@@ -716,13 +802,13 @@ class ControlPanel(ttk.Frame):
     def _update_active_molecule_changes(self):
         """Update color button and visibility checkbox based on active molecule"""
         active_mol = self._get_active_molecule_object()
-        selected_name = active_mol.name
+        self.selected_name = active_mol.name
         self.mol_frames[active_mol.name].config(bg=self.selected_color)
         if len(active_mol.name) > self.max_name_len + 4:
-            selected_name = active_mol.name[:self.max_name_len] + "..."
+            self.selected_name = active_mol.name[:self.max_name_len] + "..."
             CreateToolTip(self.selected_label, active_mol.name, bg = self.bg_color)
-            
-        self.selected_label.config(text=f"Selected Molecule: {selected_name}")
+
+        self.selected_label.config(text=f"Selected Molecule: {self.selected_name}\nThermal Broadening: {active_mol.thermal_broad:.2g} km/s")
 
     def _update_display_range(self, value_str=None):
         """Update display range bidirectionally between GUI and iSLAT class"""
@@ -752,6 +838,7 @@ class ControlPanel(ttk.Frame):
                     # Only update if the values are actually different to avoid unnecessary callbacks
                     if not hasattr(self.islat, '_display_range') or self.islat._display_range != new_display_range:
                         self.islat.display_range = new_display_range
+                        self.islat.GUI.plot.match_display_range(match_y = True)
             except (ValueError, AttributeError):
                 pass
 
@@ -910,9 +997,24 @@ class ControlPanel(ttk.Frame):
         for property_name, (entry, var) in self._global_parameter_entries.items():
             try:
                 new_value = getattr(self.islat.molecules_dict, property_name, 0.0)
+                # Format the value properly using the field configuration
+                formatted_value = self._format_value(new_value, property_name)
                 current_value = var.get()
-                if str(current_value) != str(new_value):
-                    self._set_var(var, str(new_value))
+                if str(current_value) != str(formatted_value):
+                    self._set_var(var, formatted_value)
+                    # Reset entry styling to normal (not gray/italic)
+                    entry.configure(fg=self.fg_color, font=(self.font.cget("family"), self.font.cget("size"), "roman"))
+            except (AttributeError, TypeError):
+                pass
+        
+        # Also sync the match spectral sampling button state
+        if hasattr(self, '_match_sampling_btn'):
+            try:
+                is_matched = self.islat.molecules_dict.match_spectral_sampling
+                if is_matched:
+                    self._match_sampling_btn.configure(text="✓ Match Pix. Sampling")
+                else:
+                    self._match_sampling_btn.configure(text="Match Pix. Sampling")
             except (AttributeError, TypeError):
                 pass
 

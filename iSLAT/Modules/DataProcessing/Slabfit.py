@@ -37,6 +37,7 @@ from iSLAT.Modules.DataProcessing import Chi2Spectrum
 from iSLAT.Modules.DataTypes import Intensity, Spectrum
 from iSLAT.Modules.DataTypes.Molecule import Molecule
 import iSLAT.Constants as c
+from iSLAT.Modules.FileHandling import line_saves_file_path
 
 class SlabModel:
     """
@@ -53,6 +54,7 @@ class SlabModel:
         -----------
         output_folder : str
             Directory containing the target file for chi-squared evaluation
+            Default: line_saves_file_path from FileHandling module
         mol_object : Molecule
             Molecule object containing molecular data and parameters
         data_field : object, optional
@@ -67,17 +69,40 @@ class SlabModel:
             - intrinsic_line_width: Intrinsic line broadening (km/s)
             - input_filename: Name of the input file in output_folder
             - input_file: Full path to the input file (optional, defaults to 'fit_data.csv')
+            - flux_col_name: Column name for flux measurements
+            - error_col_name: Column name for measurement errors
         """
-        self.output_folder = output_folder
-        self.mol_object = mol_object
         self.data_field = data_field
+
+        try:
+            #self.output_folder = output_folder if output_folder else line_saves_file_path
+            if output_folder:
+                self.output_folder = output_folder
+            else:
+                self.output_folder = line_saves_file_path
+                self.data_field.insert_text(f"Using default output folder: {line_saves_file_path}", clear_after=False)
+        except Exception as e:
+            if self.data_field:
+                self.data_field.insert_text(f"Error setting output folder: {e}", clear_after=False)
+            self.data_field.insert_text(f"Using default folder: {line_saves_file_path}", clear_after=False)
+            self.output_folder = line_saves_file_path
+            
+        self.mol_object = mol_object
         
         # Store override parameters
         self.overrides = kwargs
         
         # Set up file path for chi-squared evaluation
-        self.input_filename = kwargs.get('input_filename', 'fit_data.csv')
-        self.input_file = kwargs.get('input_file', os.path.join(output_folder, self.input_filename))
+        try:
+            self.input_filename = kwargs.get('input_filename', 'fit_data.csv')
+            self.input_file = kwargs.get('input_file', os.path.join(self.output_folder, self.input_filename))
+        except Exception as e:
+            if self.data_field:
+                self.data_field.insert_text(f"Error setting input file: {e}", clear_after=False)
+                #self.data_field.insert_text(f"Using default input file: fit_data.csv", clear_after=False)
+            raise ValueError("Input file must be specified either via 'input_file' or 'input_filename' parameter.")
+            #self.input_filename = 'fit_data.csv'
+            #self.input_file = os.path.join(self.output_folder, self.input_filename)
 
         # Initialize chi-squared evaluator
         self.chi2_evaluator = Chi2Spectrum()
@@ -87,9 +112,12 @@ class SlabModel:
         
         # Load data if file exists
         if os.path.exists(self.input_file):
-            self.chi2_evaluator.load_file(self.input_file)
+            self.chi2_evaluator.load_file(self.input_file, 
+                                          flux_col_name=self._get_parameter('flux_col_name', 'Flux_islat'),
+                                          error_col_name=self._get_parameter('error_col_name', 'Err_data'))
         else:
-            print(f"Warning: Input file {self.input_file} not found. Chi-squared evaluation will not be available.")
+            if self.data_field:
+                self.data_field.insert_text(f"Warning: Input file '{self.input_file}' not found. Chi-squared evaluation may fail.", clear_after=False)
         
     def _get_parameter(self, param_name, default_value=None):
         """
@@ -124,7 +152,9 @@ class SlabModel:
             'model_line_width': self._get_parameter('model_line_width', 
                                                   getattr(self.mol_object, 'model_line_width', c.MODEL_LINE_WIDTH)),
             'intrinsic_line_width': self._get_parameter('intrinsic_line_width', 
-                                                      getattr(self.mol_object, 'broad', c.INTRINSIC_LINE_WIDTH))
+                                                      getattr(self.mol_object, 'broad', c.INTRINSIC_LINE_WIDTH)),
+            'flux_col_name': self._get_parameter('flux_col_name', 'Flux_islat'),
+            'error_col_name': self._get_parameter('error_col_name', 'Err_data'),
         }
         
         self._config_cache['fitting_params'] = params
@@ -295,17 +325,16 @@ class SlabModel:
             f.write(f"Input file: {self.input_file}\n\n")
             f.write(f"Fitted Parameters:\n")
             f.write(f"  Temperature: {fitted_params['temperature']:.2f} K\n")
-            f.write(f"  Column density: {fitted_params['n_mol']:.3e} cm⁻²\n")
+            f.write(f"  Column density: {fitted_params['n_mol']:.3e} cm**-2\n")
             f.write(f"  Radius: {fitted_params['radius']:.3f} au\n\n")
             f.write(f"Fitting Statistics:\n")
-            f.write(f"  Final χ²: {fitted_params['chi2_final']:.6e}\n")
+            f.write(f"  Final chi2: {fitted_params['chi2_final']:.6e}\n")
             f.write(f"  Iterations: {fitted_params['iterations']}\n")
             f.write(f"  Function calls: {fitted_params['function_calls']}\n")
             f.write(f"  Convergence flag: {fitted_params['convergence_flag']}\n")
         
         print(f"Results saved to {output_path}")
         return output_path
-
 
 # Backward compatibility alias
 SlabFit = SlabModel

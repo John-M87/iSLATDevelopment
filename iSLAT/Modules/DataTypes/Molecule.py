@@ -1,7 +1,110 @@
 from typing import Optional, Dict, Any, Tuple, Union, Callable
 import numpy as np
-from collections import defaultdict
+import warnings
+import time
 import threading
+
+# Performance logging
+from iSLAT.Modules.Debug.PerformanceLogger import perf_log, log_timing, PerformanceSection
+
+# ================================
+# Spectral Resampling Functions
+# ================================
+def _make_bins(wavs):
+    """Given a series of wavelength points, find the edges and widths
+    of corresponding wavelength bins."""
+    edges = np.zeros(wavs.shape[0] + 1)
+    widths = np.zeros(wavs.shape[0])
+    edges[0] = wavs[0] - (wavs[1] - wavs[0]) / 2
+    widths[-1] = (wavs[-1] - wavs[-2])
+    edges[-1] = wavs[-1] + (wavs[-1] - wavs[-2]) / 2
+    edges[1:-1] = (wavs[1:] + wavs[:-1]) / 2
+    widths[:-1] = edges[1:-1] - edges[:-2]
+    return edges, widths
+
+def _spectres(new_wavs, spec_wavs, spec_fluxes, fill=0.0, verbose=False):
+    """
+    Flux-conserving spectral resampling onto a new wavelength basis.
+    
+    This properly handles rebinning by integrating flux over bins rather
+    than simple interpolation, which is important for accurate flux 
+    conservation when resampling spectra with different pixel sampling.
+    
+    Parameters
+    ----------
+    new_wavs : numpy.ndarray
+        Array containing the new wavelength sampling desired.
+    spec_wavs : numpy.ndarray
+        1D array containing the current wavelength sampling.
+    spec_fluxes : numpy.ndarray
+        Array containing spectral fluxes at the wavelengths in spec_wavs.
+    fill : float, optional
+        Value to use where new_wavs extends outside spec_wavs range.
+    verbose : bool, optional
+        If True, warn when fill values are used.
+        
+    Returns
+    -------
+    new_fluxes : numpy.ndarray
+        Array of resampled flux values with same length as new_wavs.
+    """
+    old_wavs = spec_wavs
+    old_fluxes = spec_fluxes
+
+    # Make arrays of edge positions and widths for the old and new bins
+    old_edges, old_widths = _make_bins(old_wavs)
+    new_edges, new_widths = _make_bins(new_wavs)
+
+    # Generate output array
+    new_fluxes = np.zeros(new_wavs.shape[0])
+
+    start = 0
+    stop = 0
+
+    # Calculate new flux values, looping over new bins
+    for j in range(new_wavs.shape[0]):
+        # Add filler values if new_wavs extends outside of spec_wavs
+        if (new_edges[j] < old_edges[0]) or (new_edges[j + 1] > old_edges[-1]):
+            new_fluxes[j] = fill
+            if (j == 0 or j == new_wavs.shape[0] - 1) and verbose:
+                warnings.warn(
+                    "spectres: new_wavs contains values outside the range "
+                    "in spec_wavs, new_fluxes will be filled with fill value.",
+                    category=RuntimeWarning,
+                )
+            continue
+
+        # Find first old bin which is partially covered by the new bin
+        while old_edges[start + 1] <= new_edges[j]:
+            start += 1
+
+        # Find last old bin which is partially covered by the new bin
+        while old_edges[stop + 1] < new_edges[j + 1]:
+            stop += 1
+
+        # If new bin is fully inside an old bin start and stop are equal
+        if stop == start:
+            new_fluxes[j] = old_fluxes[start]
+        else:
+            # Multiply the first and last old bin widths by partial coverage factor
+            start_factor = ((old_edges[start + 1] - new_edges[j])
+                            / (old_edges[start + 1] - old_edges[start]))
+            end_factor = ((new_edges[j + 1] - old_edges[stop])
+                          / (old_edges[stop + 1] - old_edges[stop]))
+
+            # Temporarily adjust widths for partial bins
+            old_widths[start] *= start_factor
+            old_widths[stop] *= end_factor
+
+            # Calculate flux-weighted average
+            f_widths = old_widths[start:stop + 1] * old_fluxes[start:stop + 1]
+            new_fluxes[j] = np.sum(f_widths) / np.sum(old_widths[start:stop + 1])
+
+            # Restore old bin widths to their initial values
+            old_widths[start] /= start_factor
+            old_widths[stop] /= end_factor
+
+    return new_fluxes
 
 # Lazy imports with thread safety
 _spectrum_module = None
@@ -31,8 +134,6 @@ def _get_intensity_module():
 import iSLAT.Constants as c
 from .MoleculeLineList import MoleculeLineList
 
-from iSLAT.Modules.FileHandling import absolute_data_files_path
-
 class Molecule:
     """
     Optimized Molecule class with enhanced caching and performance improvements.
@@ -47,14 +148,16 @@ class Molecule:
         't_kin', 'scale_exponent', 'scale_number', 'radius_init', 'n_mol_init',
         '_wavelength_range', '_model_pixel_res', '_model_line_width',
         '_intensity_cache', '_spectrum_cache', '_flux_cache',
-        '_param_hash_cache', '_dirty_flags', '_cache_stats'
+        '_param_hash_cache', '_dirty_flags', '_cache_stats',
+        '_molar_mass', '_thermal_broad',
+        '_intensity_calculation_method'
     )
     
     _molecule_parameter_change_callbacks = []
     _shared_calculation_cache = {}
     _cache_lock = threading.Lock()
     
-    INTENSITY_AFFECTING_PARAMS = {'temp', 'n_mol', 'broad', 'rv_shift', 'wavelength_range'}
+    INTENSITY_AFFECTING_PARAMS = {'temp', 'n_mol', 'broad', 'rv_shift', 'wavelength_range', 'intensity_calculation_method'}
     SPECTRUM_AFFECTING_PARAMS = {'radius', 'distance', 'fwhm', 'rv_shift', 'wavelength_range', 'model_pixel_res'}
     FLUX_AFFECTING_PARAMS = INTENSITY_AFFECTING_PARAMS | SPECTRUM_AFFECTING_PARAMS
     
@@ -137,6 +240,7 @@ class Molecule:
         self._broad = float(getattr(self, '_broad_val', 1.0) or c.INTRINSIC_LINE_WIDTH)
         self._rv_shift = float(getattr(self, '_rv_shift', 0.0) or c.DEFAULT_STELLAR_RV)
 
+        self._intensity_calculation_method = str(kwargs.get('intensity_calculation_method', 'curve_growth'))
         self._wavelength_range = kwargs.get('wavelength_range', c.WAVELENGTH_RANGE)
         self._model_pixel_res = kwargs.get('model_pixel_res', c.MODEL_PIXEL_RESOLUTION)
         self._model_line_width = kwargs.get('model_line_width', c.MODEL_LINE_WIDTH)
@@ -173,18 +277,16 @@ class Molecule:
         return hash((self._temp, self._n_mol, self._broad))
     
     def _compute_spectrum_hash(self):
-        # Get all spectrum-affecting parameters and create hash tuple
-        param_values = []
-        for param in self.SPECTRUM_AFFECTING_PARAMS:
-            if param == 'wavelength_range':
-                param_values.append(tuple(self._wavelength_range))
-            else:
-                param_values.append(getattr(self, f'_{param}'))
-        
-        # Include intensity hash for dependencies
-        param_values.append(self._compute_intensity_hash())
-        
-        return hash(tuple(param_values))
+        wavelength_tuple = tuple(self._wavelength_range) if self._wavelength_range else ()
+        return hash((
+            self._radius,
+            self._distance,
+            self._fwhm,
+            self._rv_shift,
+            wavelength_tuple,
+            self._model_pixel_res,
+            self._compute_intensity_hash()  # Include intensity hash for dependencies
+        ))
 
     def _compute_full_parameter_hash(self):
         return hash((self._compute_spectrum_hash()))
@@ -238,12 +340,14 @@ class Molecule:
         
     def _ensure_lines_loaded(self):
         if self.lines is None:
+            start_time = time.perf_counter()
             if self.filepath:
-                #print("Loading lines from filepath:", self._lines_filepath)
+                print("Loading lines from filepath:", self.filepath)
                 self.lines = MoleculeLineList(molecule_id=self.name, filename=self.filepath)
             else:
                 print("Creating empty line list")
                 self.lines = MoleculeLineList(molecule_id=self.name)
+            log_timing(f"Molecule._ensure_lines_loaded({self.name})", time.perf_counter() - start_time)
     
     def _ensure_intensity_calculated(self):
         if self._dirty_flags['intensity'] or self._intensity_cache['data'] is None:
@@ -255,26 +359,41 @@ class Molecule:
             self._calculate_spectrum_with_caching()
     
     def _calculate_intensity_with_caching(self):
+        section = PerformanceSection(f"Molecule._calculate_intensity({self.name})")
+        section.start()
+        
         current_hash = self._compute_intensity_hash()
         
         if (self._intensity_cache['hash'] == current_hash and 
             self._intensity_cache['data'] is not None):
             self._cache_stats['hits'] += 1
+            section.mark("cache_hit")
+            section.end()
             return
         
+        section.mark("ensure_lines")
         self._ensure_lines_loaded()
         
+        section.mark("create_intensity_obj")
         if self.intensity is None:
             Intensity = _get_intensity_module()
             self.intensity = Intensity(self.lines)
         
         print(f"Calculating intensity for {self.name}: T={self._temp}K, N_mol={self._n_mol:.2e}, dv={self._broad}")
         
+        try:
+            method = self.intensity_calculation_method
+        except AttributeError:
+            method = "curve_growth"
+
+        section.mark("calc_intensity")
         self.intensity.calc_intensity(
             t_kin=self._temp,
             n_mol=self._n_mol,
-            dv=self._broad
+            dv=self._broad,
+            method=method
         )
+        section.mark("calc_complete")
 
         intensity_data = {
             'intensity_array': self.intensity._intensity.copy() if self.intensity._intensity is not None else None,
@@ -295,6 +414,9 @@ class Molecule:
         self._dirty_flags['intensity'] = False
         self._param_hash_cache['intensity'] = current_hash
         self._cache_stats['misses'] += 1
+        
+        section.end()
+        section.get_breakdown(print_output=True)
     
     def _calculate_spectrum_with_caching(self):
         current_hash = self._compute_spectrum_hash()
@@ -315,7 +437,7 @@ class Molecule:
         # Use consistent wavelength range for all molecules to ensure identical grids
         if hasattr(self, '_wavelength_range') and self._wavelength_range is not None:
             global_min, global_max = self._wavelength_range
-            print(f"getting wavelength range: {self._wavelength_range}")
+            #print(f"getting wavelength range: {self._wavelength_range}")
             # Use the exact global range
             spectrum_lam_min = global_min
             spectrum_lam_max = global_max
@@ -447,14 +569,15 @@ class Molecule:
 
             # Interpolate the flux from the shifted source back to the unshifted grid
             # This simulates observing a shifted source and correcting it back to rest frame
-            rv_corrected_flux = np.interp(lam_grid, shifted_source_lam_grid, flux_grid, left=0, right=0)
+            # Use flux-conserving spectral resampling for RV correction
+            rv_corrected_flux = _spectres(lam_grid, shifted_source_lam_grid, flux_grid, fill=0.0)
         else:
             rv_corrected_flux = flux_grid
 
         # Now decide on final output grid
         if interpolate_to_input and wavelength_array is not None:
-            # Interpolate the RV-corrected flux to the input wavelength array
-            interpolated_flux = np.interp(wavelength_array, lam_grid, rv_corrected_flux, left=0, right=0)
+            # Use flux-conserving spectral resampling to match the input wavelength array
+            interpolated_flux = _spectres(wavelength_array, lam_grid, rv_corrected_flux, fill=0.0)
             
             result_wavelengths = wavelength_array.copy()  # Copy to prevent modification
             result_flux = interpolated_flux
@@ -532,7 +655,7 @@ class Molecule:
         self._notify_my_parameter_change('wavelength_range', old_value, self._wavelength_range)
     
     @property
-    def is_visible(self):
+    def is_visible(self) -> bool:
         if isinstance(self._is_visible, str):
             # Convert string representations to proper boolean
             return self._is_visible.lower() in ('true', '1', 'yes', 'on')
@@ -546,6 +669,46 @@ class Molecule:
         else:
             self._is_visible = bool(value)
         self._notify_my_parameter_change('is_visible', old_value, self._is_visible)
+
+    @property
+    def molar_mass(self) -> float:
+        '''Molar mass in g/mol'''
+        if not hasattr(self, '_molar_mass') or self._molar_mass is None:
+            self._ensure_lines_loaded()
+            if self.lines is not None:
+                self._molar_mass = self.lines.molar_mass
+        return self._molar_mass
+
+    @property
+    def thermal_broad(self) -> float:
+        try:
+            return np.sqrt((c.BOLTZMANN_CONSTANT_JOULE * self._temp) / ((self.molar_mass / 1000) / c.AVAGADRO_NUMBER)) / 1000
+        except Exception as e:
+            print("Warning: Unable to compute thermal broadening due to missing or invalid molar mass.\n", f"Error details: {e}")
+            return 0.0
+
+    @property
+    def intensity_calculation_method(self) -> str:
+        try:
+            if self._intensity_calculation_method is None:
+                self._intensity_calculation_method = "curve_growth"
+            return self._intensity_calculation_method
+        except Exception as e:
+            print("Warning: Unable to get intensity calculation method, defaulting to 'curve_growth'.")
+            print(f"Error details: {e}")
+            return "curve_growth"
+
+    @intensity_calculation_method.setter
+    def intensity_calculation_method(self, value: str):
+        old_value = getattr(self, '_intensity_calculation_method', None)
+        try:
+            value = str(value)
+        except Exception as e:
+            print("Warning: Unable to set intensity calculation method, defaulting to 'curve_growth'.")
+            print(f"Error details: {e}")
+            value = "curve_growth"
+        self._intensity_calculation_method = value
+        self._notify_my_parameter_change('intensity_calculation_method', old_value, self._intensity_calculation_method)
 
     def bulk_update_parameters(self, parameter_dict: Dict[str, Any], skip_notification: bool = False):
         if not parameter_dict:

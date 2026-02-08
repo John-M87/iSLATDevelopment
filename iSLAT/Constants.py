@@ -9,7 +9,6 @@ Constants.py and IRconstants.py files.
 import numpy as np
 from collections import namedtuple
 
-
 '''__all__ = [
     # Physical constants
     "BOLTZMANN_CONSTANT", "SPEED_OF_LIGHT_CGS", "SPEED_OF_LIGHT_KMS", 
@@ -32,13 +31,15 @@ from collections import namedtuple
     "CENTROID_TOLERANCE"
 ]'''
 
-
 # =============================================================================
 # PHYSICAL CONSTANTS
 # =============================================================================
 
 BOLTZMANN_CONSTANT = 1.3806504e-16
 """Boltzmann constant in erg/K."""
+
+BOLTZMANN_CONSTANT_JOULE = 1.380649e-23
+"""Boltzmann constant in J/K."""
 
 SPEED_OF_LIGHT_CGS = 2.99792458e10
 """Speed of light in cm/s."""
@@ -52,7 +53,8 @@ SPEED_OF_LIGHT_MICRONS = 2.99792458e14
 PLANCK_CONSTANT = 6.62606896e-27
 """Planck constant in erg·s."""
 
-FGAUSS_PREFACTOR = np.sqrt(np.pi) / (2.0 * np.sqrt(np.log(2.0)))
+FGAUSS_PREFACTOR: float = np.sqrt(np.pi) / (2.0 * np.sqrt(np.log(2.0)))
+#FGAUSS_PREFACTOR = np.sqrt(np.log(2.0)/np.pi)
 """Prefactor for opacity and intensity calculations."""
 
 ASTRONOMICAL_UNIT_CM = 1.496e13
@@ -67,8 +69,11 @@ PARSEC_CM = 3.086e18
 PARSEC_CM_ALT = 3.08567758128e18
 """Alternative parsec conversion from parsec to cm."""
 
+AVAGADRO_NUMBER = 6.02214076e23
+"""Avogadro's number in 1/mol."""
+
 PI = np.pi
-"""Mathematical constant π."""
+"""Mathematical constant pi."""
 
 # =============================================================================
 # NAMEDTUPLE FOR BACKWARD COMPATIBILITY
@@ -86,31 +91,29 @@ CONSTANTS = _Constants(
 )
 """Namedtuple containing physical constants for backward compatibility."""
 
-
 # =============================================================================
 # MOLECULAR DATA DEFINITIONS
 # =============================================================================
 
 MOLECULES_DATA = [
-    {"name": "H2O", "file": "HITRANdata/data_Hitran_2020_H2O.par", "label": "H$_2$O"},
-    {"name": "OH",  "file": "HITRANdata/data_Hitran_2020_OH.par",  "label": "OH"},
-    {"name": "HCN", "file": "HITRANdata/data_Hitran_2020_HCN.par", "label": "HCN"},
-    {"name": "C2H2", "file": "HITRANdata/data_Hitran_2020_C2H2.par", "label": "C$_2$H$_2$"},
-    {"name": "CO2", "file": "HITRANdata/data_Hitran_2020_CO2.par", "label": "CO$_2$"},
-    {"name": "CO",  "file": "HITRANdata/data_Hitran_2020_CO.par",  "label": "CO"}
+    {"name": "H2O", "file": "HITRANdata/data_Hitran_2024_H2O.par", "label": "H$_2$O"},
+    {"name": "OH",  "file": "HITRANdata/data_Hitran_2024_OH.par",  "label": "OH"},
+    {"name": "HCN", "file": "HITRANdata/data_Hitran_2024_HCN.par", "label": "HCN"},
+    {"name": "C2H2", "file": "HITRANdata/data_Hitran_2024_C2H2.par", "label": "C$_2$H$_2$"},
+    {"name": "CO2", "file": "HITRANdata/data_Hitran_2024_CO2.par", "label": "CO$_2$"},
+    {"name": "CO",  "file": "HITRANdata/data_Hitran_2024_CO.par",  "label": "CO"}
 ]
 """List of dictionaries containing molecular data with names, file paths, and labels."""
 
 DEFAULT_MOLECULES_DATA = [
-    ("H2O", "HITRANdata/data_Hitran_2020_H2O.par", "H$_2$O"),
-    ("OH", "HITRANdata/data_Hitran_2020_OH.par", "OH"),
-    ("HCN", "HITRANdata/data_Hitran_2020_HCN.par", "HCN"),
-    ("C2H2", "HITRANdata/data_Hitran_2020_C2H2.par", "C$_2$H$_2$"),
-    ("CO2", "HITRANdata/data_Hitran_2020_CO2.par", "CO$_2$"),
-    ("CO", "HITRANdata/data_Hitran_2020_CO.par", "CO")
+    ("H2O", "HITRANdata/data_Hitran_2024_H2O.par", "H$_2$O"),
+    ("OH", "HITRANdata/data_Hitran_2024_OH.par", "OH"),
+    ("HCN", "HITRANdata/data_Hitran_2024_HCN.par", "HCN"),
+    ("C2H2", "HITRANdata/data_Hitran_2024_C2H2.par", "C$_2$H$_2$"),
+    ("CO2", "HITRANdata/data_Hitran_2024_CO2.par", "CO$_2$"),
+    ("CO", "HITRANdata/data_Hitran_2024_CO.par", "CO")
 ]
 """Default molecular data as tuples for backward compatibility."""
-
 
 # =============================================================================
 # DEFAULT MODEL PARAMETERS
