@@ -48,9 +48,9 @@ class TopBar(ResizableFrame):
         self.control_panel = control_panel
 
         # Initialize services for non-GUI logic
-        self.batch_fitting_service = BatchFittingService(islat)
-        self.deblending_service = DeblendingService(islat)
-        self.line_save_service = LineSaveService(islat)
+        self.batch_fitting_service = BatchFittingService()
+        self.deblending_service = DeblendingService()
+        self.line_save_service = LineSaveService()
 
         self.button_frame = tk.Frame(self)
         self.button_frame.grid(row=0, column=1)
@@ -128,7 +128,10 @@ class TopBar(ResizableFrame):
         """Save the currently selected line to the line saves file."""
         # Use service to extract line info
         selected_line_info, error_msg = self.line_save_service.extract_line_info_from_selection(
-            self.main_plot, save_type
+            self.main_plot, save_type,
+            wave_data=self.islat.wave_data,
+            flux_data=self.islat.flux_data,
+            err_data=self.islat.err_data
         )
         
         if error_msg:
@@ -333,7 +336,8 @@ class TopBar(ResizableFrame):
                 spectrum_files=list(spectrum_files),
                 config=self.config,
                 progress_callback=progress_callback,
-                base_output_path=line_saves_file_path
+                base_output_path=line_saves_file_path,
+                get_mole_save_data=self.islat.get_mole_save_data
             )
             
             if plot_grid_list:
@@ -362,6 +366,16 @@ class TopBar(ResizableFrame):
         if not saved_lines_file:
             self.data_field.insert_text("No input line list file configured.\n")
             return None
+        
+        # Default to islat data when not explicitly provided
+        if spectrum_name is None:
+            spectrum_name = getattr(self.islat, 'loaded_spectrum_name', 'unknown')
+        if wavedata is None:
+            wavedata = self.islat.wave_data
+        if fluxdata is None:
+            fluxdata = self.islat.flux_data
+        if err_data is None:
+            err_data = getattr(self.islat, 'err_data', None)
         
         # Progress callback for GUI updates
         def progress_callback(msg):
@@ -454,7 +468,8 @@ class TopBar(ResizableFrame):
             spectrum_files=spectrum_files,
             config=self.config,
             progress_callback=progress_callback,
-            base_output_path=line_saves_file_path
+            base_output_path=line_saves_file_path,
+            get_mole_save_data=self.islat.get_mole_save_data
         )
 
         if plot_grid_list:

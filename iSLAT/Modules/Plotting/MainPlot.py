@@ -94,8 +94,8 @@ class iSLATPlot:
         # Initialize the modular classes
         self.plot_renderer = PlotRenderer(self)
         self.interaction_handler = InteractionHandler(self)
-        self.fitting_engine = FittingEngine(self.islat)
-        self.line_analyzer = LineAnalyzer(self.islat)
+        self.fitting_engine = FittingEngine()
+        self.line_analyzer = LineAnalyzer()
 
         # Set up interaction handler callbacks
         self.interaction_handler.set_span_select_callback(self.onselect)
@@ -961,8 +961,27 @@ class iSLATPlot:
             return None
         
         try:
+            # Build extra kwargs for deblend mode
+            fit_kwargs = dict(xmin=xmin, xmax=xmax, deblend=deblend)
+            if deblend:
+                fit_kwargs.update(
+                    wave_data_full=self.islat.wave_data,
+                    err_data_full=self.islat.err_data,
+                    user_settings=getattr(self.islat, 'user_settings', {}),
+                    active_molecule_fwhm=getattr(self.islat.active_molecule, 'fwhm', None) if getattr(self.islat, 'active_molecule', None) else None,
+                    lines_with_intensity=(
+                        self.islat.active_molecule.intensity.get_lines_in_range_with_intensity(xmin, xmax)
+                        if getattr(self.islat, 'active_molecule', None) and hasattr(self.islat.active_molecule, 'intensity')
+                        else None
+                    ),
+                    line_threshold=(
+                        self.islat.user_settings.get('line_threshold', 0.03)
+                        if getattr(self.islat, 'user_settings', None) else 0.03
+                    )
+                )
+            
             fit_result, fitted_wave, fitted_flux = self.fitting_engine.fit_gaussian_line(
-                x_fit, y_fit, xmin=xmin, xmax=xmax, deblend=deblend
+                x_fit, y_fit, **fit_kwargs
             )
             self.fit_result = fit_result, fitted_wave, fitted_flux
             if update_plot:

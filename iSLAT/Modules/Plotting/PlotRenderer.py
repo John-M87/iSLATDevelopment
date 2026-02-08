@@ -1628,10 +1628,9 @@ class PlotRenderer:
         
         # Iterate through each fit
         for i, (gauss_fit, fitted_wave, fitted_flux) in enumerate(zip(gauss_fits, fitted_waves, fitted_fluxes)):
-            #line = gauss_fit
-            #print(f"Line: {line}")
-            #print(f"Fitted wave: {fitted_wave}")
-            #print(f"Fitted flux: {fitted_flux}")
+            # Skip failed fits where results are None
+            if gauss_fit is None or fitted_wave is None or fitted_flux is None:
+                continue
             
             lam_min = np.min(fitted_wave)
             lam_max = np.max(fitted_wave)
