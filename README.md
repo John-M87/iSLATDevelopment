@@ -1,11 +1,22 @@
-# As of commit [10eec...](https://github.com/John-M87/iSLATTests/commit/10eec425a25fd7973497b52d9acfad376b0c355c) (Made iSLAT installable as a package) you will need to do one of the follow to run the notebooks on this branch:
-- Run ``pip install -e .`` from the project root (i.e. the directory where the `pyproject.toml` is located)
-- Run ``pip install -e git://github.com/John-M87/iSLATTests.git@{ tag name }#egg={ desired egg name }`` (Untested)
-- In the future you will be able to pip install as usual
+# iSLAT v5.02.02
 
-# iSLAT v5.02.02 - beta release
+**iSLAT** (the **i**nteractive **S**pectral-**L**ine **A**nalysis **T**ool) is a python package that provides an interactive interface for the visualization, exploration, and analysis of molecular spectra. Synthetic spectra are made using a simple slab model written by Simon Bruderer and originally described in [Banzatti et al. 2012](https://ui.adsabs.harvard.edu/abs/2012ApJ...745...90B/abstract); the code uses molecular data from [HITRAN](https://hitran.org/) ([Gordon et al. 2022](https://www.sciencedirect.com/science/article/pii/S0022407321004416), [Gordon et al. 2026](https://www.sciencedirect.com/science/article/pii/S0022407326000014?via%3Dihub)). iSLAT has been developed for and tested on spectra at infrared wavelengths as observed at different resolving powers (R = 700-90,000) with: JWST-MIRI, Spitzer-IRS, VLT-CRIRES, IRTF-ISHELL. Examples of these spectra are included for users to practice with the tool functionalities across a range of resolving powers. iSLAT has been built as a flexible tool that should work with one-dimensional molecular spectra observed with other instruments too, provided that some requirements are met (see below). The first public version of iSLAT (version 4) is presented and described in [Jellison et al. 2024](https://ui.adsabs.harvard.edu/abs/2024arXiv240204060J/abstract) and is still accessible in the branch version4-retired. This is the new version of iSLAT (version 5), which includes significant improvements and updates as described in the Wiki. 
 
-### Key updates from v5.00.01:
+## **RECOMMENDED**
+If updating from version 4: clone the new iSLAT in a new folder on your machine, and copy over any save files you may have made with version 4 into the respective folders (e.g. SAVES/ or LINESAVES/ or LINELISTS/). 
+
+## Acknowledgements
+- McCaskill et al., in prep. (version 5) 
+- [Jellison et al. 2024](https://ui.adsabs.harvard.edu/abs/2024arXiv240204060J/abstract) (version 4)
+- [Johnson et al. 2024](https://doi.org/10.5281/zenodo.12167854) (version 4)
+- [Banzatti et al. 2025](https://ui.adsabs.harvard.edu/abs/2025AJ....169..165B/abstract) (if you use the "MIRI_general" or other line lists provided)
+- [LMFIT](https://lmfit.github.io/lmfit-py/index.html) (if you use any of the fitting functions in iSLAT), plus other packages as appropriate.
+
+Please see the new [wiki page](https://github.com/spexod/iSLAT/wiki) for more detailed information!
+
+## Past Updates
+
+### Key updates from v5.01.00:
 - Further improvements in speed and computational efficiency
     - Particular improvements to the fit saved lines to sample function through batch processing
     - Start up speed is now much faster
@@ -19,19 +30,7 @@
 - Added a large number of example Juypter Notebooks showing some of the ways that you can use iSLAT functions without the GUI
 - Made the UserSettings file update when the version number is increased in the default user setting file
 
-## **RECOMMENDED**
-If updating from version 4: clone the new iSLAT in a new folder on your machine, and copy over any save files you may have made with version 4 into the respective folders (e.g. SAVES/ or LINESAVES/ or LINELISTS/). 
-
-## Acknowledgements
-- McCaskill et al., in prep. (version 5) 
-- [Jellison et al. 2024](https://ui.adsabs.harvard.edu/abs/2024arXiv240204060J/abstract) (version 4)
-- [Johnson et al. 2024](https://doi.org/10.5281/zenodo.12167854) (version 4)
-- [Banzatti et al. 2025](https://ui.adsabs.harvard.edu/abs/2025AJ....169..165B/abstract) (if you use the "MIRI_general" line list)
-- [LMFIT](https://lmfit.github.io/lmfit-py/index.html) (if you use any of the fitting functions in iSLAT), plus other packages as appropriate.
-
-## Past Updates
-
-**This is version v5.00.01 - beta release**
+**This is version v5.01.00 - beta release**
 **Key updates from v5.00.00:**
 - Further improvements in speed and computational efficiency.
 - The slab model now accounts for line opacity overlap and mutual saturation, which is particularly important in the case of water ortho-para lines that overlap (see Figure 5 in [Banzatti et al. 2025](https://ui.adsabs.harvard.edu/abs/2025AJ....169..165B/abstract)).
