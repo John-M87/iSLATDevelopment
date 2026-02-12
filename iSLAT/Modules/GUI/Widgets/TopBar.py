@@ -558,7 +558,7 @@ class TopBar(ResizableFrame):
         
         # Create a new window for exporting the spectrum
         export_window = tk.Toplevel(self.master)
-        export_window.title("Export Spectrum")
+        export_window.title("Export Models")
         # Always on top
         export_window.attributes("-topmost", True)
 
