@@ -143,11 +143,20 @@ class PlotRenderer:
         return self._get_theme_value('default_molecule_color', 'blue')
     
     def set_summed_spectrum_visibility(self, visible: bool) -> None:
-        """Toggle visibility of the summed spectrum (gray fill)."""
+        """Toggle visibility of the summed spectrum (gray fill) and update legend."""
         for collection in self.ax1.collections[:]:
             if hasattr(collection, '_islat_summed'):
                 collection.set_visible(visible)
+        
+        # Rebuild the legend to include/exclude the 'Sum' entry
+        self._update_legend(self.ax1)
     
+    def _update_legend(self, ax: "Axes" = None) -> None:
+        """Rebuild the legend, excluding invisible artists.  Delegates to :class:`BasePlot`."""
+        if ax is None:
+            ax = self.ax1
+        BasePlot._update_legend(ax)
+
     def clear_all_plots(self) -> None:
         """Clear all plots and reset stats"""
         self.ax1.clear()
@@ -844,6 +853,10 @@ class PlotRenderer:
         Handle molecule visibility changes with comprehensive PlotRenderer logic.
         Leverages MoleculeDict's advanced caching and visibility management.
         
+        Note: This is called by the *ThreePanelView* for the standard 3-panel
+        layout.  The FullSpectrumView handles visibility changes on its own
+        without going through this method.
+        
         Parameters
         ----------
         molecule_name : str
@@ -858,6 +871,8 @@ class PlotRenderer:
             Currently active molecule for line inspection
         current_selection : Tuple[float, float], optional
             Current wavelength selection range (xmin, xmax)
+        is_full_spectrum : bool
+            Deprecated/ignored — kept for backward compatibility.
         """
         if molecule_name not in molecules_dict:
             debug_config.warning("plot_renderer", f"Molecule {molecule_name} not found in molecules_dict")
@@ -866,9 +881,6 @@ class PlotRenderer:
         #molecule = molecules_dict[molecule_name]
         #print(f"changing plotting of: {molecule}")
         
-        if is_full_spectrum:
-            # For full spectrum output, simply re-render everything
-            self.plot_manager.load_full_spectrum()
         # Handle visibility change using PlotRenderer methods
         if is_visible:
             pass
@@ -891,6 +903,15 @@ class PlotRenderer:
         
         # Update summed spectrum using MoleculeDict's optimized caching system
         self._update_summed_spectrum_with_molecules(molecules_dict, wave_data)
+        
+        # If the summed toggle is off, ensure the newly created summed spectrum is hidden
+        if hasattr(self.plot_manager, 'summed_toggle') and not self.plot_manager.summed_toggle:
+            for collection in self.ax1.collections[:]:
+                if hasattr(collection, '_islat_summed'):
+                    collection.set_visible(False)
+        
+        # Rebuild legend to reflect current visibility state
+        self._update_legend(self.ax1)
 
         # Handle active molecule line inspection update if needed
         if (active_molecule and 

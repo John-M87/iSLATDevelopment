@@ -267,12 +267,30 @@ class BasePlot(ABC):
         if update_legend:
             self._update_legend(ax)
 
-    def _update_legend(self, ax: Axes) -> None:
-        """Add or update the legend on *ax* if there are labelled artists."""
+    @staticmethod
+    def _update_legend(ax: Axes) -> None:
+        """Add or update the legend on *ax*, excluding invisible artists."""
         handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            ncols = 2 if len(handles) > 8 else 1
-            ax.legend(ncols=ncols)
+        # Filter to only visible artists
+        visible_handles = []
+        visible_labels = []
+        for h, l in zip(handles, labels):
+            # ErrorbarContainer and similar containers don't have get_visible()
+            # directly — check the first child artist (the data line) instead.
+            try:
+                is_visible = h.get_visible()
+            except AttributeError:
+                is_visible = h[0].get_visible() if len(h) > 0 else True
+            if is_visible:
+                visible_handles.append(h)
+                visible_labels.append(l)
+        if visible_handles:
+            ncols = 2 if len(visible_handles) > 8 else 1
+            ax.legend(visible_handles, visible_labels, ncols=ncols)
+        else:
+            legend = ax.get_legend()
+            if legend is not None:
+                legend.remove()
 
     def _plot_line_annotations(
         self,

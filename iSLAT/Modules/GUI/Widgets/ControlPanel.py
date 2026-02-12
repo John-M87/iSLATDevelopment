@@ -746,16 +746,10 @@ class ControlPanel(ttk.Frame):
             if mol_name in self.mol_visibility:
                 self.mol_visibility[mol_name].set(new_visibility)
         
-        # Trigger plot refresh - handle both normal and full spectrum modes
+        # Trigger plot refresh — the active view handles both modes
         if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'plot'):
             plot = self.islat.GUI.plot
-            # Check if full spectrum mode is active
-            if hasattr(plot, 'is_full_spectrum') and plot.is_full_spectrum:
-                if hasattr(plot, 'full_spectrum_plot') and hasattr(plot, 'full_spectrum_plot_canvas'):
-                    plot.full_spectrum_plot.reload_data()
-                    plot.full_spectrum_plot_canvas.draw_idle()
-            else:
-                plot.update_model_plot()
+            plot.update_model_plot()
         
         #print(f"ControlPanel: Toggled all molecules to visibility={new_visibility}")
 

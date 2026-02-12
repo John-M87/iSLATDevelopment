@@ -274,40 +274,42 @@ class FullSpectrumPlot:
             # Restore original setting
             self.plot_renderer.render_out = original_render_out
 
+        # Respect summed_toggle: hide summed spectrum if toggled off or no visible molecules
+        summed_hidden = False
+        if hasattr(self.islat_ref, 'GUI') and hasattr(self.islat_ref.GUI, 'plot'):
+            plot_ref = self.islat_ref.GUI.plot
+            if (hasattr(plot_ref, 'summed_toggle') and not plot_ref.summed_toggle) or not self.visible_molecules:
+                summed_hidden = True
+                for ax in self.subplots.values():
+                    for collection in ax.collections[:]:
+                        if hasattr(collection, '_islat_summed'):
+                            collection.set_visible(False)
+
         if hasattr(self, 'legend_subplot') and self.legend_subplot is not None:
-            #self.legend.update()
             pass
-            '''handles, labels = self.legend_subplot.get_legend_handles_labels()
-            if handles:
-                self.legend_subplot.legend()'''
         else:
             # Add legend to first panel
             self.legend_subplot = self.subplots[0]
-            '''self.legend_subplot.legend(
-                self.mol_labels,
-                labelcolor=self.mol_colors,
-                loc='upper center',
-                ncols=9,
-                handletextpad=0.2,
-                bbox_to_anchor=(0.5, 1.4),
-                handlelength=0,
-                fontsize=10,
-                prop={'weight': 'bold'},
-            )'''
         
-        handles, labels = self.legend_subplot.get_legend_handles_labels()
-        if handles:
-            self.legend_subplot.legend(
-                self.mol_labels,
-                labelcolor=self.mol_colors,
-                loc='upper center',
-                ncols=12,
-                handletextpad=0.2,
-                bbox_to_anchor=(0.5, 1.4),
-                handlelength=0,
-                fontsize=10,
-                prop={'weight': 'bold'},
-            )
+        if self.mol_labels:
+            handles, labels = self.legend_subplot.get_legend_handles_labels()
+            if handles:
+                self.legend_subplot.legend(
+                    self.mol_labels,
+                    labelcolor=self.mol_colors,
+                    loc='upper center',
+                    ncols=12,
+                    handletextpad=0.2,
+                    bbox_to_anchor=(0.5, 1.4),
+                    handlelength=0,
+                    fontsize=10,
+                    prop={'weight': 'bold'},
+                )
+        else:
+            # No visible molecules — remove the legend
+            legend = self.legend_subplot.get_legend()
+            if legend is not None:
+                legend.remove()
 
         # Add x-axis label to last panel
         self.subplots[len(self.xlim1) - 1].set_xlabel("Wavelength (μm)")

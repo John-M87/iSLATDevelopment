@@ -135,7 +135,7 @@ class LineListMaker:
         if not self._df.empty:
             lam = self._df["lam"]
             lines.append(
-                f"  λ range : {lam.min():.5f} – {lam.max():.5f} µm  "
+                f"  λ range : {lam.min():.5f} - {lam.max():.5f} µm  "
                 f"({len(self._df)} lines)"
             )
         if self._filters:
