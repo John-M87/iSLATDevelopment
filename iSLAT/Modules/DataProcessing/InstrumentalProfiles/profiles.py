@@ -14,17 +14,14 @@ Adding a new profile
 2. Add it to :data:`PROFILE_REGISTRY` with a unique string key.
 3. The key will automatically appear in the GUI drop-down.
 """
-
 from __future__ import annotations
 
 import numpy as np
 import iSLAT.Constants as c
 
-
 # ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
-
 class InstrumentalProfile:
     """Abstract base class for instrumental LSF profiles.
 
@@ -53,11 +50,9 @@ class InstrumentalProfile:
         """Return FWHM in km/s:  ``c / R(λ)``."""
         return c.SPEED_OF_LIGHT_KMS / self.get_R(wavelength_um)
 
-
 # ---------------------------------------------------------------------------
 # Constant (instrument-independent) profile
 # ---------------------------------------------------------------------------
-
 class ConstantProfile(InstrumentalProfile):
     """Wavelength-independent Gaussian LSF defined by a constant FWHM in km/s.
 
@@ -85,17 +80,15 @@ class ConstantProfile(InstrumentalProfile):
     def get_fwhm_kms(self, wavelength_um: "np.ndarray | float") -> "np.ndarray | float":  # noqa: ARG002
         return self._fwhm_kms
 
-
 # ---------------------------------------------------------------------------
 # JWST MIRI MRS profile
 # ---------------------------------------------------------------------------
-
 class MiriMrsProfile(InstrumentalProfile):
     """Wavelength-dependent LSF for the JWST MIRI Medium-Resolution Spectrometer.
 
     Uses a piecewise-linear fit  ``R = a + b·λ``  for each of the 12 MRS
     sub-bands.  Wavelengths outside all band boundaries (i.e. outside the
-    4.9 – 28.1 µm coverage) return ``np.nan``.
+    4.9 - 28.1 µm coverage) return ``np.nan``.
 
     No constructor arguments are required.
     """
@@ -130,7 +123,7 @@ class MiriMrsProfile(InstrumentalProfile):
         -------
         float or np.ndarray
             Resolving power *R*.  ``np.nan`` for wavelengths outside the
-            MIRI MRS coverage (4.9 – 28.1 µm).
+            MIRI MRS coverage (4.9 - 28.1 µm).
         """
         scalar_input = np.ndim(wavelength_um) == 0
         wave = np.atleast_1d(np.asarray(wavelength_um, dtype=float))
@@ -143,7 +136,6 @@ class MiriMrsProfile(InstrumentalProfile):
         if scalar_input:
             return float(R[0])
         return R
-
 
 # ---------------------------------------------------------------------------
 # Registry — maps string key → profile class

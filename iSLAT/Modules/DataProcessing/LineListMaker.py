@@ -548,6 +548,7 @@ class LineListMaker:
         expr: Union["FilterExpression", Dict[str, Any]],
         *,
         on_error: str = "raise",
+        derived_source: Optional[Callable[[], Any]] = None,
     ) -> "LineListMaker":
         """Apply a two-level boolean expression as a SINGLE filter step.
 
@@ -582,6 +583,11 @@ class LineListMaker:
             all-True; **this is unsafe inside an OR group**, where it widens
             the group to the whole line list.  ``"drop"`` omits it from the
             fold.
+        derived_source : callable, optional
+            Zero-argument provider of a DataFrame of model quantities (line
+            intensity, optical depth) indexed like the current frame.
+            Required only by ``derived`` conditions, which are not
+            self-contained in the line list.
 
         Returns
         -------
@@ -596,7 +602,8 @@ class LineListMaker:
         """
         expr_obj = (expr if isinstance(expr, FilterExpression)
                     else FilterExpression.from_dict(expr))
-        ctx = MaskContext(species=self._species, on_error=on_error)
+        ctx = MaskContext(species=self._species, on_error=on_error,
+                          derived_source=derived_source)
         # Build the mask BEFORE recording: with on_error="raise" as the
         # default, recording first would leave a recorded-but-never-applied
         # entry that re-raises on the next pop_filter / remove_filter.

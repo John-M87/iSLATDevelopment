@@ -26,6 +26,7 @@ from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import (
     has_quantum_schema,
     parse_float_strict,
     row_state_to_condition,
+    split_percent,
     _rows_align,
 )
 
@@ -88,6 +89,122 @@ def test_catalog_core_fields_keep_their_labels_and_order():
 
 def test_catalog_includes_freq():
     assert 'Frequency (Hz)' in [s.label for s in _catalog()]
+
+
+def test_catalog_includes_velocity_separation():
+    assert 'Velocity sep. (km/s)' in [s.label for s in _catalog()]
+
+
+def test_catalog_omits_velocity_separation_without_lam():
+    df = _frame().drop(columns=['lam'])
+    assert 'Velocity sep. (km/s)' not in [
+        s.label for s in build_property_catalog(df, 'H2O')]
+
+
+def test_row_state_velocity_separation_builds_condition():
+    cond, errors = row_state_to_condition(
+        _row('Velocity sep. (km/s)', '≥', '5'), _catalog())
+    assert errors == []
+    assert cond == Condition('velocity_sep', op='ge', min_val=5.0)
+
+
+def test_row_state_velocity_separation_between():
+    cond, _ = row_state_to_condition(
+        _row('Velocity sep. (km/s)', 'between', '0.8', '50'), _catalog())
+    assert cond.kind == 'velocity_sep'
+    assert (cond.min_val, cond.max_val) == (0.8, 50.0)
+
+
+# ---------------------------------------------------------------------------
+# Model quantities (line intensity, optical depth)
+# ---------------------------------------------------------------------------
+
+def _model_catalog():
+    return build_property_catalog(_frame(), 'H2O', derived=('intens', 'tau'))
+
+
+def test_catalog_omits_model_quantities_by_default():
+    labels = [s.label for s in _catalog()]
+    assert 'Line intensity' not in labels
+    assert 'Optical depth (τ)' not in labels
+
+
+def test_catalog_includes_requested_model_quantities():
+    labels = [s.label for s in _model_catalog()]
+    assert 'Line intensity' in labels
+    assert 'Optical depth (τ)' in labels
+
+
+def test_catalog_model_quantities_are_derived_kind():
+    spec = next(s for s in _model_catalog() if s.label == 'Optical depth (τ)')
+    assert spec.kind == 'derived' and spec.field == 'tau'
+
+
+def test_row_state_optical_depth_builds_condition():
+    cond, errors = row_state_to_condition(
+        _row('Optical depth (τ)', '≤', '1'), _model_catalog())
+    assert errors == []
+    assert cond == Condition('derived', field='tau', op='le', max_val=1.0)
+
+
+# ---------------------------------------------------------------------------
+# Percentile operands
+# ---------------------------------------------------------------------------
+
+def test_split_percent():
+    assert split_percent('5%') == ('5', True)
+    assert split_percent(' 5 % ') == ('5', True)
+    assert split_percent('5') == ('5', False)
+    assert split_percent('') == ('', False)
+
+
+def test_row_state_percent_sets_percentile_unit():
+    cond, errors = row_state_to_condition(
+        _row('Line intensity', '≥', '90%'), _model_catalog())
+    assert errors == []
+    assert cond.unit == 'percentile' and cond.min_val == 90.0
+
+
+def test_row_state_percentile_on_a_column_property():
+    cond, _ = row_state_to_condition(
+        _row('Einstein A (s⁻¹)', '≥', '75%'), _catalog())
+    assert cond.unit == 'percentile' and cond.min_val == 75.0
+
+
+def test_row_state_percentile_on_both_bounds():
+    cond, errors = row_state_to_condition(
+        _row('Optical depth (τ)', 'between', '25%', '75%'), _model_catalog())
+    assert errors == []
+    assert cond.unit == 'percentile'
+    assert (cond.min_val, cond.max_val) == (25.0, 75.0)
+
+
+def test_row_state_mixed_percentile_and_absolute_is_an_error():
+    cond, errors = row_state_to_condition(
+        _row('Optical depth (τ)', 'between', '25%', '50'), _model_catalog())
+    assert cond is None
+    assert len(errors) == 1 and "'%' on both bounds" in errors[0]
+
+
+def test_row_state_rank_outside_0_100_is_an_error():
+    cond, errors = row_state_to_condition(
+        _row('Line intensity', '≥', '120%'), _model_catalog())
+    assert cond is None
+    assert len(errors) == 1 and 'between 0 and 100' in errors[0]
+
+
+def test_row_state_percentile_rejected_where_it_is_not_offered():
+    cond, errors = row_state_to_condition(
+        _row('Velocity sep. (km/s)', '≥', '50%'), _catalog())
+    assert cond is None
+    assert len(errors) == 1 and 'not meaningful' in errors[0]
+
+
+def test_row_state_percentile_on_one_sided_le():
+    cond, _ = row_state_to_condition(
+        _row('Line intensity', '≤', '50%'), _model_catalog())
+    assert cond.unit == 'percentile'
+    assert cond.min_val is None and cond.max_val == 50.0
 
 
 def test_catalog_includes_numeric_extras():

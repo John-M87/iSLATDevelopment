@@ -7,6 +7,7 @@ semantics the filter window is built on), vacuous-group dropping, mixed AND/OR
 across groups, serialization round-trips, and the human-readable rendering.
 """
 
+import dataclasses
 import json
 
 import pytest
@@ -23,8 +24,10 @@ from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     describe_expression,
     expression_mask,
     group_mask,
+    nearest_neighbour_separation_kms,
     ops_for_kind,
     validate,
+    velocity_separation_kms,
     _parse_vib_band,
     _vib_perms,
     _vib_perms_up_to,
@@ -187,6 +190,260 @@ class TestConditionMasks:
         d = pd.DataFrame({'lam': [1.0, 2.0, 3.0]}, index=['a', 'b', 'c'])
         m = condition_mask(d, rng('lam', op='ge', lo=2.0), ctx)
         assert m.index.equals(d.index)
+
+
+# ============================================================================
+# Velocity separation to the nearest neighbouring line
+# ============================================================================
+
+class TestVelocitySeparation:
+    """Doppler separation (km/s) from each line to its closest neighbour."""
+
+    @pytest.fixture
+    def blend(self):
+        """Two lines 0.78 km/s apart, plus two far-separated singles."""
+        return pd.DataFrame({'nr': [1, 2, 3, 4],
+                             'lam': [6.5, 6.500017, 12.0, 20.0]})
+
+    def test_helper_matches_doppler_formula(self):
+        assert velocity_separation_kms(6.5, 6.5) == 0.0
+        assert velocity_separation_kms(10.0, 10.1) == pytest.approx(
+            299792.458 * 0.1 / 10.05)
+
+    def test_nearest_neighbour_is_symmetric_for_a_pair(self, blend):
+        sep = nearest_neighbour_separation_kms(blend['lam'])
+        assert sep[0] == pytest.approx(sep[1])
+        assert sep[0] == pytest.approx(0.784, abs=1e-3)
+
+    def test_lone_line_is_infinitely_isolated(self):
+        assert nearest_neighbour_separation_kms([6.5]) == [np.inf]
+
+    def test_ge_keeps_isolated_lines(self, blend, ctx):
+        c = Condition('velocity_sep', op='ge', min_val=5.0)
+        assert list(blend.loc[condition_mask(blend, c, ctx), 'nr']) == [3, 4]
+
+    def test_le_keeps_the_blended_pair(self, blend, ctx):
+        c = Condition('velocity_sep', op='le', max_val=5.0)
+        assert list(blend.loc[condition_mask(blend, c, ctx), 'nr']) == [1, 2]
+
+    def test_between_window_matches_notebook_bounds(self, blend, ctx):
+        c = Condition('velocity_sep', op='between', min_val=0.5, max_val=1.0)
+        assert list(blend.loc[condition_mask(blend, c, ctx), 'nr']) == [1, 2]
+
+    def test_negate_is_the_exact_complement_when_all_lam_are_known(self, blend, ctx):
+        keep = condition_mask(blend, Condition('velocity_sep', op='ge',
+                                               min_val=5.0), ctx)
+        drop = condition_mask(blend, Condition('velocity_sep', op='ge',
+                                               min_val=5.0, negate=True), ctx)
+        assert list(keep) == [not v for v in drop]
+
+    def test_missing_wavelength_excluded_from_both_polarities(self, ctx):
+        d = pd.DataFrame({'nr': [1, 2, 3], 'lam': [6.5, np.nan, 20.0]})
+        c = Condition('velocity_sep', op='ge', min_val=5.0)
+        keep = condition_mask(d, c, ctx)
+        drop = condition_mask(d, dataclasses.replace(c, negate=True), ctx)
+        assert not bool((keep & drop).any())
+        assert list(d.loc[~(keep | drop), 'nr']) == [2]
+
+    def test_no_bound_raises(self, blend, ctx):
+        with pytest.raises(ConditionError, match="has no value"):
+            condition_mask(blend, Condition('velocity_sep'), ctx)
+
+    def test_missing_lam_column_raises(self, ctx):
+        d = pd.DataFrame({'e_up': [1.0, 2.0]})
+        with pytest.raises(ConditionError, match="no 'lam' column"):
+            condition_mask(d, Condition('velocity_sep', op='ge', min_val=1.0), ctx)
+
+    def test_neighbours_come_from_the_whole_frame_not_the_group(self, blend, ctx):
+        """Δv is measured against the line list, not against other conditions."""
+        g = ConditionGroup((rng('lam', op='le', hi=7.0),
+                            Condition('velocity_sep', op='ge', min_val=5.0)),
+                           join='AND')
+        # Lines 1 and 2 blend with each other, so narrowing to λ ≤ 7 must not
+        # make either of them look isolated.
+        assert list(blend.loc[group_mask(blend, g, ctx), 'nr']) == []
+
+    def test_describe_uses_delta_v(self):
+        assert describe_expression(FilterExpression((ConditionGroup((
+            Condition('velocity_sep', op='ge', min_val=5.0),)),))) == 'Δv ≥ 5'
+
+    def test_round_trips_through_serialization(self):
+        expr = FilterExpression((ConditionGroup((
+            Condition('velocity_sep', op='between', min_val=0.8, max_val=50.0),
+        )),))
+        assert FilterExpression.from_dict(json.loads(json.dumps(
+            expr.to_dict()))) == expr
+
+
+# ============================================================================
+# Model quantities (line intensity, optical depth)
+# ============================================================================
+
+class TestDerivedQuantities:
+    """Conditions on values the intensity calculation produces, not columns."""
+
+    @pytest.fixture
+    def lines(self):
+        return pd.DataFrame({'nr': [1, 2, 3, 4],
+                             'lam': [6.5, 8.0, 12.0, 20.0]})
+
+    @pytest.fixture
+    def model(self, lines):
+        return pd.DataFrame({'intens': [1.0, 50.0, 100.0, 0.5],
+                             'tau': [0.01, 0.5, 3.0, np.nan]},
+                            index=lines.index)
+
+    @pytest.fixture
+    def dctx(self, model):
+        return lambda: MaskContext(species='H2O', derived_source=lambda: model)
+
+    def test_optical_depth_upper_bound(self, lines, model, dctx):
+        c = Condition('derived', field='tau', op='le', max_val=1.0)
+        assert list(lines.loc[condition_mask(lines, c, dctx()), 'nr']) == [1, 2]
+
+    def test_intensity_lower_bound(self, lines, dctx):
+        c = Condition('derived', field='intens', op='ge', min_val=50.0)
+        assert list(lines.loc[condition_mask(lines, c, dctx()), 'nr']) == [2, 3]
+
+    def test_missing_model_value_excluded_from_both_polarities(self, lines, dctx):
+        c = Condition('derived', field='tau', op='ge', min_val=0.1)
+        keep = condition_mask(lines, c, dctx())
+        drop = condition_mask(lines, dataclasses.replace(c, negate=True), dctx())
+        assert not bool((keep & drop).any())
+        assert list(lines.loc[~(keep | drop), 'nr']) == [4]
+
+    def test_aligned_by_index_not_position(self, lines, dctx):
+        """A subsampled preview frame must read ITS rows, not the first N."""
+        sub = lines.iloc[::2]
+        c = Condition('derived', field='intens', op='ge', min_val=50.0)
+        assert list(sub.loc[condition_mask(sub, c, dctx()), 'nr']) == [3]
+
+    def test_source_is_invoked_at_most_once(self, lines, model):
+        calls = []
+
+        def source():
+            calls.append(1)
+            return model
+
+        ctx = MaskContext(species='H2O', derived_source=source)
+        g = ConditionGroup((Condition('derived', field='tau', op='ge', min_val=0.0),
+                            Condition('derived', field='intens', op='ge', min_val=0.0)))
+        group_mask(lines, g, ctx)
+        assert len(calls) == 1
+
+    def test_without_a_source_raises(self, lines):
+        c = Condition('derived', field='tau', op='ge', min_val=1.0)
+        with pytest.raises(ConditionError, match="model quantity"):
+            condition_mask(lines, c, MaskContext(species='H2O'))
+
+    def test_unknown_quantity_raises(self, lines, dctx):
+        c = Condition('derived', field='nope', op='ge', min_val=1.0)
+        with pytest.raises(ConditionError, match="not available"):
+            condition_mask(lines, c, dctx())
+
+    def test_misaligned_model_raises_rather_than_mismatching(self, lines, model):
+        shifted = model.set_axis([10, 11, 12, 13])
+        ctx = MaskContext(species='H2O', derived_source=lambda: shifted)
+        c = Condition('derived', field='tau', op='ge', min_val=0.1)
+        with pytest.raises(ConditionError, match="does not line up"):
+            condition_mask(lines, c, ctx)
+
+    def test_source_failure_becomes_condition_error(self, lines):
+        def boom():
+            raise RuntimeError("no intensity")
+
+        c = Condition('derived', field='tau', op='ge', min_val=1.0)
+        with pytest.raises(ConditionError, match="no intensity"):
+            condition_mask(lines, c, MaskContext(species='H2O',
+                                                 derived_source=boom))
+
+    def test_describe_uses_physics_symbols(self):
+        assert describe_expression(FilterExpression((ConditionGroup((
+            Condition('derived', field='tau', op='le', max_val=1.0),)),))) == 'τ ≤ 1'
+
+
+# ============================================================================
+# Percentile bounds
+# ============================================================================
+
+class TestPercentileBounds:
+    """A bound suffixed with % is a percentile rank, not an absolute value."""
+
+    def test_upper_percentile_keeps_the_strongest_lines(self, df, ctx):
+        # a_stein = [1.05e-2, 2.10e-2, 5.00e-3, 3.00e-2, 8.00e-3]; p50 = 1.05e-2.
+        c = Condition('range', field='a_stein', op='ge', min_val=50.0,
+                      unit='percentile')
+        assert lams(df, condition_mask(df, c, ctx)) == [6.5, 12.407, 14.95]
+
+    def test_lower_percentile_keeps_the_weakest_lines(self, df, ctx):
+        c = Condition('range', field='a_stein', op='le', max_val=40.0,
+                      unit='percentile')
+        assert lams(df, condition_mask(df, c, ctx)) == [17.221, 22.5]
+
+    def test_percentile_between_is_an_inner_window(self, df, ctx):
+        c = Condition('range', field='e_up', op='between', min_val=25.0,
+                      max_val=75.0, unit='percentile')
+        assert lams(df, condition_mask(df, c, ctx)) == [12.407, 14.95, 17.221]
+
+    def test_percentile_matches_the_equivalent_absolute_bound(self, df, ctx):
+        pct = condition_mask(df, Condition('range', field='e_up', op='ge',
+                                           min_val=50.0, unit='percentile'), ctx)
+        # The median e_up of the five lines is 3200.
+        absolute = condition_mask(df, rng('e_up', op='ge', lo=3200.0), ctx)
+        assert list(pct) == list(absolute)
+
+    def test_percentile_is_scale_free(self, ctx):
+        """The same rank selects the same rows however the values are scaled."""
+        small = pd.DataFrame({'lam': [1.0, 2.0, 3.0, 4.0],
+                              'e_up': [1.0, 2.0, 3.0, 4.0]})
+        large = small.assign(e_up=small['e_up'] * 1e9)
+        c = Condition('range', field='e_up', op='ge', min_val=50.0,
+                      unit='percentile')
+        assert (list(condition_mask(small, c, ctx))
+                == list(condition_mask(large, c, ctx)) == [False, False, True, True])
+
+    def test_percentile_on_a_model_quantity(self):
+        lines = pd.DataFrame({'nr': [1, 2, 3, 4]})
+        model = pd.DataFrame({'intens': [0.5, 1.0, 50.0, 100.0]},
+                             index=lines.index)
+        ctx = MaskContext(species='H2O', derived_source=lambda: model)
+        c = Condition('derived', field='intens', op='ge', min_val=50.0,
+                      unit='percentile')
+        assert list(lines.loc[condition_mask(lines, c, ctx), 'nr']) == [3, 4]
+
+    def test_percentile_of_an_empty_property_raises(self, ctx):
+        d = pd.DataFrame({'e_up': [np.nan, np.nan]})
+        c = Condition('range', field='e_up', op='ge', min_val=50.0,
+                      unit='percentile')
+        with pytest.raises(ConditionError, match="no values"):
+            condition_mask(d, c, ctx)
+
+    def test_rank_outside_0_100_rejected(self):
+        with pytest.raises(ConditionError, match="between 0 and 100"):
+            Condition('range', field='lam', op='ge', min_val=120.0,
+                      unit='percentile')
+
+    def test_percentile_rejected_for_kinds_that_do_not_offer_it(self):
+        with pytest.raises(ConditionError, match="not meaningful"):
+            Condition('velocity_sep', op='ge', min_val=1.0, unit='percentile')
+
+    def test_unknown_unit_rejected(self):
+        with pytest.raises(ConditionError, match="Unknown unit"):
+            Condition('range', field='lam', op='ge', min_val=1.0, unit='dB')
+
+    def test_describe_marks_the_rank(self):
+        c = Condition('range', field='a_stein', op='ge', min_val=90.0,
+                      unit='percentile')
+        assert describe_expression(
+            FilterExpression((ConditionGroup((c,)),))) == 'A ≥ p90'
+
+    def test_round_trips_through_serialization(self):
+        expr = FilterExpression((ConditionGroup((
+            Condition('derived', field='tau', op='between', min_val=25.0,
+                      max_val=75.0, unit='percentile'),
+        )),))
+        assert FilterExpression.from_dict(json.loads(json.dumps(
+            expr.to_dict()))) == expr
 
 
 # ============================================================================

@@ -43,6 +43,7 @@ import pandas as pd
 
 __all__ = [
     "SCHEMA_VERSION",
+    "C_KM_S",
     "Condition",
     "ConditionError",
     "ConditionGroup",
@@ -55,11 +56,60 @@ __all__ = [
     "expression_mask",
     "fold_masks",
     "group_mask",
+    "nearest_neighbour_separation_kms",
     "ops_for_kind",
     "validate",
+    "velocity_separation_kms",
 ]
 
 SCHEMA_VERSION = 1
+
+#: Speed of light in km/s, for Doppler velocity separations.
+C_KM_S = 299792.458
+
+
+# ---------------------------------------------------------------------------
+# Velocity-separation helpers
+# ---------------------------------------------------------------------------
+
+def velocity_separation_kms(lam1: Any, lam2: Any) -> np.ndarray:
+    """Doppler velocity separation (km/s) between two wavelengths.
+
+    Both arguments are in the same wavelength unit; the result is
+    ``c * |λ1 - λ2| / mean(λ1, λ2)``, so the unit cancels.
+    """
+    a = np.asarray(lam1, dtype=float)
+    b = np.asarray(lam2, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return C_KM_S * np.abs(a - b) / (0.5 * (a + b))
+
+
+def nearest_neighbour_separation_kms(lam: Any) -> np.ndarray:
+    """Velocity separation (km/s) from each line to its closest neighbour.
+
+    A line with no neighbour at all gets ``+inf`` (it is infinitely isolated,
+    so ``Δv ≥ x`` keeps it and ``Δv ≤ x`` does not), and a line whose own
+    wavelength is missing or non-positive gets ``NaN`` so it is excluded from
+    both polarities of every bound.
+    """
+    lam = np.asarray(lam, dtype=float)
+    out = np.full(lam.shape, np.nan, dtype=float)
+    usable = np.isfinite(lam) & (lam > 0)
+    vals = lam[usable]
+    if vals.size == 0:
+        return out
+    if vals.size == 1:
+        out[usable] = np.inf
+        return out
+    order = np.argsort(vals, kind="stable")
+    ordered = vals[order]
+    gaps = velocity_separation_kms(ordered[:-1], ordered[1:])
+    to_left = np.concatenate(([np.inf], gaps))
+    to_right = np.concatenate((gaps, [np.inf]))
+    nearest = np.empty_like(ordered)
+    nearest[order] = np.minimum(to_left, to_right)
+    out[usable] = nearest
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +228,8 @@ class Condition:
     Attributes
     ----------
     kind : str
-        ``"range"``, ``"quantum_label"``, ``"quantum_field"``, ``"vib_band"``,
-        or ``"species"``.
+        ``"range"``, ``"derived"``, ``"velocity_sep"``, ``"quantum_label"``,
+        ``"quantum_field"``, ``"vib_band"``, or ``"species"``.
     field : str
         Column name (``range``) or quantum-field name (``quantum_field``);
         empty otherwise.
@@ -193,6 +243,12 @@ class Condition:
     min_val, max_val : float, optional
         Numeric operands.  ``between`` uses both, ``ge`` uses *min_val*,
         ``le`` uses *max_val*, ``eq`` uses *min_val* for both bounds.
+    unit : str
+        ``""`` (the default) means the bounds are absolute.  ``"percentile"``
+        means each bound is a percentile rank in 0-100, resolved against the
+        property's own distribution across the frame - so ``I ≥ 90`` reads
+        "the strongest 10% of lines".  Only ``range`` and ``derived``
+        support it.
     state : str
         ``"upper"`` reads ``lev_up``; anything else reads ``lev_low``.
     n_modes : int
@@ -215,6 +271,7 @@ class Condition:
     value: Any = None
     min_val: Optional[float] = None
     max_val: Optional[float] = None
+    unit: str = ""
     state: str = "upper"
     n_modes: int = 3
     regex: bool = False
@@ -229,6 +286,22 @@ class Condition:
         # recorded log would then fail to parse back and break summary(),
         # `expression`, and replay.  Making the invalid state unrepresentable
         # is cheaper than defending every consumer.
+        if self.unit not in ("", "percentile"):
+            raise ConditionError(
+                f"Unknown unit {self.unit!r}; expected '' or 'percentile'."
+            )
+        if self.unit == "percentile":
+            if self.kind not in _PERCENTILE_KINDS:
+                raise ConditionError(
+                    f"A percentile is not meaningful for a {self.kind!r} "
+                    f"condition; it is only defined for "
+                    f"{', '.join(sorted(_PERCENTILE_KINDS))}."
+                )
+            for bound in (self.min_val, self.max_val):
+                if bound is not None and not 0.0 <= bound <= 100.0:
+                    raise ConditionError(
+                        f"A percentile must be between 0 and 100, not {bound:g}."
+                    )
         valid = ops_for_kind(self.kind)
         if not valid:
             return  # unknown kind - condition_mask raises with a better message
@@ -332,6 +405,8 @@ class FilterExpression:
 
 _OPS_BY_KIND: Dict[str, Tuple[str, ...]] = {
     "range":         ("between", "ge", "le", "eq"),
+    "derived":       ("between", "ge", "le", "eq"),
+    "velocity_sep":  ("between", "ge", "le", "eq"),
     "quantum_field": ("between", "ge", "le", "eq"),
     "quantum_label": ("contains", "eq", "matches"),
     "vib_band":      ("band",),
@@ -339,6 +414,9 @@ _OPS_BY_KIND: Dict[str, Tuple[str, ...]] = {
 }
 
 _RANGE_OPS = frozenset({"between", "ge", "le", "eq"})
+
+#: Kinds whose bounds may be given as a percentile rank instead of a value.
+_PERCENTILE_KINDS = frozenset({"range", "derived"})
 
 
 def ops_for_kind(kind: str) -> Tuple[str, ...]:
@@ -376,6 +454,28 @@ def _bounds(c: Condition) -> Tuple[Optional[float], Optional[float]]:
     raise ConditionError(f"Operator {c.op!r} is not a numeric range operator.")
 
 
+def _scaled_bounds(c: Condition, values: np.ndarray,
+                   name: str) -> Tuple[Optional[float], Optional[float]]:
+    """Bounds in the units of *values*, resolving a percentile against them.
+
+    A percentile bound is looked up in the property's own distribution over
+    the frame, so ``≥ 90`` keeps the strongest tenth of the lines whatever
+    their absolute scale.  Percentiles are monotonic in their rank, so a
+    ``between`` window survives the conversion in the right order.
+    """
+    lo, hi = _bounds(c)
+    if c.unit != "percentile":
+        return lo, hi
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        raise ConditionError(
+            f"Cannot take a percentile of {name!r}: it has no values in this "
+            f"line list."
+        )
+    return (None if lo is None else float(np.percentile(finite, lo)),
+            None if hi is None else float(np.percentile(finite, hi)))
+
+
 # ---------------------------------------------------------------------------
 # Evaluation context
 # ---------------------------------------------------------------------------
@@ -393,6 +493,11 @@ class MaskContext:
     on_error : str
         ``"raise"`` (default), ``"identity"``, or ``"drop"``.  See
         :func:`group_mask`.
+    derived_source : callable, optional
+        Zero-argument provider of a DataFrame of model quantities (line
+        intensity, optical depth, ...) indexed like the frame being filtered.
+        Invoked at most once per evaluation, because producing it runs the
+        intensity physics; a ``derived`` condition without one raises.
 
     Notes
     -----
@@ -404,9 +509,72 @@ class MaskContext:
 
     species: Optional[str] = None
     on_error: str = "raise"
+    derived_source: Optional[Callable[[], Any]] = _dc_field(
+        default=None, repr=False, compare=False
+    )
     _parse_cache: Dict[str, Dict[str, np.ndarray]] = _dc_field(
         default_factory=dict, repr=False, compare=False
     )
+    _sep_cache: Dict[str, np.ndarray] = _dc_field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _derived_frame: Optional[pd.DataFrame] = _dc_field(
+        default=None, repr=False, compare=False
+    )
+
+    def derived_array(self, df: pd.DataFrame, key: str) -> np.ndarray:
+        """Model quantity *key* for exactly the rows of *df*.
+
+        Aligned by index rather than by position, so a subsampled preview
+        frame or any other row subset reads the matching values instead of
+        the first N of them.
+        """
+        if self._derived_frame is None:
+            if self.derived_source is None:
+                raise ConditionError(
+                    f"{key!r} is a model quantity, which needs a molecule "
+                    f"with computed intensities; none is available here."
+                )
+            try:
+                frame = self.derived_source()
+            except ConditionError:
+                raise
+            except Exception as exc:
+                raise ConditionError(
+                    f"Could not compute model quantities: {exc}") from exc
+            if frame is None:
+                raise ConditionError(
+                    "No model quantities are available for this line list.")
+            self._derived_frame = frame
+        frame = self._derived_frame
+        if key not in getattr(frame, "columns", ()):
+            raise ConditionError(
+                f"Model quantity {key!r} is not available for this line list."
+            )
+        column = frame[key]
+        if not df.index.isin(column.index).all():
+            raise ConditionError(
+                f"Model quantity {key!r} does not line up with this line list."
+            )
+        return column.reindex(df.index).to_numpy(dtype=float)
+
+    def neighbour_separation(self, df: pd.DataFrame) -> np.ndarray:
+        """Nearest-neighbour velocity separation (km/s) for every row of *df*.
+
+        Cached for the same reason the parse cache exists: boolean composition
+        shows every condition the same full baseline frame, so N separation
+        conditions would otherwise trigger N identical sorts of the same
+        wavelength column.
+        """
+        cached = self._sep_cache.get("lam")
+        if cached is not None:
+            return cached
+        if "lam" not in df.columns:
+            raise ConditionError("This line list has no 'lam' column.")
+        sep = nearest_neighbour_separation_kms(
+            pd.to_numeric(df["lam"], errors="coerce").to_numpy())
+        self._sep_cache["lam"] = sep
+        return sep
 
     def parsed_levels(self, df: pd.DataFrame, lev_col: str) -> Dict[str, np.ndarray]:
         """Parse *lev_col* into quantum fields, caching per column."""
@@ -508,17 +676,69 @@ def _mask_range(df: pd.DataFrame, c: Condition, ctx: MaskContext) -> pd.Series:
         raise ConditionError(f"This line list has no {c.field!r} column.")
     s = pd.to_numeric(df[c.field], errors="coerce")
     valid = s.notna()
-    lo, hi = _bounds(c)
-    if lo is None and hi is None:
+    if _bounds(c) == (None, None):
         raise ConditionError(
             f"Condition on {c.field!r} has no value - fill in a bound."
         )
+    lo, hi = _scaled_bounds(c, s.to_numpy(dtype=float), c.field)
     pred = valid.copy()
     if lo is not None:
         pred &= (s >= lo)
     if hi is not None:
         pred &= (s <= hi)
     return _as_mask(_polarity(_as_mask(pred, df.index), valid, c.negate), df.index)
+
+
+def _mask_derived(df: pd.DataFrame, c: Condition, ctx: MaskContext) -> pd.Series:
+    """Numeric range on a model quantity (line intensity, optical depth, ...).
+
+    These are not columns of the line list: they come from the same intensity
+    calculation the population diagram plots, so a filter on them tracks the
+    molecule's current temperature, column density and broadening.
+    """
+    if not c.field:
+        raise ConditionError("Model-quantity condition has no property.")
+    vals = ctx.derived_array(df, c.field)
+    if _bounds(c) == (None, None):
+        raise ConditionError(
+            f"Condition on {c.field!r} has no value - fill in a bound."
+        )
+    lo, hi = _scaled_bounds(c, vals, c.field)
+    valid_arr = np.isfinite(vals)
+    pred_arr = valid_arr.copy()
+    with np.errstate(invalid="ignore"):
+        if lo is not None:
+            pred_arr &= vals >= lo
+        if hi is not None:
+            pred_arr &= vals <= hi
+    valid = _as_mask(valid_arr, df.index)
+    return _as_mask(_polarity(_as_mask(pred_arr, df.index), valid, c.negate),
+                    df.index)
+
+
+def _mask_velocity_sep(df: pd.DataFrame, c: Condition, ctx: MaskContext) -> pd.Series:
+    """Doppler separation (km/s) from each line to its closest neighbour.
+
+    The neighbour search runs over the whole frame the expression is evaluated
+    against, so ``\u0394v \u2265 5`` selects lines that are isolated within the *line
+    list*, not merely within whatever other conditions happen to keep.
+    """
+    lo, hi = _bounds(c)
+    if lo is None and hi is None:
+        raise ConditionError(
+            "Velocity-separation condition has no value - fill in a bound."
+        )
+    sep = ctx.neighbour_separation(df)
+    valid_arr = ~np.isnan(sep)
+    pred_arr = valid_arr.copy()
+    with np.errstate(invalid="ignore"):
+        if lo is not None:
+            pred_arr &= sep >= lo
+        if hi is not None:
+            pred_arr &= sep <= hi
+    valid = _as_mask(valid_arr, df.index)
+    return _as_mask(_polarity(_as_mask(pred_arr, df.index), valid, c.negate),
+                    df.index)
 
 
 def _mask_quantum_label(df: pd.DataFrame, c: Condition, ctx: MaskContext) -> pd.Series:
@@ -638,6 +858,8 @@ def _mask_species(df: pd.DataFrame, c: Condition, ctx: MaskContext) -> pd.Series
 
 _MASK_BUILDERS: Dict[str, Callable[..., pd.Series]] = {
     "range": _mask_range,
+    "derived": _mask_derived,
+    "velocity_sep": _mask_velocity_sep,
     "quantum_label": _mask_quantum_label,
     "quantum_field": _mask_quantum_field,
     "vib_band": _mask_vib_band,
@@ -777,7 +999,7 @@ def validate(df: pd.DataFrame, expr: FilterExpression,
 
 _CONDITION_DEFAULTS: Dict[str, Any] = {
     "field": "", "value": None, "min_val": None,
-    "max_val": None, "state": "upper", "n_modes": 3, "regex": False,
+    "max_val": None, "unit": "", "state": "upper", "n_modes": 3, "regex": False,
     "negate": False, "enabled": True,
 }
 
@@ -827,6 +1049,7 @@ def _cond_from_dict(d: Mapping[str, Any], path: Tuple[int, int] = (-1, -1)) -> C
         value=value,
         min_val=_opt_float(d.get("min_val")),
         max_val=_opt_float(d.get("max_val")),
+        unit=str(d.get("unit", _CONDITION_DEFAULTS["unit"])),
         state=str(d.get("state", _CONDITION_DEFAULTS["state"])),
         n_modes=int(d.get("n_modes", _CONDITION_DEFAULTS["n_modes"])),
         regex=bool(d.get("regex", _CONDITION_DEFAULTS["regex"])),
@@ -882,6 +1105,8 @@ _SYM: Dict[str, str] = {
     "g_up": "g_up",
     "g_low": "g_low",
     "freq": "ν",       # nu
+    "intens": "I",
+    "tau": "τ",
 }
 
 
@@ -892,26 +1117,39 @@ def _fmt_num(val: Optional[float]) -> str:
     return f"{val:g}"
 
 
+def _fmt_bound(val: Optional[float], c: Condition) -> str:
+    """Render a bound, marking a percentile so the reading cannot be misread."""
+    if c.unit == "percentile" and val is not None:
+        return f"p{val:g}"
+    return _fmt_num(val)
+
+
 def describe_condition(c: Condition) -> str:
     """Render one condition the way it will be evaluated."""
     neg = c.negate
-    if c.kind == "range" or c.kind == "quantum_field":
-        if c.kind == "range":
+    if c.kind in ("range", "quantum_field", "velocity_sep", "derived"):
+        if c.kind in ("range", "derived"):
             name = _SYM.get(c.field, c.field)
+        elif c.kind == "velocity_sep":
+            name = "Δv"
         else:
             name = f"{c.field}({'up' if c.state == 'upper' else 'low'})"
         lo, hi = (c.min_val, c.max_val) if c.op == "between" else (None, None)
         if c.op == "between":
-            body = f"{_fmt_num(lo)} ≤ {name} ≤ {_fmt_num(hi)}"
+            body = f"{_fmt_bound(lo, c)} ≤ {name} ≤ {_fmt_bound(hi, c)}"
             return f"not ({body})" if neg else body
         if c.op == "ge":
-            return f"{name} < {_fmt_num(c.min_val)}" if neg else f"{name} ≥ {_fmt_num(c.min_val)}"
+            rel = "<" if neg else "≥"
+            return f"{name} {rel} {_fmt_bound(c.min_val, c)}"
         if c.op == "le":
-            return f"{name} > {_fmt_num(c.max_val)}" if neg else f"{name} ≤ {_fmt_num(c.max_val)}"
+            rel = ">" if neg else "≤"
+            return f"{name} {rel} {_fmt_bound(c.max_val, c)}"
         if c.op == "eq":
             val = c.value if c.kind == "quantum_field" else c.min_val
-            shown = _fmt_num(val) if isinstance(val, (int, float)) else str(val)
-            return f"{name} ≠ {shown}" if neg else f"{name} = {shown}"
+            shown = (_fmt_bound(val, c) if isinstance(val, (int, float))
+                     else str(val))
+            rel = "≠" if neg else "="
+            return f"{name} {rel} {shown}"
     if c.kind == "quantum_label":
         col = "lev_up" if c.state == "upper" else "lev_low"
         pat = "" if c.value is None else str(c.value)

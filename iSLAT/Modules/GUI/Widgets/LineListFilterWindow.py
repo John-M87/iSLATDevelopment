@@ -96,6 +96,8 @@ _DISPLAY_TO_OP: Dict[str, Tuple[str, bool]] = {
 #: Which display operators each condition kind offers, in menu order.
 _DISPLAY_OPS_BY_KIND: Dict[str, Tuple[str, ...]] = {
     "range":         ("between", "not between", "≥", "≤", "=", "≠"),
+    "derived":       ("between", "not between", "≥", "≤", "=", "≠"),
+    "velocity_sep":  ("between", "not between", "≥", "≤", "=", "≠"),
     "quantum_field": ("between", "not between", "≥", "≤", "=", "≠"),
     "quantum_label": ("contains", "does not contain", "=", "≠", "matches regex"),
     "vib_band":      ("is band", "is not band"),
@@ -164,9 +166,46 @@ _CORE_NUMERIC: Tuple[Tuple[str, str, str], ...] = (
      "Filter by transition frequency (Hz)." + _ONE_SIDED_NOTE),
 )
 
-#: The six properties offered by the "Quick add" menu, in the legacy order.
+#: Tooltip for the derived nearest-neighbour velocity-separation property.
+_VELOCITY_SEP_TIP = (
+    "Filter by how far each line sits from its CLOSEST neighbour in the line "
+    "list,\nmeasured as a Doppler velocity separation Δv = c·|Δλ|/λ (km/s).\n"
+    "Use a lower bound to keep well-isolated lines (e.g. ≥ 5 km/s), or an "
+    "upper\nbound to find blended pairs."
+    + _ONE_SIDED_NOTE
+)
+
+#: Suffix explaining the percentile operand, appended to every tip that takes one.
+_PERCENT_NOTE = (
+    "\nAdd '%' to a bound to read it as a percentile of this line list "
+    "instead\nof an absolute value - e.g. '90%' keeps the top tenth, '≤ 50%' "
+    "the lower half."
+)
+
+#: Model quantities, taken from the same intensity calculation the population
+#: diagram plots rather than from any column of the line list.
+_DERIVED: Tuple[Tuple[str, str, str], ...] = (
+    ("intens", "Line intensity",
+     "Filter by the modelled line intensity, exactly as plotted by the "
+     "population\ndiagram.  It follows the molecule's current temperature, "
+     "column density,\nbroadening, radius and distance."
+     + _ONE_SIDED_NOTE + _PERCENT_NOTE),
+    ("tau", "Optical depth (τ)",
+     "Filter by the line-center optical depth τ from the molecule's current "
+     "model.\nUse an upper bound to keep optically thin lines (e.g. ≤ 1)."
+     + _ONE_SIDED_NOTE + _PERCENT_NOTE),
+)
+
+#: Property kinds whose bounds accept a trailing '%' as a percentile rank.
+_PERCENTILE_KINDS: frozenset = frozenset({"range", "derived"})
+
+#: Model-quantity keys, in catalogue order.
+_DERIVED_KEYS: Tuple[str, ...] = tuple(key for key, _, _ in _DERIVED)
+
+#: The properties offered by the "Quick add" menu, in the legacy order.
 QUICK_ADD_KEYS: Tuple[str, ...] = (
-    "lam", "e_up", "e_low", "a_stein", "g_up", "g_low",
+    "lam", "e_up", "e_low", "a_stein", "g_up", "g_low", "velocity_sep",
+    "intens", "tau",
 )
 
 _NON_PROPERTY_COLUMNS = frozenset({
@@ -175,13 +214,18 @@ _NON_PROPERTY_COLUMNS = frozenset({
 
 
 def build_property_catalog(df: pd.DataFrame,
-                           species: Optional[str]) -> List[PropertySpec]:
+                           species: Optional[str],
+                           derived: Sequence[str] = ()) -> List[PropertySpec]:
     """Build the selectable property list for *df* and *species*.
 
     Combines the static core properties, any additional numeric columns the
     frame happens to carry (saved-lines fit results, ``xmin``/``xmax``, ...),
     the raw quantum-label matchers, and the parsed quantum-number fields
     declared by the molecule's schema.
+
+    *derived* names the model quantities the caller can supply (``"intens"``,
+    ``"tau"``).  They are not columns, so a caller with no molecule behind it
+    passes none and they simply do not appear.
 
     The schema is looked up with the same key the evaluator uses, so every
     field offered here is a field that can actually be evaluated.  When only
@@ -195,7 +239,20 @@ def build_property_catalog(df: pd.DataFrame,
     for key, label, tip in _CORE_NUMERIC:
         if key in columns:
             catalog.append(PropertySpec(key=key, label=label, kind="range",
+                                        field=key, editor="num",
+                                        tip=tip + _PERCENT_NOTE))
+
+    # Model quantities: computed by the intensity physics, not read off a column.
+    for key, label, tip in _DERIVED:
+        if key in derived:
+            catalog.append(PropertySpec(key=key, label=label, kind="derived",
                                         field=key, editor="num", tip=tip))
+
+    # Derived, not a column: the Doppler separation to the nearest neighbour.
+    if "lam" in columns:
+        catalog.append(PropertySpec(
+            key="velocity_sep", label="Velocity sep. (km/s)",
+            kind="velocity_sep", editor="num", tip=_VELOCITY_SEP_TIP))
 
     # Extra numeric columns (e.g. xmin/xmax, saved-line fit results)
     for col in sorted(c for c in columns if c not in _NON_PROPERTY_COLUMNS):
@@ -203,7 +260,7 @@ def build_property_catalog(df: pd.DataFrame,
             catalog.append(PropertySpec(
                 key=col, label=col, kind="range", field=col, editor="num",
                 tip=f"Filter by the {col!r} column of this line list."
-                    + _ONE_SIDED_NOTE))
+                    + _ONE_SIDED_NOTE + _PERCENT_NOTE))
 
     # Raw quantum-label matching
     for state, col, label in (("upper", "lev_up", "Quantum lev_up"),
@@ -294,6 +351,14 @@ def parse_float_strict(text: str) -> Tuple[Optional[float], Optional[str]]:
         return None, f"{text!r} is not a number."
 
 
+def split_percent(text: str) -> Tuple[str, bool]:
+    """Strip a trailing ``%`` from an operand, reporting whether one was there."""
+    text = (text or "").strip()
+    if text.endswith("%"):
+        return text[:-1].strip(), True
+    return text, False
+
+
 def _spec_by_label(catalog: Sequence[PropertySpec],
                    label: str) -> Optional[PropertySpec]:
     """Look a property spec up by its display label."""
@@ -343,11 +408,20 @@ def row_state_to_condition(state: Mapping[str, Any],
 
     if spec.editor == "num" and not (spec.kind == "quantum_field" and op == "eq"):
         lo_txt, hi_txt = (v1, v2) if two_operand else (v1, "")
+        lo_txt, lo_pct = split_percent(lo_txt)
+        hi_txt, hi_pct = split_percent(hi_txt)
         lo, err_lo = parse_float_strict(lo_txt)
         hi, err_hi = parse_float_strict(hi_txt)
         for err in (err_lo, err_hi):
             if err:
                 errors.append(f"{label}: {err}")
+        if lo_pct != hi_pct and lo_txt and hi_txt:
+            errors.append(f"{label}: use '%' on both bounds or on neither.")
+        if (lo_pct or hi_pct) and spec.kind not in _PERCENTILE_KINDS:
+            errors.append(f"{label}: a percentile is not meaningful here.")
+        elif (lo_pct or hi_pct) and any(
+                b is not None and not 0.0 <= b <= 100.0 for b in (lo, hi)):
+            errors.append(f"{label}: a percentile must be between 0 and 100.")
         if errors:
             return None, errors
         if op == "le" and not two_operand:
@@ -356,7 +430,9 @@ def row_state_to_condition(state: Mapping[str, Any],
         if lo is None and hi is None:
             return None, errors
         return Condition(kind=spec.kind, field=spec.field, op=op,
-                         min_val=lo, max_val=hi, state=spec.state,
+                         min_val=lo, max_val=hi,
+                         unit="percentile" if (lo_pct or hi_pct) else "",
+                         state=spec.state,
                          negate=negate, enabled=enabled), errors
 
     # Everything else is operand-as-text: quantum labels, an exact quantum
@@ -523,7 +599,9 @@ class _ConditionRow(ttk.Frame):
 
         self._v2 = ttk.Entry(self, textvariable=self.v2_var, width=10)
         self._v2.grid(row=0, column=5, padx=2, pady=1)
-        CreateToolTip(self._v2, "Maximum value (inclusive).")
+        CreateToolTip(self._v2,
+                      "Maximum value (inclusive).\n"
+                      "Add '%' to read it as a percentile of this line list.")
 
         self._modes = ttk.Spinbox(self, from_=2, to=6, width=3,
                                   textvariable=self.modes_var,
@@ -682,6 +760,9 @@ class _ConditionRow(ttk.Frame):
         self._v1_tip.text = ("Minimum value (inclusive)." if two else
                              "Maximum value (inclusive)." if display_op == "≤" else
                              "Value.")
+        if kind in _PERCENTILE_KINDS:
+            self._v1_tip.text += ("\nAdd '%' to read it as a percentile of "
+                                  "this line list.")
         if editor == "band":
             self._modes.grid()
         else:
@@ -951,8 +1032,11 @@ class LineListFilterWindow(tk.Toplevel):
         self._maker = LineListMaker(line_list)
         self._baseline_id = self._baseline_fingerprint()
         self._total_lines = len(self._maker)
+        self._derived_cache: Optional[pd.DataFrame] = None
+        self._derived_id: Optional[Tuple] = None
         self._catalog = build_property_catalog(self._maker.original_df,
-                                               self._maker.species)
+                                               self._maker.species,
+                                               derived=_DERIVED_KEYS)
 
         self._group_rows: List[_GroupRow] = []
         self._separators: List[ttk.Label] = []
@@ -1230,6 +1314,49 @@ class LineListFilterWindow(tk.Toplevel):
         return [g.to_state() for g in self._group_rows]
 
     # ------------------------------------------------------------------
+    # Model quantities (line intensity, optical depth)
+    # ------------------------------------------------------------------
+    def _model_fingerprint(self) -> Tuple:
+        """What the model quantities depend on, beyond the line list itself.
+
+        The molecule's parameters can be edited in the control panel while
+        this window is open, and τ and the intensity follow them, so a filter
+        on either must be re-evaluated rather than served from a stale cache.
+        """
+        mol = self.mol_obj
+        return (self._baseline_id,) + tuple(
+            getattr(mol, attr, None)
+            for attr in ("temp", "n_mol", "broad", "radius", "distance")
+        )
+
+    def _derived_frame(self) -> pd.DataFrame:
+        """Model quantities for the filter's rows, recomputed only when stale.
+
+        Indexed like ``LineListMaker.original_df`` so any row subset - the
+        subsampled preview included - selects the matching values.
+        """
+        fingerprint = self._model_fingerprint()
+        if self._derived_cache is not None and self._derived_id == fingerprint:
+            return self._derived_cache
+        data, error = self._full_population_data()
+        if data is None:
+            raise ConditionError(error or
+                                 "No model data is available for this molecule.")
+        base = self._maker.original_df
+        columns = {key: np.asarray(data[key], dtype=float)
+                   for key in _DERIVED_KEYS
+                   if data.get(key) is not None}
+        frame = pd.DataFrame(columns, index=base.index)
+        self._derived_cache = frame
+        self._derived_id = fingerprint
+        return frame
+
+    def _mask_context(self) -> MaskContext:
+        """The evaluation context every pass of this window must share."""
+        return MaskContext(species=self._maker.species,
+                           derived_source=self._derived_frame)
+
+    # ------------------------------------------------------------------
     # Live preview
     # ------------------------------------------------------------------
     def _schedule_preview(self, *_args) -> None:
@@ -1271,7 +1398,7 @@ class LineListFilterWindow(tk.Toplevel):
             return
 
         base = self._maker.original_df
-        ctx = MaskContext(species=self._maker.species)
+        ctx = self._mask_context()
         base, prefix = self._preview_frame(base)
 
         masks: List[pd.Series] = []
@@ -1577,7 +1704,7 @@ class LineListFilterWindow(tk.Toplevel):
             self._refresh_status()
             return
 
-        ctx = MaskContext(species=self._maker.species)
+        ctx = self._mask_context()
         problems = validate(self._maker.original_df, expr, ctx)
         if problems:
             states = self._group_states()
@@ -1597,7 +1724,8 @@ class LineListFilterWindow(tk.Toplevel):
 
         self._maker.reset()
         try:
-            self._maker.filter_expression(expr)
+            self._maker.filter_expression(expr,
+                                          derived_source=self._derived_frame)
         except ConditionError as exc:
             self._maker.reset()
             messagebox.showerror("Invalid Filter", str(exc), parent=self)
@@ -1656,8 +1784,11 @@ class LineListFilterWindow(tk.Toplevel):
         self._maker = LineListMaker(line_list)
         self._baseline_id = self._baseline_fingerprint()
         self._total_lines = len(self._maker)
+        self._derived_cache = None
+        self._derived_id = None
         self._catalog = build_property_catalog(self._maker.original_df,
-                                               self._maker.species)
+                                               self._maker.species,
+                                               derived=_DERIVED_KEYS)
         self._last_mask = None
         for group in self._group_rows:
             for row in group.rows:
