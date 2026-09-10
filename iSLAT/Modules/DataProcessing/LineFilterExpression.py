@@ -244,11 +244,13 @@ class Condition:
         Numeric operands.  ``between`` uses both, ``ge`` uses *min_val*,
         ``le`` uses *max_val*, ``eq`` uses *min_val* for both bounds.
     unit : str
-        ``""`` (the default) means the bounds are absolute.  ``"percentile"``
-        means each bound is a percentile rank in 0-100, resolved against the
-        property's own distribution across the frame - so ``I ≥ 90`` reads
-        "the strongest 10% of lines".  Only ``range`` and ``derived``
-        support it.
+        How the bounds are read.  ``""`` (the default) means absolute values.
+        ``"percent"`` makes each bound a percentage of the property's largest
+        value across the frame - so ``I ≥ 5%`` reads "at least a twentieth of
+        the brightest line".  ``"percentile"`` makes each bound a rank in
+        0-100 within the property's own distribution - so ``I ≥ p90`` reads
+        "the strongest tenth of the lines".  Only ``range`` and ``derived``
+        support either.
     state : str
         ``"upper"`` reads ``lev_up``; anything else reads ``lev_low``.
     n_modes : int
@@ -286,21 +288,27 @@ class Condition:
         # recorded log would then fail to parse back and break summary(),
         # `expression`, and replay.  Making the invalid state unrepresentable
         # is cheaper than defending every consumer.
-        if self.unit not in ("", "percentile"):
+        if self.unit not in ("", "percent", "percentile"):
             raise ConditionError(
-                f"Unknown unit {self.unit!r}; expected '' or 'percentile'."
+                f"Unknown unit {self.unit!r}; expected '', 'percent' or "
+                f"'percentile'."
             )
-        if self.unit == "percentile":
-            if self.kind not in _PERCENTILE_KINDS:
+        if self.unit:
+            if self.kind not in _RELATIVE_KINDS:
                 raise ConditionError(
-                    f"A percentile is not meaningful for a {self.kind!r} "
+                    f"A relative bound is not meaningful for a {self.kind!r} "
                     f"condition; it is only defined for "
-                    f"{', '.join(sorted(_PERCENTILE_KINDS))}."
+                    f"{', '.join(sorted(_RELATIVE_KINDS))}."
                 )
+            # A percentile above 100 has no rank to look up; a percentage
+            # above it is merely a bound nothing reaches, which is legal.
+            ceiling = 100.0 if self.unit == "percentile" else float("inf")
             for bound in (self.min_val, self.max_val):
-                if bound is not None and not 0.0 <= bound <= 100.0:
+                if bound is not None and not 0.0 <= bound <= ceiling:
+                    limit = ("between 0 and 100" if ceiling == 100.0
+                             else "0 or more")
                     raise ConditionError(
-                        f"A percentile must be between 0 and 100, not {bound:g}."
+                        f"A {self.unit} bound must be {limit}, not {bound:g}."
                     )
         valid = ops_for_kind(self.kind)
         if not valid:
@@ -415,8 +423,8 @@ _OPS_BY_KIND: Dict[str, Tuple[str, ...]] = {
 
 _RANGE_OPS = frozenset({"between", "ge", "le", "eq"})
 
-#: Kinds whose bounds may be given as a percentile rank instead of a value.
-_PERCENTILE_KINDS = frozenset({"range", "derived"})
+#: Kinds whose bounds may be given relative to the property's own values.
+_RELATIVE_KINDS = frozenset({"range", "derived"})
 
 
 def ops_for_kind(kind: str) -> Tuple[str, ...]:
@@ -456,24 +464,35 @@ def _bounds(c: Condition) -> Tuple[Optional[float], Optional[float]]:
 
 def _scaled_bounds(c: Condition, values: np.ndarray,
                    name: str) -> Tuple[Optional[float], Optional[float]]:
-    """Bounds in the units of *values*, resolving a percentile against them.
+    """Bounds in the units of *values*, resolving a relative bound against them.
 
-    A percentile bound is looked up in the property's own distribution over
-    the frame, so ``≥ 90`` keeps the strongest tenth of the lines whatever
-    their absolute scale.  Percentiles are monotonic in their rank, so a
-    ``between`` window survives the conversion in the right order.
+    ``"percent"`` scales by the largest value present, so ``≥ 5%`` follows the
+    brightest line however many faint ones surround it.  ``"percentile"``
+    looks the bound up as a rank in the distribution, so ``≥ p90`` always
+    keeps a tenth of the lines however they are spread.  Both are monotonic in
+    their operand, so a ``between`` window survives the conversion in order.
     """
     lo, hi = _bounds(c)
-    if c.unit != "percentile":
+    if not c.unit:
         return lo, hi
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         raise ConditionError(
-            f"Cannot take a percentile of {name!r}: it has no values in this "
+            f"Cannot take a {c.unit} of {name!r}: it has no values in this "
             f"line list."
         )
-    return (None if lo is None else float(np.percentile(finite, lo)),
-            None if hi is None else float(np.percentile(finite, hi)))
+    if c.unit == "percentile":
+        convert = lambda rank: float(np.percentile(finite, rank))  # noqa: E731
+    else:
+        peak = float(finite.max())
+        if peak <= 0:
+            raise ConditionError(
+                f"Cannot take a percentage of {name!r}: its largest value in "
+                f"this line list is not positive."
+            )
+        convert = lambda pct: pct * peak / 100.0  # noqa: E731
+    return (None if lo is None else convert(lo),
+            None if hi is None else convert(hi))
 
 
 # ---------------------------------------------------------------------------
@@ -1118,10 +1137,10 @@ def _fmt_num(val: Optional[float]) -> str:
 
 
 def _fmt_bound(val: Optional[float], c: Condition) -> str:
-    """Render a bound, marking a percentile so the reading cannot be misread."""
-    if c.unit == "percentile" and val is not None:
-        return f"p{val:g}"
-    return _fmt_num(val)
+    """Render a bound so a relative one cannot be read as an absolute value."""
+    if val is None or not c.unit:
+        return _fmt_num(val)
+    return f"p{val:g}" if c.unit == "percentile" else f"{val:g}%"
 
 
 def describe_condition(c: Condition) -> str:
@@ -1134,22 +1153,25 @@ def describe_condition(c: Condition) -> str:
             name = "Δv"
         else:
             name = f"{c.field}({'up' if c.state == 'upper' else 'low'})"
+        # Written once at the end rather than after every bound, so a
+        # `between` reading stays short enough to take in at a glance.
+        tail = " of max" if c.unit == "percent" else ""
         lo, hi = (c.min_val, c.max_val) if c.op == "between" else (None, None)
         if c.op == "between":
-            body = f"{_fmt_bound(lo, c)} ≤ {name} ≤ {_fmt_bound(hi, c)}"
+            body = f"{_fmt_bound(lo, c)} ≤ {name} ≤ {_fmt_bound(hi, c)}{tail}"
             return f"not ({body})" if neg else body
         if c.op == "ge":
             rel = "<" if neg else "≥"
-            return f"{name} {rel} {_fmt_bound(c.min_val, c)}"
+            return f"{name} {rel} {_fmt_bound(c.min_val, c)}{tail}"
         if c.op == "le":
             rel = ">" if neg else "≤"
-            return f"{name} {rel} {_fmt_bound(c.max_val, c)}"
+            return f"{name} {rel} {_fmt_bound(c.max_val, c)}{tail}"
         if c.op == "eq":
             val = c.value if c.kind == "quantum_field" else c.min_val
             shown = (_fmt_bound(val, c) if isinstance(val, (int, float))
                      else str(val))
             rel = "≠" if neg else "="
-            return f"{name} {rel} {shown}"
+            return f"{name} {rel} {shown}{tail}"
     if c.kind == "quantum_label":
         col = "lev_up" if c.state == "upper" else "lev_low"
         pat = "" if c.value is None else str(c.value)

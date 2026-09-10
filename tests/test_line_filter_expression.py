@@ -21,6 +21,7 @@ from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     FilterExpression,
     MaskContext,
     condition_mask,
+    describe_condition,
     describe_expression,
     expression_mask,
     group_mask,
@@ -367,7 +368,7 @@ class TestDerivedQuantities:
 # ============================================================================
 
 class TestPercentileBounds:
-    """A bound suffixed with % is a percentile rank, not an absolute value."""
+    """A ``percentile`` bound is a rank in the property's own distribution."""
 
     def test_upper_percentile_keeps_the_strongest_lines(self, df, ctx):
         # a_stein = [1.05e-2, 2.10e-2, 5.00e-3, 3.00e-2, 8.00e-3]; p50 = 1.05e-2.
@@ -441,6 +442,94 @@ class TestPercentileBounds:
         expr = FilterExpression((ConditionGroup((
             Condition('derived', field='tau', op='between', min_val=25.0,
                       max_val=75.0, unit='percentile'),
+        )),))
+        assert FilterExpression.from_dict(json.loads(json.dumps(
+            expr.to_dict()))) == expr
+
+
+# ============================================================================
+# Percent-of-maximum bounds
+# ============================================================================
+
+class TestPercentOfMaxBounds:
+    """A ``percent`` bound is a fraction of the property's largest value."""
+
+    def test_lower_bound_follows_the_strongest_line(self, df, ctx):
+        # a_stein peaks at 3e-2, so 50% is 1.5e-2.
+        c = Condition('range', field='a_stein', op='ge', min_val=50.0,
+                      unit='percent')
+        assert lams(df, condition_mask(df, c, ctx)) == [6.5, 14.95]
+
+    def test_between_is_a_window_below_the_peak(self, df, ctx):
+        # 20%..50% of 3e-2 is 6e-3..1.5e-2.
+        c = Condition('range', field='a_stein', op='between', min_val=20.0,
+                      max_val=50.0, unit='percent')
+        assert lams(df, condition_mask(df, c, ctx)) == [12.407, 22.5]
+
+    def test_matches_the_equivalent_absolute_bound(self, df, ctx):
+        pct = condition_mask(df, Condition('range', field='e_up', op='ge',
+                                           min_val=50.0, unit='percent'), ctx)
+        # e_up peaks at 8000, so 50% is 4000.
+        absolute = condition_mask(df, rng('e_up', op='ge', lo=4000.0), ctx)
+        assert list(pct) == list(absolute)
+
+    def test_differs_from_the_same_number_as_a_percentile(self, df, ctx):
+        """The two units answer different questions and must not be conflated."""
+        of_max = condition_mask(df, Condition('range', field='a_stein', op='ge',
+                                              min_val=50.0, unit='percent'), ctx)
+        rank = condition_mask(df, Condition('range', field='a_stein', op='ge',
+                                            min_val=50.0, unit='percentile'), ctx)
+        assert list(of_max) != list(rank)
+
+    def test_survives_a_skewed_distribution(self, ctx):
+        """One bright line and many faint ones: % of max keeps only the bright."""
+        d = pd.DataFrame({'lam': [1.0, 2.0, 3.0, 4.0],
+                          'e_up': [1.0, 1.0, 1.0, 1000.0]})
+        c = Condition('range', field='e_up', op='ge', min_val=10.0,
+                      unit='percent')
+        assert list(d.loc[condition_mask(d, c, ctx), 'lam']) == [4.0]
+
+    def test_on_a_model_quantity(self):
+        lines = pd.DataFrame({'nr': [1, 2, 3, 4]})
+        model = pd.DataFrame({'intens': [0.5, 1.0, 50.0, 100.0]},
+                             index=lines.index)
+        ctx = MaskContext(species='H2O', derived_source=lambda: model)
+        c = Condition('derived', field='intens', op='ge', min_val=10.0,
+                      unit='percent')
+        assert list(lines.loc[condition_mask(lines, c, ctx), 'nr']) == [3, 4]
+
+    def test_above_100_is_allowed_and_simply_matches_nothing(self, df, ctx):
+        c = Condition('range', field='a_stein', op='ge', min_val=150.0,
+                      unit='percent')
+        assert lams(df, condition_mask(df, c, ctx)) == []
+
+    def test_negative_percentage_rejected(self):
+        with pytest.raises(ConditionError, match="0 or more"):
+            Condition('range', field='lam', op='ge', min_val=-5.0,
+                      unit='percent')
+
+    def test_without_a_positive_peak_raises(self, ctx):
+        d = pd.DataFrame({'e_up': [-1.0, -2.0]})
+        c = Condition('range', field='e_up', op='ge', min_val=10.0,
+                      unit='percent')
+        with pytest.raises(ConditionError, match="not positive"):
+            condition_mask(d, c, ctx)
+
+    def test_describe_marks_the_reference(self):
+        c = Condition('range', field='a_stein', op='ge', min_val=5.0,
+                      unit='percent')
+        assert describe_expression(
+            FilterExpression((ConditionGroup((c,)),))) == 'A ≥ 5% of max'
+
+    def test_describe_between_names_the_reference_once(self):
+        c = Condition('derived', field='tau', op='between', min_val=1.0,
+                      max_val=50.0, unit='percent')
+        assert describe_condition(c) == '1% ≤ τ ≤ 50% of max'
+
+    def test_round_trips_through_serialization(self):
+        expr = FilterExpression((ConditionGroup((
+            Condition('derived', field='intens', op='ge', min_val=5.0,
+                      unit='percent'),
         )),))
         assert FilterExpression.from_dict(json.loads(json.dumps(
             expr.to_dict()))) == expr

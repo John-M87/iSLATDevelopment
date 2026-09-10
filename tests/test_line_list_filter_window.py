@@ -26,7 +26,7 @@ from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import (
     has_quantum_schema,
     parse_float_strict,
     row_state_to_condition,
-    split_percent,
+    split_unit,
     _rows_align,
 )
 
@@ -148,61 +148,93 @@ def test_row_state_optical_depth_builds_condition():
 
 
 # ---------------------------------------------------------------------------
-# Percentile operands
+# Relative operands: '5%' of the maximum, 'p90' as a percentile
 # ---------------------------------------------------------------------------
 
-def test_split_percent():
-    assert split_percent('5%') == ('5', True)
-    assert split_percent(' 5 % ') == ('5', True)
-    assert split_percent('5') == ('5', False)
-    assert split_percent('') == ('', False)
+def test_split_unit_percent_of_max():
+    assert split_unit('5%') == ('5', 'percent')
+    assert split_unit(' 5 % ') == ('5', 'percent')
 
 
-def test_row_state_percent_sets_percentile_unit():
+def test_split_unit_percentile():
+    assert split_unit('p90') == ('90', 'percentile')
+    assert split_unit('P90') == ('90', 'percentile')
+    assert split_unit('90%ile') == ('90', 'percentile')
+    assert split_unit('90pct') == ('90', 'percentile')
+
+
+def test_split_unit_absolute():
+    assert split_unit('5') == ('5', '')
+    assert split_unit('') == ('', '')
+    assert split_unit('1e-3') == ('1e-3', '')
+
+
+def test_row_state_percent_of_max_sets_percent_unit():
     cond, errors = row_state_to_condition(
-        _row('Line intensity', '≥', '90%'), _model_catalog())
+        _row('Line intensity', '≥', '5%'), _model_catalog())
+    assert errors == []
+    assert cond.unit == 'percent' and cond.min_val == 5.0
+
+
+def test_row_state_percentile_sets_percentile_unit():
+    cond, errors = row_state_to_condition(
+        _row('Line intensity', '≥', 'p90'), _model_catalog())
     assert errors == []
     assert cond.unit == 'percentile' and cond.min_val == 90.0
 
 
-def test_row_state_percentile_on_a_column_property():
+def test_row_state_relative_bound_on_a_column_property():
     cond, _ = row_state_to_condition(
-        _row('Einstein A (s⁻¹)', '≥', '75%'), _catalog())
-    assert cond.unit == 'percentile' and cond.min_val == 75.0
+        _row('Einstein A (s⁻¹)', '≥', '10%'), _catalog())
+    assert cond.unit == 'percent' and cond.min_val == 10.0
 
 
-def test_row_state_percentile_on_both_bounds():
+def test_row_state_relative_bound_on_both_bounds():
     cond, errors = row_state_to_condition(
-        _row('Optical depth (τ)', 'between', '25%', '75%'), _model_catalog())
+        _row('Optical depth (τ)', 'between', 'p25', 'p75'), _model_catalog())
     assert errors == []
     assert cond.unit == 'percentile'
     assert (cond.min_val, cond.max_val) == (25.0, 75.0)
 
 
-def test_row_state_mixed_percentile_and_absolute_is_an_error():
+def test_row_state_mixed_units_is_an_error():
+    cond, errors = row_state_to_condition(
+        _row('Optical depth (τ)', 'between', 'p25', '50%'), _model_catalog())
+    assert cond is None
+    assert len(errors) == 1 and 'same unit' in errors[0]
+
+
+def test_row_state_relative_and_absolute_mixed_is_an_error():
     cond, errors = row_state_to_condition(
         _row('Optical depth (τ)', 'between', '25%', '50'), _model_catalog())
     assert cond is None
-    assert len(errors) == 1 and "'%' on both bounds" in errors[0]
+    assert len(errors) == 1 and 'same unit' in errors[0]
 
 
 def test_row_state_rank_outside_0_100_is_an_error():
     cond, errors = row_state_to_condition(
-        _row('Line intensity', '≥', '120%'), _model_catalog())
+        _row('Line intensity', '≥', 'p120'), _model_catalog())
     assert cond is None
     assert len(errors) == 1 and 'between 0 and 100' in errors[0]
 
 
-def test_row_state_percentile_rejected_where_it_is_not_offered():
+def test_row_state_percent_above_100_is_allowed():
+    cond, errors = row_state_to_condition(
+        _row('Line intensity', '≥', '150%'), _model_catalog())
+    assert errors == []
+    assert cond.unit == 'percent' and cond.min_val == 150.0
+
+
+def test_row_state_relative_bound_rejected_where_it_is_not_offered():
     cond, errors = row_state_to_condition(
         _row('Velocity sep. (km/s)', '≥', '50%'), _catalog())
     assert cond is None
     assert len(errors) == 1 and 'not meaningful' in errors[0]
 
 
-def test_row_state_percentile_on_one_sided_le():
+def test_row_state_relative_bound_on_one_sided_le():
     cond, _ = row_state_to_condition(
-        _row('Line intensity', '≤', '50%'), _model_catalog())
+        _row('Line intensity', '≤', 'p50'), _model_catalog())
     assert cond.unit == 'percentile'
     assert cond.min_val is None and cond.max_val == 50.0
 

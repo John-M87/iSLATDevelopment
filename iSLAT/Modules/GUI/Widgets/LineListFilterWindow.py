@@ -175,11 +175,12 @@ _VELOCITY_SEP_TIP = (
     + _ONE_SIDED_NOTE
 )
 
-#: Suffix explaining the percentile operand, appended to every tip that takes one.
-_PERCENT_NOTE = (
-    "\nAdd '%' to a bound to read it as a percentile of this line list "
-    "instead\nof an absolute value - e.g. '90%' keeps the top tenth, '≤ 50%' "
-    "the lower half."
+#: Suffix explaining the relative operands, appended to every tip that takes one.
+_RELATIVE_NOTE = (
+    "\nA bound can also be written relative to this line list:\n"
+    "  '5%'  = 5% of the largest value here (≥ 5% keeps lines within a "
+    "factor 20\n          of the strongest).\n"
+    "  'p90' = the 90th percentile (≥ p90 keeps the top tenth of the lines)."
 )
 
 #: Model quantities, taken from the same intensity calculation the population
@@ -189,15 +190,15 @@ _DERIVED: Tuple[Tuple[str, str, str], ...] = (
      "Filter by the modelled line intensity, exactly as plotted by the "
      "population\ndiagram.  It follows the molecule's current temperature, "
      "column density,\nbroadening, radius and distance."
-     + _ONE_SIDED_NOTE + _PERCENT_NOTE),
+     + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
     ("tau", "Optical depth (τ)",
      "Filter by the line-center optical depth τ from the molecule's current "
      "model.\nUse an upper bound to keep optically thin lines (e.g. ≤ 1)."
-     + _ONE_SIDED_NOTE + _PERCENT_NOTE),
+     + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
 )
 
-#: Property kinds whose bounds accept a trailing '%' as a percentile rank.
-_PERCENTILE_KINDS: frozenset = frozenset({"range", "derived"})
+#: Property kinds whose bounds accept a '5%' or 'p90' relative operand.
+_RELATIVE_KINDS: frozenset = frozenset({"range", "derived"})
 
 #: Model-quantity keys, in catalogue order.
 _DERIVED_KEYS: Tuple[str, ...] = tuple(key for key, _, _ in _DERIVED)
@@ -240,7 +241,7 @@ def build_property_catalog(df: pd.DataFrame,
         if key in columns:
             catalog.append(PropertySpec(key=key, label=label, kind="range",
                                         field=key, editor="num",
-                                        tip=tip + _PERCENT_NOTE))
+                                        tip=tip + _RELATIVE_NOTE))
 
     # Model quantities: computed by the intensity physics, not read off a column.
     for key, label, tip in _DERIVED:
@@ -260,7 +261,7 @@ def build_property_catalog(df: pd.DataFrame,
             catalog.append(PropertySpec(
                 key=col, label=col, kind="range", field=col, editor="num",
                 tip=f"Filter by the {col!r} column of this line list."
-                    + _ONE_SIDED_NOTE + _PERCENT_NOTE))
+                    + _ONE_SIDED_NOTE + _RELATIVE_NOTE))
 
     # Raw quantum-label matching
     for state, col, label in (("upper", "lev_up", "Quantum lev_up"),
@@ -351,12 +352,29 @@ def parse_float_strict(text: str) -> Tuple[Optional[float], Optional[str]]:
         return None, f"{text!r} is not a number."
 
 
-def split_percent(text: str) -> Tuple[str, bool]:
-    """Strip a trailing ``%`` from an operand, reporting whether one was there."""
+def split_unit(text: str) -> Tuple[str, str]:
+    """Split an operand into its number text and its unit.
+
+    ``"5%"`` is 5 percent of the property's largest value; ``"p90"`` (or
+    ``"90%ile"``) is the 90th percentile of its distribution; anything else is
+    absolute.  Two visibly different spellings rather than one overloaded
+    ``%`` because the two answer different questions - "a twentieth as bright
+    as the brightest line" and "in the brightest tenth of lines" select wildly
+    different sets, and a reader must not have to guess which was meant.
+
+    Returns ``(number_text, unit)`` where *unit* is ``""``, ``"percent"`` or
+    ``"percentile"``.
+    """
     text = (text or "").strip()
+    lowered = text.lower()
+    for suffix in ("%ile", "pct", "th"):
+        if lowered.endswith(suffix):
+            return text[:-len(suffix)].strip(), "percentile"
+    if lowered.startswith("p") and lowered[1:2].isdigit():
+        return text[1:].strip(), "percentile"
     if text.endswith("%"):
-        return text[:-1].strip(), True
-    return text, False
+        return text[:-1].strip(), "percent"
+    return text, ""
 
 
 def _spec_by_label(catalog: Sequence[PropertySpec],
@@ -408,20 +426,24 @@ def row_state_to_condition(state: Mapping[str, Any],
 
     if spec.editor == "num" and not (spec.kind == "quantum_field" and op == "eq"):
         lo_txt, hi_txt = (v1, v2) if two_operand else (v1, "")
-        lo_txt, lo_pct = split_percent(lo_txt)
-        hi_txt, hi_pct = split_percent(hi_txt)
+        lo_txt, lo_unit = split_unit(lo_txt)
+        hi_txt, hi_unit = split_unit(hi_txt)
         lo, err_lo = parse_float_strict(lo_txt)
         hi, err_hi = parse_float_strict(hi_txt)
         for err in (err_lo, err_hi):
             if err:
                 errors.append(f"{label}: {err}")
-        if lo_pct != hi_pct and lo_txt and hi_txt:
-            errors.append(f"{label}: use '%' on both bounds or on neither.")
-        if (lo_pct or hi_pct) and spec.kind not in _PERCENTILE_KINDS:
-            errors.append(f"{label}: a percentile is not meaningful here.")
-        elif (lo_pct or hi_pct) and any(
+        if lo_unit != hi_unit and lo_txt and hi_txt:
+            errors.append(f"{label}: both bounds must use the same unit.")
+        unit = lo_unit or hi_unit
+        if unit and spec.kind not in _RELATIVE_KINDS:
+            errors.append(f"{label}: a relative bound is not meaningful here.")
+        elif unit == "percentile" and any(
                 b is not None and not 0.0 <= b <= 100.0 for b in (lo, hi)):
             errors.append(f"{label}: a percentile must be between 0 and 100.")
+        elif unit == "percent" and any(
+                b is not None and b < 0.0 for b in (lo, hi)):
+            errors.append(f"{label}: a percentage cannot be negative.")
         if errors:
             return None, errors
         if op == "le" and not two_operand:
@@ -430,8 +452,7 @@ def row_state_to_condition(state: Mapping[str, Any],
         if lo is None and hi is None:
             return None, errors
         return Condition(kind=spec.kind, field=spec.field, op=op,
-                         min_val=lo, max_val=hi,
-                         unit="percentile" if (lo_pct or hi_pct) else "",
+                         min_val=lo, max_val=hi, unit=unit,
                          state=spec.state,
                          negate=negate, enabled=enabled), errors
 
@@ -601,7 +622,8 @@ class _ConditionRow(ttk.Frame):
         self._v2.grid(row=0, column=5, padx=2, pady=1)
         CreateToolTip(self._v2,
                       "Maximum value (inclusive).\n"
-                      "Add '%' to read it as a percentile of this line list.")
+                      "'5%' = 5% of the largest value here; 'p90' = the 90th "
+                      "percentile.")
 
         self._modes = ttk.Spinbox(self, from_=2, to=6, width=3,
                                   textvariable=self.modes_var,
@@ -760,9 +782,9 @@ class _ConditionRow(ttk.Frame):
         self._v1_tip.text = ("Minimum value (inclusive)." if two else
                              "Maximum value (inclusive)." if display_op == "≤" else
                              "Value.")
-        if kind in _PERCENTILE_KINDS:
-            self._v1_tip.text += ("\nAdd '%' to read it as a percentile of "
-                                  "this line list.")
+        if kind in _RELATIVE_KINDS:
+            self._v1_tip.text += ("\n'5%' = 5% of the largest value here; "
+                                  "'p90' = the 90th percentile.")
         if editor == "band":
             self._modes.grid()
         else:
