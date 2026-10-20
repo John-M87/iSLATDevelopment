@@ -380,6 +380,37 @@ class TestResidualSpectrumPlot:
             rsp.model_components[0]["flux"], model * 0.5
         )
 
+    def test_update_panels_inplace_replaces_error_bars(self):
+        """Regression: with residuals shown, cycling a sample kept the old spectrum's error bars.
+
+        The spectrum sub-panels are refreshed through the parent's in-place path, so the errorbar ``LineCollection`` must be replaced along with the data line there too.
+        """
+        wave, flux, err = make_wave_flux(n=200)
+        model = flux.copy()
+        rsp = ResidualSpectrumPlot(wave, flux, model, error_data=err, n_panels=3)
+        rsp.generate_plot()
+
+        new_flux = flux + 0.5
+        new_err = np.full_like(err, 0.05)  # 10x the original 0.005
+        assert rsp.update_data(wave, new_flux, error_data=new_err) is False
+        rsp.update_panels_inplace()
+
+        for idx, (ax_spec, _ax_res) in rsp.subplots.items():
+            obs_lines = [a for a in ax_spec.lines if hasattr(a, "_islat_observed")]
+            obs_colls = [c for c in ax_spec.collections if hasattr(c, "_islat_observed")]
+            assert len(obs_lines) == 1
+            assert len(obs_colls) == 1
+
+            xr = rsp.panels[idx][0].xlim
+            mask = (wave >= xr[0]) & (wave <= xr[1])
+            np.testing.assert_allclose(obs_lines[0].get_ydata(), new_flux[mask])
+            segs = np.asarray(obs_colls[0].get_segments())
+            half = (segs[:, 1, 1] - segs[:, 0, 1]) / 2.0
+            np.testing.assert_allclose(half, 0.05)
+            centre = (segs[:, 1, 1] + segs[:, 0, 1]) / 2.0
+            np.testing.assert_allclose(centre, new_flux[mask])
+        rsp.close()
+
     def test_save(self, tmp_path):
         rsp = self._make_rsp()
         rsp.generate_plot()

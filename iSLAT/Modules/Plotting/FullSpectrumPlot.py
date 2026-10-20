@@ -362,6 +362,61 @@ class FullSpectrumPlot(StackedSpectralPanel):
             )
 
     # ------------------------------------------------------------------
+    def _spectrum_panel_for_row(self, idx: int) -> Optional[SpectrumPanel]:
+        """Return the :class:`SpectrumPanel` rendered in row *idx*, or ``None``."""
+        for panel in self.panels.get(idx, ()):
+            if isinstance(panel, SpectrumPanel):
+                return panel
+        return None
+
+    def _update_observed_inplace(
+        self,
+        idx: int,
+        ax: Axes,
+        xr: Tuple[float, float],
+    ) -> None:
+        """Replace the observed-spectrum artists on *ax* with the current data.
+
+        ``ax.errorbar`` creates a data ``Line2D`` *and* ``LineCollection`` error bars, all tagged ``_islat_observed``.
+        Calling ``set_data`` on the line alone (the previous behaviour) left the error bars of the previous spectrum on screen whenever a new spectrum was loaded into an unchanged layout, e.g. when cycling through a sample.
+        Every tagged artist is therefore removed and the spectrum is re-drawn through the row's :class:`SpectrumPanel`, which also keeps that panel's data arrays in sync and honours its gap mode.
+        The visibility of the replaced artists (observed-data toggle) is carried over to the new ones.
+        """
+        was_visible = True
+        for art in list(ax.lines) + list(ax.collections):
+            if hasattr(art, "_islat_observed"):
+                was_visible = bool(art.get_visible())
+                break
+
+        BasePlot._clear_tagged_artists(ax, "_islat_observed")
+
+        panel = self._spectrum_panel_for_row(idx)
+        if panel is not None:
+            panel.wave_data = self.wave_data
+            panel.flux_data = self.flux_data
+            panel.error_data = self.error_data
+            panel.wave_data_obs = self.wave_data_obs
+            panel.xmin, panel.xmax = xr
+            panel_wave, panel_flux, panel_err = panel.get_panel_data_with_gaps()
+            panel._plot_observed_spectrum(ax, panel_wave, panel_flux, panel_err)
+        else:
+            # No panel object for this row (axes supplied externally):
+            # draw the data line directly and tag it.
+            obs_mask = (self.wave_data >= xr[0]) & (self.wave_data <= xr[1])
+            line, = ax.plot(
+                self.wave_data[obs_mask], self.flux_data[obs_mask],
+                color=self._get_theme_value("observed_spectrum_color", "black"),
+                linewidth=self._get_theme_value("observed_spectrum_linewidth", 0.8),
+                zorder=self._get_theme_value("zorder_observed", 2),
+                label="Observed",
+            )
+            line._islat_observed = True
+
+        if not was_visible:
+            for art in list(ax.lines) + list(ax.collections):
+                if hasattr(art, "_islat_observed"):
+                    art.set_visible(False)
+
     def update_panels_inplace(self) -> None:
         """Fast in-place update of existing subplot data without fig.clf().
 
@@ -407,26 +462,10 @@ class FullSpectrumPlot(StackedSpectralPanel):
             xr = (xlim_start, panel_end)
             ax = self.subplots[idx]
 
-            # Update observed spectrum (tagged with _islat_observed)
-            obs_mask = (self.wave_data >= xr[0]) & (self.wave_data <= xr[1])
-            panel_wave = self.wave_data[obs_mask]
-            panel_flux = self.flux_data[obs_mask]
-            obs_updated = False
-            for art in ax.lines[:]:
-                if hasattr(art, "_islat_observed"):
-                    art.set_data(panel_wave, panel_flux)
-                    obs_updated = True
-                    break
-            if not obs_updated:
-                # Fallback: no tagged artist found - draw the observed spectrum directly and tag the resulting line.
-                line, = ax.plot(
-                    panel_wave, panel_flux,
-                    color=self._get_theme_value("observed_spectrum_color", "black"),
-                    linewidth=self._get_theme_value("observed_spectrum_linewidth", 0.8),
-                    zorder=self._get_theme_value("zorder_observed", 2),
-                    label="Observed",
-                )
-                line._islat_observed = True
+            # Update observed spectrum (tagged with _islat_observed).
+            # Re-drawn rather than mutated so the error bars follow the
+            # data -- see _update_observed_inplace.
+            self._update_observed_inplace(idx, ax, xr)
 
             ymin, ymax = panel_ylims[idx]
             ax.set_ylim(ymin, ymax)

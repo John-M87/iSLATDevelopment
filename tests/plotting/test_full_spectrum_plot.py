@@ -103,6 +103,78 @@ class TestFullSpectrumPlot:
         changed = fsp.update_data(new_wave, new_flux)
         assert changed is True  # Range changed
 
+    @staticmethod
+    def _observed_artists(ax):
+        lines = [a for a in ax.lines if hasattr(a, "_islat_observed")]
+        colls = [c for c in ax.collections if hasattr(c, "_islat_observed")]
+        return lines, colls
+
+    def test_update_panels_inplace_replaces_error_bars(self):
+        """Regression: cycling through a sample kept the previous spectrum's error bars.
+
+        ``ax.errorbar`` draws a ``Line2D`` plus ``LineCollection`` error bars, all tagged ``_islat_observed``.
+        The in-place fast path used to ``set_data`` only the line, so the collections still showed the old errors around the old flux.
+        """
+        wave, flux, err = make_wave_flux(n=200)
+        fsp = FullSpectrumPlot(wave, flux, error_data=err, n_panels=3)
+        fsp.generate_plot()
+
+        # Same wavelength grid -> same panel layout -> the view takes the fast path.
+        new_flux = flux + 0.5
+        new_err = np.full_like(err, 0.05)  # 10x the original 0.005
+        assert fsp.update_data(wave, new_flux, error_data=new_err) is False
+        fsp.update_panels_inplace()
+
+        for idx, ax in fsp.subplots.items():
+            obs_lines, obs_colls = self._observed_artists(ax)
+            assert len(obs_lines) == 1
+            assert len(obs_colls) == 1  # one set of error bars, no stale copy
+
+            xr = fsp.panels[idx][0].xlim
+            mask = (wave >= xr[0]) & (wave <= xr[1])
+            np.testing.assert_allclose(obs_lines[0].get_ydata(), new_flux[mask])
+
+            # Every bar spans +/- the *new* error around the *new* flux.
+            segs = np.asarray(obs_colls[0].get_segments())  # (n, 2, 2): [[x, y-e], [x, y+e]]
+            assert segs.shape[0] == mask.sum()
+            np.testing.assert_allclose(segs[:, 0, 0], wave[mask])
+            half = (segs[:, 1, 1] - segs[:, 0, 1]) / 2.0
+            np.testing.assert_allclose(half, 0.05)
+            centre = (segs[:, 1, 1] + segs[:, 0, 1]) / 2.0
+            np.testing.assert_allclose(centre, new_flux[mask])
+        fsp.close()
+
+    def test_update_panels_inplace_drops_error_bars_when_new_data_has_none(self):
+        wave, flux, err = make_wave_flux(n=200)
+        fsp = FullSpectrumPlot(wave, flux, error_data=err, n_panels=2)
+        fsp.generate_plot()
+        fsp.update_data(wave, flux, error_data=None)
+        fsp.update_panels_inplace()
+        for ax in fsp.subplots.values():
+            obs_lines, obs_colls = self._observed_artists(ax)
+            assert len(obs_lines) == 1
+            assert obs_colls == []
+        fsp.close()
+
+    def test_update_panels_inplace_preserves_hidden_observed_data(self):
+        wave, flux, err = make_wave_flux(n=200)
+        fsp = FullSpectrumPlot(wave, flux, error_data=err, n_panels=2)
+        fsp.generate_plot()
+        for ax in fsp.subplots.values():
+            for art in list(ax.lines) + list(ax.collections):
+                if hasattr(art, "_islat_observed"):
+                    art.set_visible(False)
+
+        fsp.update_data(wave, flux + 0.1, error_data=err)
+        fsp.update_panels_inplace()
+
+        for ax in fsp.subplots.values():
+            obs_lines, obs_colls = self._observed_artists(ax)
+            tagged = obs_lines + obs_colls
+            assert tagged
+            assert all(not a.get_visible() for a in tagged)
+        fsp.close()
+
     def test_save_and_close(self, tmp_path):
         fsp = self._make_fsp()
         fsp.generate_plot()
