@@ -187,6 +187,8 @@ class TopBar(ResizableFrame):
         spec_functions_menu.add_command(label="Output Full Spectrum (Ctrl+Shift+F)", command=lambda: output_full_spectrum(self.islat))
         spec_functions_menu.add_command(label="Display Full Spectrum (Ctrl+F)", command=lambda: FullSpectrumWindow(self.master, self.islat))
         spec_functions_menu.add_separator()
+        spec_functions_menu.add_command(label="Center View\u2026 (C)", command=self.open_center_view_dialog)
+        spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Manage Sample\u2026", command=self.manage_sample)
         
         spec_functions_drpwn.config(menu=spec_functions_menu)
@@ -201,6 +203,7 @@ class TopBar(ResizableFrame):
             "Output Full Spectrum (Ctrl+Shift+F)": "Save the full combined model spectrum\nto a file.",
             "Display Full Spectrum (Ctrl+F)":   "Open the full combined model spectrum\nin a separate window.",
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
+            "Center View\u2026 (C)":           "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nKeybind: C",
         })
 
         # ── Views dropdown ─────────────────────────────────────────────
@@ -1448,6 +1451,12 @@ class TopBar(ResizableFrame):
     def toggle_legend(self):
         #print("Toggled legend on plot")
         self.main_plot.toggle_legend()
+
+    def open_center_view_dialog(self) -> None:
+        """Open the Center View dialog (same as the 'C' keybind)."""
+        handler = getattr(self.main_plot, 'interaction_handler', None)
+        if handler is not None and hasattr(handler, 'open_center_view_dialog'):
+            handler.open_center_view_dialog()
 
     # ------------------------------------------------------------------
     # Main-plot options (Views dropdown)

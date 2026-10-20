@@ -701,19 +701,23 @@ class InteractionHandler:
             xmin, xmax = xmax, xmin
         return float(xmin), float(xmax)
 
-    def _apply_center_view(self, center: float, plot_range: float) -> None:
-        """Center the plot view on *center* with the given *plot_range* width."""
-        plot_range = abs(plot_range)
-        start = center - plot_range / 2.0
-        end = center + plot_range / 2.0
+    def _apply_plot_range(self, start: float, end: float) -> None:
+        """Show exactly [*start*, *end*] on the active plot view.
+
+        Routed through the control panel's Plot Start / Plot Range inputs so
+        every view (including the full-spectrum and line-inspection range
+        bindings) stays in sync.
+        """
+        start, end = float(start), float(end)
+        if start > end:
+            start, end = end, start
+        plot_range = end - start
 
         control_panel = None
         if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'control_panel'):
             control_panel = self.islat.GUI.control_panel
 
         if control_panel is not None:
-            # Route through the control panel so all views (including the
-            # full-spectrum binding) stay in sync.
             control_panel._set_var(
                 control_panel.plot_start_var,
                 control_panel._format_value(start, "display_range_start"),
@@ -728,12 +732,74 @@ class InteractionHandler:
             if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'plot'):
                 self.islat.GUI.plot.match_display_range(match_y=True)
 
-    def _open_center_view_dialog(self) -> None:
-        """Open a popup letting the user center the view on a wavelength.
+    def _apply_center_view(self, center: float, plot_range: float) -> None:
+        """Center the plot view on *center* with the given *plot_range* width."""
+        plot_range = abs(plot_range)
+        self._apply_plot_range(center - plot_range / 2.0, center + plot_range / 2.0)
 
-        The user enters a wavelength to center the plot on and an optional
-        plot range. The plot range defaults to the width of the current
-        active range of the plot view.
+    # ------------------------------------------------------------------
+    # Center-view helpers (data-point based windows)
+    # ------------------------------------------------------------------
+    def _sorted_wave_data(self) -> Optional[np.ndarray]:
+        """Return the displayed wavelength grid sorted ascending, or ``None``."""
+        wave = getattr(self.islat, 'wave_data', None)
+        if wave is None or len(wave) == 0:
+            return None
+        wave = np.asarray(wave, dtype=float)
+        wave = wave[np.isfinite(wave)]
+        if wave.size == 0:
+            return None
+        return np.sort(wave)
+
+    def _count_points_in_range(self, xmin: float, xmax: float) -> int:
+        """Number of data points whose wavelength lies inside [*xmin*, *xmax*]."""
+        wave = self._sorted_wave_data()
+        if wave is None:
+            return 0
+        return int(np.count_nonzero((wave >= xmin) & (wave <= xmax)))
+
+    def _range_from_center_points(
+        self, center: float, n_points: int,
+    ) -> Optional[Tuple[float, float]]:
+        """Return the wavelength window spanning *n_points* data points around *center*.
+
+        The point nearest *center* sits in the middle of the window; the
+        window is clamped at the ends of the spectrum (so fewer points are
+        covered there).  Returns ``None`` when there is no data or the
+        window would be degenerate.
+        """
+        wave = self._sorted_wave_data()
+        if wave is None:
+            return None
+        n_points = int(n_points)
+        if n_points < 2:
+            return None
+        n = wave.size
+        idx = int(np.argmin(np.abs(wave - float(center))))
+        lo = idx - n_points // 2
+        hi = lo + n_points - 1
+        if lo < 0:
+            hi = min(n - 1, hi - lo)
+            lo = 0
+        if hi > n - 1:
+            lo = max(0, lo - (hi - (n - 1)))
+            hi = n - 1
+        start, end = float(wave[lo]), float(wave[hi])
+        if end <= start:
+            return None
+        return start, end
+
+    def open_center_view_dialog(self) -> None:
+        """Open a popup to reposition the plot window.
+
+        Three ways to describe the window are offered:
+
+        * **Center + range** - a center wavelength and a width in µm.
+        * **Center + data points** - a center wavelength and how many data
+          points the window should span.
+        * **Exact range** - explicit start and end wavelengths.
+
+        Defaults come from the active view's current window.
         """
         import tkinter as tk
         from tkinter import ttk
@@ -754,6 +820,7 @@ class InteractionHandler:
         xmin, xmax = self._get_active_plot_range()
         current_center = (xmin + xmax) / 2.0
         current_range = xmax - xmin
+        current_points = self._count_points_in_range(xmin, xmax)
 
         win = tk.Toplevel(root)
         win.title("Center View")
@@ -763,47 +830,133 @@ class InteractionHandler:
         content = ttk.Frame(win)
         content.pack(fill="both", expand=True, padx=12, pady=12)
 
-        ttk.Label(content, text="Center wavelength (\u03bcm):").grid(
-            row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
-        )
+        mode_var = tk.StringVar(value="range")
         center_var = tk.StringVar(value=f"{current_center:.4f}")
-        center_entry = ttk.Entry(content, textvariable=center_var, width=14)
-        center_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6))
-
-        ttk.Label(content, text="Plot range (\u03bcm):").grid(
-            row=1, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
-        )
         range_var = tk.StringVar(value=f"{current_range:.4f}")
+        points_var = tk.StringVar(value=str(max(current_points, 2)))
+        start_var = tk.StringVar(value=f"{xmin:.4f}")
+        end_var = tk.StringVar(value=f"{xmax:.4f}")
+
+        row = 0
+        ttk.Label(content, text="Center wavelength (\u03bcm):").grid(
+            row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
+        )
+        center_entry = ttk.Entry(content, textvariable=center_var, width=14)
+        center_entry.grid(row=row, column=1, sticky="ew", pady=(0, 6))
+
+        row += 1
+        ttk.Radiobutton(content, text="Plot range (\u03bcm):", variable=mode_var,
+                        value="range").grid(row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
         range_entry = ttk.Entry(content, textvariable=range_var, width=14)
-        range_entry.grid(row=1, column=1, sticky="ew", pady=(0, 6))
+        range_entry.grid(row=row, column=1, sticky="ew", pady=(0, 6))
 
+        row += 1
+        ttk.Radiobutton(content, text="Data points:", variable=mode_var,
+                        value="points").grid(row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
+        points_entry = ttk.Entry(content, textvariable=points_var, width=14)
+        points_entry.grid(row=row, column=1, sticky="ew", pady=(0, 6))
+
+        row += 1
+        ttk.Separator(content, orient="horizontal").grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(2, 8)
+        )
+
+        row += 1
+        ttk.Radiobutton(content, text="Exact range (\u03bcm):", variable=mode_var,
+                        value="exact").grid(row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
+        exact_frame = ttk.Frame(content)
+        exact_frame.grid(row=row, column=1, sticky="ew", pady=(0, 6))
+        start_entry = ttk.Entry(exact_frame, textvariable=start_var, width=8)
+        start_entry.pack(side="left")
+        ttk.Label(exact_frame, text=" to ").pack(side="left")
+        end_entry = ttk.Entry(exact_frame, textvariable=end_var, width=8)
+        end_entry.pack(side="left")
+
+        row += 1
         error_var = tk.StringVar(value="")
-        error_label = ttk.Label(content, textvariable=error_var, foreground="red")
-        error_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        ttk.Label(content, textvariable=error_var, foreground="red").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 6)
+        )
 
-        def _apply(event=None):
+        entries_by_mode = {
+            "range": (center_entry, range_entry),
+            "points": (center_entry, points_entry),
+            "exact": (start_entry, end_entry),
+        }
+        all_entries = (center_entry, range_entry, points_entry, start_entry, end_entry)
+
+        def _sync_entry_states(*_):
+            active = entries_by_mode.get(mode_var.get(), ())
+            for entry in all_entries:
+                entry.configure(state="normal" if entry in active else "disabled")
+
+        mode_var.trace_add("write", _sync_entry_states)
+        _sync_entry_states()
+
+        # Clicking into a field selects the matching mode.
+        for mode, entries in entries_by_mode.items():
+            for entry in entries:
+                if entry is center_entry:
+                    continue
+                entry.bind("<FocusIn>", lambda _e, m=mode: mode_var.set(m), add="+")
+
+        def _resolve_window() -> Optional[Tuple[float, float]]:
+            """Translate the dialog state into (start, end), or set an error."""
+            mode = mode_var.get()
+            if mode == "exact":
+                try:
+                    start = float(start_var.get())
+                    end = float(end_var.get())
+                except ValueError:
+                    error_var.set("Invalid start or end wavelength.")
+                    return None
+                if start == end:
+                    error_var.set("Start and end must differ.")
+                    return None
+                return (start, end) if start < end else (end, start)
+
             try:
                 center = float(center_var.get())
             except ValueError:
                 error_var.set("Invalid center wavelength.")
-                return
+                return None
+            if mode == "points":
+                try:
+                    n_points = int(float(points_var.get()))
+                except ValueError:
+                    error_var.set("Invalid number of data points.")
+                    return None
+                if n_points < 2:
+                    error_var.set("Use at least 2 data points.")
+                    return None
+                window = self._range_from_center_points(center, n_points)
+                if window is None:
+                    error_var.set("No spectrum data available for that window.")
+                return window
             try:
                 plot_range = float(range_var.get())
             except ValueError:
                 error_var.set("Invalid plot range.")
-                return
+                return None
             if plot_range <= 0:
                 error_var.set("Plot range must be greater than 0.")
+                return None
+            return (center - plot_range / 2.0, center + plot_range / 2.0)
+
+        def _apply(event=None):
+            window = _resolve_window()
+            if window is None:
                 return
-            self._apply_center_view(center, plot_range)
+            self._apply_plot_range(*window)
             win.destroy()
 
         def _cancel(event=None):
             win.destroy()
 
+        row += 1
         btn_frame = ttk.Frame(content)
-        btn_frame.grid(row=3, column=0, columnspan=2, sticky="e")
-        ttk.Button(btn_frame, text="Center", command=_apply).pack(
+        btn_frame.grid(row=row, column=0, columnspan=2, sticky="e")
+        ttk.Button(btn_frame, text="Apply", command=_apply).pack(
             side="right", padx=(4, 0)
         )
         ttk.Button(btn_frame, text="Cancel", command=_cancel).pack(
@@ -824,6 +977,9 @@ class InteractionHandler:
             win.grab_set()
         except Exception:
             pass
+
+    # Backward-compatible private name (used by the 'c' key handler).
+    _open_center_view_dialog = open_center_view_dialog
 
     def _advance_plot_start(self, extra_amount: Optional[float] = None):
         """Advance the plot start by the current plot range value."""
