@@ -16,8 +16,9 @@ around a group are the parentheses that are evaluated.
 
 Evaluation lives in
 :mod:`iSLAT.Modules.DataProcessing.LineFilterExpression`; this module only maps
-widgets onto that model.  Results can be exported to CSV or HITRAN ``.par``, or
-applied back onto the molecule.
+widgets onto that model.  Results can be saved to CSV or HITRAN ``.par``, or
+applied back onto the molecule; any supported line-list file can be loaded
+into the window as a new source to filter.
 """
 from __future__ import annotations
 
@@ -320,6 +321,54 @@ def _quantum_field_specs(species: Optional[str]) -> List[PropertySpec]:
                      + (f"\n{desc}" if desc else "")
                      + "\nUse '=' for a non-numeric field.")))
     return specs
+
+
+LINE_LIST_SAVE_FILETYPES = [
+    ("CSV line list", "*.csv"),
+    ("HITRAN PAR line list", "*.par"),
+    ("All files", "*.*"),
+]
+LINE_LIST_LOAD_FILETYPES = [
+    ("Line list files", "*.par *.csv"),
+    ("HITRAN PAR line list", "*.par"),
+    ("CSV line list", "*.csv"),
+    ("All files", "*.*"),
+]
+
+
+def write_line_list(maker: LineListMaker, path: Path) -> Path:
+    """Write *maker*'s current (filtered) lines to *path*.
+
+    The format follows the extension: ``.par`` writes HITRAN ``.par`` (which
+    needs a HITRAN-sourced list for its header), anything else writes the
+    iSLAT CSV that :func:`load_line_list_file` reads back.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".par":
+        # A .par file needs the partition-function block to be readable
+        # again; only lists loaded from a HITRAN .par carry one.
+        source = getattr(maker, "_linelist", None)
+        if source is None or getattr(source, "partition_function", None) is None:
+            raise RuntimeError(
+                "the line list carries no partition function, so a readable "
+                ".par file cannot be written; save as .csv instead"
+            )
+        return maker.to_par(path)
+    return maker.to_csv(path)
+
+
+def load_line_list_file(path: Path, fallback_species: Optional[str] = None):
+    """Read any supported line-list file into a :class:`MoleculeLineList`.
+
+    The format (HITRAN ``.par``, iSLAT CSV, saved-lines CSV) is detected
+    from the file.  When the file carries no species of its own,
+    *fallback_species* is used so quantum-number properties keep working.
+    """
+    from iSLAT.Modules.DataTypes.MoleculeLineList import MoleculeLineList
+    line_list = MoleculeLineList.from_file(Path(path))
+    if getattr(line_list, "molecule_id", None) is None and fallback_species:
+        line_list.molecule_id = fallback_species
+    return line_list
 
 
 def has_quantum_schema(species: Optional[str]) -> bool:
@@ -1040,6 +1089,8 @@ class LineListFilterWindow(tk.Toplevel):
         self._theme = theme
         self._instance_key: Optional[Tuple[int, str]] = None
         self._preview_job: Optional[str] = None
+        # File loaded via 'Load Line List…' (None = the molecule's own list)
+        self._loaded_source: Optional[Path] = None
 
         mol_name = getattr(mol_obj, "name", "Molecule")
         self.title(f"Filter Line List: {mol_name}")
@@ -1218,15 +1269,20 @@ class LineListFilterWindow(tk.Toplevel):
         CreateToolTip(reset_btn,
                       "Clear all conditions and reset the line list to its "
                       "original state.")
-        csv_btn = ttk.Button(btn_frame, text="Export CSV", command=self._export_csv)
-        csv_btn.grid(row=0, column=2, padx=4, pady=4, sticky="ew")
-        CreateToolTip(csv_btn,
-                      "Export the currently filtered line list to a CSV file.")
-        par_btn = ttk.Button(btn_frame, text="Export PAR", command=self._export_par)
-        par_btn.grid(row=0, column=3, padx=4, pady=4, sticky="ew")
-        CreateToolTip(par_btn,
-                      "Export the currently filtered line list in HITRAN .par "
-                      "format.")
+        save_btn = ttk.Button(btn_frame, text="Save Line List\u2026",
+                              command=self._save_line_list)
+        save_btn.grid(row=0, column=2, padx=4, pady=4, sticky="ew")
+        CreateToolTip(save_btn,
+                      "Save the currently filtered line list to a file.\n"
+                      "Choose a .csv (iSLAT CSV) or .par (HITRAN) name;\n"
+                      "the format follows the extension.")
+        load_btn = ttk.Button(btn_frame, text="Load Line List\u2026",
+                              command=self._load_line_list)
+        load_btn.grid(row=0, column=3, padx=4, pady=4, sticky="ew")
+        CreateToolTip(load_btn,
+                      "Load a line list file (.par or .csv) into this window "
+                      "as the\nlist to filter. The molecule is only changed "
+                      "when you press\n'Apply to Molecule' or 'Duplicate & Apply'.")
 
         ttk.Separator(btn_frame, orient="horizontal").grid(
             row=1, column=0, columnspan=4, sticky="ew", pady=(2, 0))
@@ -1970,53 +2026,112 @@ class LineListFilterWindow(tk.Toplevel):
         except Exception as e:
             print(f"LineListFilterWindow: GUI refresh error - {e}")
 
-    def _export_csv(self):
+    # ------------------------------------------------------------------
+    # Save / load line-list files
+    # ------------------------------------------------------------------
+    def _report(self, msg: str, title: str = "Done") -> None:
+        """Show *msg* in the data field when available, else in a dialog."""
+        if self.data_field is not None:
+            self.data_field.insert_text(msg)
+        else:
+            messagebox.showinfo(title, msg, parent=self)
+
+    def _save_line_list(self):
+        """Ask for a file name and write the filtered line list to it."""
         mol_name = getattr(self.mol_obj, "name", "molecule")
         path = filedialog.asksaveasfilename(
             parent=self,
-            title="Export Filtered Line List",
+            title="Save Filtered Line List",
             defaultextension=".csv",
             initialfile=f"{mol_name}_filtered.csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            filetypes=LINE_LIST_SAVE_FILETYPES,
         )
         if not path:
             return
-        try:
-            out = self._maker.to_csv(Path(path))
-            msg = f"Exported {len(self._maker)} lines → {out.name}"
-            if self.data_field is not None:
-                self.data_field.insert_text(msg)
-            else:
-                messagebox.showinfo("Export Complete", msg, parent=self)
-        except Exception as e:
-            messagebox.showerror("Export Error", str(e), parent=self)
+        self._write_line_list(Path(path))
 
-    def _export_par(self):
-        mol_name = getattr(self.mol_obj, "name", "molecule")
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title="Export Filtered Line List as PAR",
-            defaultextension=".par",
-            initialfile=f"{mol_name}_filtered.par",
-            filetypes=[("PAR files", "*.par"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            out = self._maker.to_par(Path(path))
-            msg = f"Exported {len(self._maker)} lines → {out.name}"
-            if self.data_field is not None:
-                self.data_field.insert_text(msg)
-            else:
-                messagebox.showinfo("Export Complete", msg, parent=self)
-        except RuntimeError as e:
-            messagebox.showerror(
-                "Export Error",
-                f"PAR export requires a HITRAN-sourced line list:\n{e}",
+    def _write_line_list(self, path: Path) -> Optional[Path]:
+        """Write the filtered lines to *path*; the extension picks the format."""
+        if len(self._maker) == 0:
+            messagebox.showwarning(
+                "Empty Result",
+                "The filtered line list is empty - nothing to save.",
                 parent=self,
             )
+            return None
+        try:
+            out = write_line_list(self._maker, path)
+        except RuntimeError as e:
+            messagebox.showerror(
+                "Save Error",
+                f"PAR output requires a HITRAN-sourced line list:\n{e}",
+                parent=self,
+            )
+            return None
         except Exception as e:
-            messagebox.showerror("Export Error", str(e), parent=self)
+            messagebox.showerror("Save Error", str(e), parent=self)
+            return None
+        self._report(f"Saved {len(self._maker)} lines \u2192 {out.name}", "Save Complete")
+        return out
+
+    # Backward-compatible names for callers of the old export buttons.
+    def _export_csv(self):
+        self._save_line_list()
+
+    def _export_par(self):
+        self._save_line_list()
+
+    def _load_line_list(self):
+        """Ask for a line-list file and make it this window's source."""
+        import os
+        initial_dir = None
+        filepath = getattr(self.mol_obj, "filepath", None)
+        if filepath:
+            initial_dir = os.path.dirname(str(filepath))
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Load Line List",
+            initialdir=initial_dir,
+            filetypes=LINE_LIST_LOAD_FILETYPES,
+        )
+        if not path:
+            return
+        self._load_line_list_from_path(Path(path))
+
+    def _load_line_list_from_path(self, path: Path) -> bool:
+        """Replace the window's source line list with the contents of *path*.
+
+        Filters are kept and re-evaluated against the new list.  The
+        molecule itself is untouched until the user applies the result.
+        """
+        try:
+            line_list = load_line_list_file(path, fallback_species=self._maker.species)
+        except Exception as e:
+            messagebox.showerror(
+                "Load Error",
+                f"Could not read line list from {path.name}:\n{e}",
+                parent=self,
+            )
+            return False
+        if len(line_list) == 0:
+            messagebox.showwarning(
+                "Empty Line List",
+                f"{path.name} contains no lines - not loaded.",
+                parent=self,
+            )
+            return False
+        self._rebind_to_line_list(line_list)
+        self._loaded_source = path
+        mol_name = getattr(self.mol_obj, "name", "Molecule")
+        self.title(f"Filter Line List: {mol_name} \u2014 {path.name}")
+        self._schedule_preview()
+        self._refresh_status()
+        self._report(
+            f"Loaded {len(line_list)} lines from {path.name} into the filter window "
+            f"for '{mol_name}'. Press 'Apply to Molecule' to use them.",
+            "Load Complete",
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Teardown

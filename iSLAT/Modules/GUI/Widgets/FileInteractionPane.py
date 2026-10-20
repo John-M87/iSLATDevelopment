@@ -115,7 +115,12 @@ class FileInteractionPane(ttk.Frame):
         )
         self.input_line_list_label.grid(row=1, column=0, sticky="ew", padx=(5, 5), pady=2)
         self.input_line_list_label.bind('<Button-1>', self._on_line_list_label_click)
-        CreateToolTip(self.input_line_list_label, "Click to remove the loaded line list")
+        # Right-click (Button-3 on Windows/Linux; Button-2 / Ctrl-click on macOS)
+        for _seq in ('<Button-3>', '<Button-2>', '<Control-Button-1>'):
+            self.input_line_list_label.bind(_seq, self._show_line_list_menu)
+        CreateToolTip(self.input_line_list_label,
+                      "Click to remove the loaded line list\n"
+                      "Right-click to view, load, or remove it")
         
         self.input_line_list_btn = ttk.Button(
             self.label_frame,
@@ -361,6 +366,56 @@ class FileInteractionPane(ttk.Frame):
         """Clear the input line list when the label is clicked (if one is loaded)."""
         if self.islat_class.input_line_list:
             self._clear_input_line_list()
+
+    def _show_line_list_menu(self, event):
+        """Post a right-click menu for the input line list label."""
+        path = getattr(self.islat_class, 'input_line_list', None)
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="View Line List",
+            command=self._view_input_line_list,
+            state="normal" if path else "disabled",
+        )
+        menu.add_command(label="Load Line List\u2026", command=self._load_input_line_list)
+        menu.add_separator()
+        menu.add_command(
+            label="Remove Line List",
+            command=self._clear_input_line_list,
+            state="normal" if path else "disabled",
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root, 0)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def _read_input_line_list(self):
+        """Return the loaded input line list as a DataFrame (empty if none)."""
+        import pandas as pd
+        from iSLAT.Modules.FileHandling.iSLATFileHandling import read_line_saves
+        path = getattr(self.islat_class, 'input_line_list', None)
+        if not path:
+            return pd.DataFrame()
+        return read_line_saves(file_name=path)
+
+    def _view_input_line_list(self):
+        """Open a read-only, searchable table of the loaded input line list."""
+        path = getattr(self.islat_class, 'input_line_list', None)
+        if not path:
+            self.data_field.insert_text("No input line list loaded.")
+            return
+        from iSLAT.Modules.GUI.Widgets.LineListViewWindow import LineListViewWindow
+        name = os.path.basename(path)
+        try:
+            # A callable provider keeps the viewer's Refresh reading the file.
+            LineListViewWindow.from_dataframe(
+                self, self._read_input_line_list,
+                title=f"Line List: {name}",
+                data_field=self.data_field,
+                export_basename=os.path.splitext(name)[0],
+            )
+        except Exception as e:
+            self.data_field.insert_text(f"Could not open line list '{name}': {e}")
 
     def _on_output_label_click(self, event):
         """Clear the output file when the label is clicked (if one is loaded)."""
