@@ -122,11 +122,19 @@ class FullSpectrumView(ToggleMixin, PlotView):
         self._plot.n_panels = n
         self._plot._compute_panel_layout()
         # Full rebuild required because subplot grid changes
+        self._regenerate_layout()
+
+    def _regenerate_layout(self) -> None:
+        """Rebuild the panels after a layout change and restore the toggle state.
+
+        ``generate_plot`` recreates every artist, so the overlays and the
+        observed-data / Y-limit settings must be reconciled again exactly
+        as after a model update; ``sync_toggle_state`` does that and draws.
+        """
         self.span_selectors.clear()
         self._plot.generate_plot()
         self._install_span_selectors()
-        if self._canvas is not None:
-            self._canvas.draw_idle()
+        self.sync_toggle_state(self._pm.toggle_state)
 
     def _get_display_range(self):
         if self._plot is not None:
@@ -139,11 +147,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         self._plot._xlim_start = float(start)
         self._plot._xlim_end = float(end)
         self._plot._compute_panel_layout()
-        self.span_selectors.clear()
-        self._plot.generate_plot()
-        self._install_span_selectors()
-        if self._canvas is not None:
-            self._canvas.draw_idle()
+        self._regenerate_layout()
 
     def _get_data_density(self) -> bool:
         return self._pm.toggle_state.get("data_density", False)
@@ -158,11 +162,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
             return
         self._plot.x_scaling = XScaling.DATA_DENSITY if value else XScaling.WAVELENGTH
         self._plot._compute_panel_layout()
-        self.span_selectors.clear()
-        self._plot.generate_plot()
-        self._install_span_selectors()
-        if self._canvas is not None:
-            self._canvas.draw_idle()
+        self._regenerate_layout()
 
     # ==================================================================
     # Convenience accessors (delegate to composed plot)
@@ -230,6 +230,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
         """
         plot = self._plot
         if plot is None or not hasattr(plot, "_compute_panel_ylims"):
+            return super()._autoscale_y_axes()
+        if self._y_autoscale_source() == "model":
+            # Fit each panel to the model it draws rather than the layout's data rule.
             return super()._autoscale_y_axes()
         try:
             ylims = plot._compute_panel_ylims(

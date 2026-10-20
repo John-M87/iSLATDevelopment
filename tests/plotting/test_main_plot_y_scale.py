@@ -425,3 +425,109 @@ class TestLineInspectionViewPickSurvivesRebuild:
         view._connect_pick_event()
         view._ensure_canvas()             # same figure -> same canvas
         assert len(self._pick_handlers(view._canvas)) == 1
+
+
+class TestModelFluxAutoscale:
+    """Auto-scale can fit the drawn model instead of the observed data."""
+
+    @staticmethod
+    def _axes_with_model():
+        ax = Figure().add_subplot(111)
+        ax.set_xlim(5.0, 10.0)
+        (data,) = ax.plot([5, 7, 9], [50.0, 60.0, 70.0])          # untagged: observed data
+        data._islat_observed = True
+        (mol,) = ax.plot([5, 6, 7, 8, 9], [0.0, 2.0, 1.0, 0.5, 0.0])
+        mol._molecule_name = "CO"
+        (hidden,) = ax.plot([5, 9], [100.0, 100.0]); hidden._molecule_name = "H2O"; hidden.set_visible(False)
+        fill = ax.fill_between([5, 6, 7, 8, 9], 0, [0.0, 3.0, 1.0, 0.5, 0.0]); fill._islat_summed = True
+        return ax, mol, fill
+
+    def test_fits_visible_model_lines_and_summed_fill(self):
+        from iSLAT.Modules.Plotting.PlotView import fit_y_limits_to_model
+        ax, _mol, _fill = self._axes_with_model()
+        lo, hi = fit_y_limits_to_model(ax)
+        assert lo == pytest.approx(0.0)
+        assert hi == pytest.approx(3.0 + 3.0 / 8)      # summed peak wins; data and hidden line ignored
+
+    def test_respects_xrange(self):
+        from iSLAT.Modules.Plotting.PlotView import fit_y_limits_to_model
+        ax, _mol, fill = self._axes_with_model()
+        fill.set_visible(False)
+        ax.set_xlim(7.5, 10.0)                            # only the 0.5 and 0.0 samples remain
+        lo, hi = fit_y_limits_to_model(ax)
+        assert hi == pytest.approx(0.5 + 0.5 / 8)
+
+    def test_none_without_drawn_model(self):
+        from iSLAT.Modules.Plotting.PlotView import fit_y_limits_to_model
+        ax = Figure().add_subplot(111)
+        ax.plot([1, 2], [1, 2])
+        assert fit_y_limits_to_model(ax) is None
+
+    def test_view_picks_source_from_toggle_state(self):
+        from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
+        ax, _mol, _fill = self._axes_with_model()
+        pm = MagicMock()
+        pm.ax1 = ax
+        pm.islat = SimpleNamespace(wave_data=np.array([5.0, 7.0, 9.0]), flux_data=np.array([50.0, 60.0, 70.0]))
+        pm.toggle_state = {"y_autoscale": True, "y_autoscale_source": "model", "y_limits": None}
+        view = ThreePanelView(pm)
+        assert view._autoscaled_y_limits_for(ax)[1] == pytest.approx(3.0 + 3.0 / 8)
+        pm.toggle_state["y_autoscale_source"] = "data"
+        assert view._autoscaled_y_limits_for(ax)[1] == pytest.approx(70.0 + 70.0 / 8)
+
+    def test_model_source_falls_back_to_data_without_model(self):
+        from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
+        ax = Figure().add_subplot(111); ax.set_xlim(5.0, 10.0)
+        pm = MagicMock(); pm.ax1 = ax
+        pm.islat = SimpleNamespace(wave_data=np.array([5.0, 9.0]), flux_data=np.array([1.0, 4.0]))
+        pm.toggle_state = {"y_autoscale_source": "model"}
+        assert ThreePanelView(pm)._autoscaled_y_limits_for(ax)[1] == pytest.approx(4.5)
+
+    def test_controller_source_setter_refits_when_autoscaling(self):
+        pm = _make_controller()
+        (mol,) = pm.ax1.plot([5, 7, 9], [0.0, 10.0, 0.0]); mol._molecule_name = "CO"
+        pm.set_y_autoscale_source("model")
+        assert pm.y_autoscale_source == "model"
+        assert pm.ax1.get_ylim()[1] == pytest.approx(10.0 + 10.0 / 8)
+        pm.set_y_autoscale_source("data")
+        assert pm.ax1.get_ylim()[1] == pytest.approx(4.5)
+        pm.set_y_autoscale_source("garbage")
+        assert pm.y_autoscale_source == "data"
+
+    def test_source_change_does_not_touch_manual_limits(self):
+        pm = _make_controller()
+        pm.set_y_limits(0.0, 2.0)
+        pm.set_y_autoscale_source("model")
+        assert pm.ax1.get_ylim() == (0.0, 2.0)
+        assert pm.y_autoscale_toggle is False
+
+
+class TestFullSpectrumLayoutChangesKeepToggleState:
+    def test_panel_count_change_keeps_observed_hidden_and_manual_limits(self):
+        view, plot, pm = TestFullSpectrumViewInheritsPolicy._make_view()
+        pm.toggle_state.update({"observed": False, "y_autoscale": False, "y_limits": (0.0, 9.0)})
+        pm.legend_toggle = True
+        view.sync_toggle_state(pm.toggle_state)
+        view._set_n_panels(2)
+        assert len(plot.subplots) == 2
+        observed = [l for ax in plot.subplots.values() for l in ax.lines if hasattr(l, "_islat_observed")]
+        assert observed and all(not l.get_visible() for l in observed)
+        assert all(ax.get_ylim() == (0.0, 9.0) for ax in plot.subplots.values())
+
+    def test_display_range_change_keeps_observed_hidden(self):
+        view, plot, pm = TestFullSpectrumViewInheritsPolicy._make_view()
+        pm.toggle_state.update({"observed": False})
+        pm.legend_toggle = True
+        view._set_display_range(6.0, 10.0)
+        observed = [l for ax in plot.subplots.values() for l in ax.lines if hasattr(l, "_islat_observed")]
+        assert observed and all(not l.get_visible() for l in observed)
+
+    def test_model_source_fits_each_panel_to_its_model(self):
+        view, plot, pm = TestFullSpectrumViewInheritsPolicy._make_view()
+        pm.toggle_state.update({"y_autoscale": True, "y_autoscale_source": "model"})
+        for idx, ax in plot.subplots.items():
+            x0, x1 = ax.get_xlim()
+            (mol,) = ax.plot([x0, (x0 + x1) / 2, x1], [0.0, float(idx + 1), 0.0]); mol._molecule_name = "CO"
+        assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
+        for idx, ax in plot.subplots.items():
+            assert ax.get_ylim()[1] == pytest.approx((idx + 1) * (1 + 1 / 8))

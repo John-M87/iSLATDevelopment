@@ -231,6 +231,13 @@ class TopBar(ResizableFrame):
             variable=self._y_autoscale_var,
             command=lambda: self.main_plot.set_y_autoscale(self._y_autoscale_var.get()),
         )
+        self._y_model_var = tk.BooleanVar(value=False)
+        views_menu.add_checkbutton(
+            label="Auto-scale Y to Model Flux",
+            variable=self._y_model_var,
+            command=lambda: self.main_plot.set_y_autoscale_source(
+                "model" if self._y_model_var.get() else "data"),
+        )
         views_menu.add_command(label="Set Y Limits\u2026", command=self.open_y_limits_dialog)
         views_menu.add_checkbutton(
             label="Show Observed Data",
@@ -246,6 +253,7 @@ class TopBar(ResizableFrame):
             "Population Diagram": "Standalone Boltzmann / rotation\ndiagram for the active molecule.",
             "Line Grid":          "Grid of individual line fits\nfrom the most recent fit run.",
             "Auto-scale Y Axis":  "ON: the main plot's Y axis follows\nthe data in view.\nOFF: it stays at the current / set limits.",
+            "Auto-scale Y to Model Flux": "When auto-scaling, fit the Y axis to the\nplotted model (molecule lines and sum)\ninstead of the observed data.",
             "Set Y Limits\u2026":  "Pin the main plot's Y axis to\nspecific values (turns auto-scale off).",
             "Show Observed Data": "Show / hide the observed spectrum\non the main plot.",
         })
@@ -1465,6 +1473,7 @@ class TopBar(ResizableFrame):
         """Refresh the Views-menu check marks from the plot controller's state."""
         try:
             self._y_autoscale_var.set(bool(getattr(self.main_plot, 'y_autoscale_toggle', True)))
+            self._y_model_var.set(getattr(self.main_plot, 'y_autoscale_source', 'data') == 'model')
             self._observed_var.set(bool(getattr(self.main_plot, 'observed_toggle', True)))
         except Exception:
             pass

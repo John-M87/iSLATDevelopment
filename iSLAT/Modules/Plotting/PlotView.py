@@ -42,6 +42,44 @@ def fit_y_limits_to_data(ax: Any, wave: Any, flux: Any) -> Optional[Tuple[float,
     return (float(bottom), float(top + top / 8))
 
 
+def fit_y_limits_to_model(ax: Any) -> Optional[Tuple[float, float]]:
+    """Return ``(ymin, ymax)`` fitting the *drawn model* inside *ax*'s x-range.
+
+    Looks at the visible molecule lines (tagged ``_molecule_name``) and the
+    summed-model fill (tagged ``_islat_summed``) already on the axes, so it
+    reflects exactly what is plotted.  Headroom is one-eighth of the peak,
+    as for the data rule.  Returns ``None`` when no model is drawn in range.
+    """
+    import numpy as np
+    wmin, wmax = ax.get_xlim()
+    top = -np.inf
+    bottom = np.inf
+    for line in ax.lines:
+        if getattr(line, "_molecule_name", None) is None or not line.get_visible():
+            continue
+        x, y = line.get_data()
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        sel = (x >= wmin) & (x <= wmax) & np.isfinite(y)
+        if np.any(sel):
+            top = max(top, float(y[sel].max()))
+            bottom = min(bottom, float(y[sel].min()))
+    for coll in ax.collections:
+        if not hasattr(coll, "_islat_summed") or not coll.get_visible():
+            continue
+        for path in coll.get_paths():
+            v = np.asarray(path.vertices, dtype=float)
+            if v.size == 0:
+                continue
+            sel = (v[:, 0] >= wmin) & (v[:, 0] <= wmax) & np.isfinite(v[:, 1])
+            if np.any(sel):
+                top = max(top, float(v[sel, 1].max()))
+                bottom = min(bottom, float(v[sel, 1].min()))
+    if not np.isfinite(top) or not np.isfinite(bottom) or top <= bottom:
+        return None
+    return (bottom, top + top / 8)
+
+
 class PlotView(ABC):
     """
     Abstract base for a swappable plot view inside the main iSLAT window.
@@ -252,8 +290,25 @@ class PlotView(ABC):
         if self._set_observed_visibility(visible):
             self.draw()
 
+    def _y_autoscale_source(self) -> str:
+        """``"data"`` (default) or ``"model"``: what the Y auto-scale fits to."""
+        pm = getattr(self, "_pm", None)
+        state = getattr(pm, "toggle_state", None)
+        if isinstance(state, dict) and state.get("y_autoscale_source") == "model":
+            return "model"
+        return "data"
+
     def _autoscaled_y_limits_for(self, ax: Any) -> Optional[Tuple[float, float]]:
-        """Default auto-scale rule: fit *ax* to the observed flux inside its x-range."""
+        """Default auto-scale rule for *ax*.
+
+        Fits the observed flux inside the x-range, or the drawn model when
+        the auto-scale source is ``"model"`` (falling back to the data when
+        no model is drawn there).
+        """
+        if self._y_autoscale_source() == "model":
+            lims = fit_y_limits_to_model(ax)
+            if lims is not None:
+                return lims
         islat = getattr(self, "_islat", None)
         return fit_y_limits_to_data(
             ax,

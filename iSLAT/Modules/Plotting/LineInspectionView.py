@@ -199,6 +199,8 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         """Re-fit by rebuilding the plot so its own Y layout is restored exactly."""
         if self._plot is None or not self._initialised:
             return False
+        if self._y_autoscale_source() == "model":
+            return super()._autoscale_y_axes()
         self.update_model_plot()
         return True
 

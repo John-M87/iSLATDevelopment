@@ -85,6 +85,7 @@ class iSLATPlot:
             "data_density": False,       # XScaling.DATA_DENSITY when True
             "current_selection": None,   # (xmin, xmax) or None
             "y_autoscale":  True,        # main-plot Y axis follows the data in view
+            "y_autoscale_source": "data",  # "data" or "model": what auto-scale fits to
             "y_limits":     None,        # manual (ymin, ymax) used when y_autoscale is False
             "observed":     True,        # observed-spectrum artists visible
         }
@@ -215,6 +216,14 @@ class iSLATPlot:
     @y_autoscale_toggle.setter
     def y_autoscale_toggle(self, value: bool) -> None:
         self.toggle_state["y_autoscale"] = bool(value)
+
+    @property
+    def y_autoscale_source(self) -> str:
+        return self.toggle_state.get("y_autoscale_source", "data")
+
+    @y_autoscale_source.setter
+    def y_autoscale_source(self, value: str) -> None:
+        self.toggle_state["y_autoscale_source"] = "model" if str(value).lower() == "model" else "data"
 
     @property
     def observed_toggle(self) -> bool:
@@ -514,6 +523,17 @@ class iSLATPlot:
     def toggle_y_autoscale(self) -> None:
         """Flip the Y auto-scale toggle."""
         self.set_y_autoscale(not self.y_autoscale_toggle)
+
+    def set_y_autoscale_source(self, source: str) -> None:
+        """Choose what Y auto-scaling fits to: ``"data"`` or ``"model"``.
+
+        Re-fits immediately when auto-scaling is on; otherwise the choice
+        takes effect the next time auto-scaling is turned on.
+        """
+        self.y_autoscale_source = source
+        if self.y_autoscale_toggle:
+            self.apply_y_limits(autoscale_now=True)
+            self._draw_active_view()
 
     def set_y_limits(
         self,
