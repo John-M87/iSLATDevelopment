@@ -245,12 +245,7 @@ class PopulationDiagramPlot(BasePlot):
         mol_name = getattr(molecule, "name", "") if molecule else ""
 
         # Resolve molecule_id once for quantum-field axis lookups.
-        _mol_id: Optional[str] = None
-        if molecule is not None:
-            _ll = getattr(molecule, "line_list", None)
-            _mol_id = getattr(_ll, "molecule_id", None) if _ll is not None else None
-            if _mol_id is None:
-                _mol_id = getattr(molecule, "molecule_id", None)
+        _mol_id: Optional[str] = self._molecule_id_of(molecule)
 
         # Index the existing active_lines entries that belong to *this*
         # molecule by transition identity.  Positional matching is not safe:
@@ -589,6 +584,59 @@ class PopulationDiagramPlot(BasePlot):
     # ------------------------------------------------------------------
     # Component resolution
     # ------------------------------------------------------------------
+    @staticmethod
+    def _molecule_id_of(molecule: Optional["Molecule"]) -> Optional[str]:
+        """Return the species id used for quantum-schema lookups.
+
+        Prefers the line list's ``molecule_id`` (the key HITRAN schemas are
+        registered under), falling back to a ``molecule_id`` attribute on the
+        molecule itself.
+        """
+        if molecule is None:
+            return None
+        ll = getattr(molecule, "line_list", None)
+        mol_id = getattr(ll, "molecule_id", None) if ll is not None else None
+        if mol_id is None:
+            mol_id = getattr(molecule, "molecule_id", None)
+        return mol_id
+
+    def _input_molecules(self) -> List["Molecule"]:
+        """Return the molecules currently driving this diagram, in plot order.
+
+        Resolves the single-molecule, list and :class:`MoleculeDict` input
+        modes the same way :meth:`_resolve_components` does.  Returns an
+        empty list in bare-intensity mode.
+        """
+        if self.molecule is not None:
+            return [self.molecule]
+        mol_seq = self._molecules_input
+        if mol_seq is None:
+            return []
+        # MoleculeDict → use active set when in all-molecules mode,
+        # otherwise fall back to visible molecules.
+        if hasattr(mol_seq, "get_active_set") and self._all_molecules_mode:
+            mol_seq = mol_seq.get_active_set()
+        elif hasattr(mol_seq, "get_visible_molecules"):
+            mol_seq = mol_seq.get_visible_molecules(return_objects=True)
+        elif hasattr(mol_seq, "values") and not isinstance(mol_seq, list):
+            mol_seq = mol_seq.values()
+        return list(mol_seq)
+
+    def get_molecule_ids(self) -> List[str]:
+        """Return the distinct species ids of the molecules on this diagram.
+
+        GUI dialogs pass this to
+        :meth:`~iSLAT.Modules.DataTypes.PlotAxisRegistry.PlotAxisRegistry.get_axis_options`
+        so only quantum numbers these species actually define are offered.
+        Molecules with no resolvable id are skipped.
+        """
+        ids: List[str] = []
+        for mol in self._input_molecules():
+            mid = self._molecule_id_of(mol)
+            if mid is not None and mid not in ids:
+                ids.append(mid)
+        return ids
+
     def _resolve_components(self) -> List[Dict[str, Any]]:
         """Normalise the various input modes into a list of component dicts.
 
@@ -597,25 +645,10 @@ class PopulationDiagramPlot(BasePlot):
         """
         components: List[Dict[str, Any]] = []
 
-        # --- Single Molecule ---
-        if self.molecule is not None:
-            components.append(self._mol_to_component(self.molecule, idx=0))
-            return components
-
-        # --- Multiple Molecules (list or MoleculeDict) ---
-        if self._molecules_input is not None:
-            mol_seq = self._molecules_input
-            # MoleculeDict → use active set when in all-molecules mode,
-            # otherwise fall back to visible molecules.
-            if hasattr(mol_seq, "get_active_set") and self._all_molecules_mode:
-                mol_seq = mol_seq.get_active_set()
-            elif hasattr(mol_seq, "get_visible_molecules"):
-                mol_seq = list(
-                    mol_seq.get_visible_molecules(return_objects=True)
-                )
-            elif hasattr(mol_seq, "values") and not isinstance(mol_seq, list):
-                mol_seq = list(mol_seq.values())
-            for idx, mol in enumerate(mol_seq):
+        # --- One or more Molecules (single, list or MoleculeDict) ---
+        molecules = self._input_molecules()
+        if molecules:
+            for idx, mol in enumerate(molecules):
                 components.append(self._mol_to_component(mol, idx=idx))
             # Ensure distinct colors when multiple components share a
             # color - assign from the default cycle in that case.
@@ -734,13 +767,7 @@ class PopulationDiagramPlot(BasePlot):
             return None
 
         # Resolve molecule_id for quantum-field color mapping.
-        mol_id = None
-        if mol is not None:
-            ll = getattr(mol, "line_list", None)
-            if ll is not None:
-                mol_id = getattr(ll, "molecule_id", None)
-            if mol_id is None:
-                mol_id = getattr(mol, "molecule_id", None)
+        mol_id = self._molecule_id_of(mol)
 
         return {
             "name":      comp["name"],
@@ -1521,12 +1548,7 @@ class PopulationDiagramPlot(BasePlot):
             _hl_info = _Intensity.get_line_info(line_obj, intensity, tau, molecule=_hl_mol)
 
             # Resolve molecule_id for quantum-field axis lookups.
-            _hl_mol_id: Optional[str] = None
-            if _hl_mol is not None:
-                _hl_ll = getattr(_hl_mol, "line_list", None)
-                _hl_mol_id = getattr(_hl_ll, "molecule_id", None) if _hl_ll is not None else None
-                if _hl_mol_id is None:
-                    _hl_mol_id = getattr(_hl_mol, "molecule_id", None)
+            _hl_mol_id: Optional[str] = self._molecule_id_of(_hl_mol)
 
             def _resolve(prop: str) -> Optional[float]:
                 """Map a property key to a scalar value for this line."""

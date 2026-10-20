@@ -305,8 +305,7 @@ def _quantum_field_specs(species: Optional[str]) -> List[PropertySpec]:
     try:
         from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
         import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
-        schema = QuantumStateRegistry.get_schema(species)
-        fields = list(schema.global_fields) + list(schema.local_fields)
+        fields = QuantumStateRegistry.get_fields(species)
     except Exception:
         return specs
     for state in ("upper", "lower"):

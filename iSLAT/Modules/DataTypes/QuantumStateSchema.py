@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple
+from typing import Any, ClassVar, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 import numpy as np
 from typing import NamedTuple
@@ -503,6 +503,7 @@ class QuantumStateRegistry:
                             resolve_array=_make_resolve_array(),
                             resolve_scalar=_make_resolve_scalar(),
                             group=f"Quantum \u2014 {_state}",
+                            quantum_field=_fname,
                         )
                     )
         except Exception:
@@ -529,6 +530,26 @@ class QuantumStateRegistry:
         if molecule_id is None:
             return cls._fallback
         return cls._registry.get(molecule_id, cls._fallback)
+
+    @classmethod
+    def get_fields(cls, molecule_id: Optional[str]) -> Tuple[QuantumField, ...]:
+        """Return the quantum fields declared for *molecule_id*.
+
+        This is the single source of truth for "which parsed quantum numbers
+        does this species expose" and is shared by the line-list filter
+        window and the population-diagram axis / color-by dialogs.  An
+        unregistered or ``None`` id resolves to the generic fallback schema,
+        which declares no fields, so the result is empty.
+        """
+        return tuple(cls.get_schema(molecule_id).all_fields)
+
+    @classmethod
+    def get_field_names(cls, molecule_ids: Iterable[Optional[str]]) -> Set[str]:
+        """Return the union of quantum field names declared for *molecule_ids*."""
+        names: Set[str] = set()
+        for mid in molecule_ids:
+            names.update(f.name for f in cls.get_fields(mid))
+        return names
 
     @classmethod
     def list_molecules(cls) -> List[str]:

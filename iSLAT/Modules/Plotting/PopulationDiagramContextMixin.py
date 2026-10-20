@@ -21,6 +21,22 @@ class PopulationDiagramContextMixin:
     Methods intentionally receive ``pdp`` (a :class:`PopulationDiagramPlot`)
     and ``draw_idle`` (a zero-argument callable that flushes the canvas) as explicit parameters so the mixin stays decoupled from any particular view structure.
     """
+
+    @staticmethod
+    def _plot_species(pdp: Any) -> Optional[list]:
+        """Species ids of the molecules on *pdp*, or ``None`` to offer everything.
+
+        Passed to the :class:`PlotAxisRegistry` option lists so the axis,
+        color-by and marker-shape menus only offer quantum numbers that the
+        plotted molecules' schemas declare — the same scoping the line-list
+        filter window applies.
+        """
+        if pdp is None or not hasattr(pdp, "get_molecule_ids"):
+            return None
+        try:
+            return list(pdp.get_molecule_ids())
+        except Exception:
+            return None
     # ------------------------------------------------------------------
     # Public helper - build the tk.Menu
     # ------------------------------------------------------------------
@@ -325,7 +341,7 @@ class PopulationDiagramContextMixin:
 
         from iSLAT.Modules.DataTypes.PlotAxisRegistry import PlotAxisRegistry as _Reg
 
-        color_entries = _Reg.get_color_options()
+        color_entries = _Reg.get_color_options(species=self._plot_species(pdp))
         PROP_OPTIONS = [(e.display_name, e.key) for e in color_entries]
         PROP_LABELS  = [p[0] for p in PROP_OPTIONS]
         PROP_VALUES  = [p[1] for p in PROP_OPTIONS]
@@ -488,7 +504,7 @@ class PopulationDiagramContextMixin:
 
         from iSLAT.Modules.DataTypes.PlotAxisRegistry import PlotAxisRegistry as _Reg
 
-        axis_entries = _Reg.get_axis_options()
+        axis_entries = _Reg.get_axis_options(species=self._plot_species(pdp))
         AXIS_OPTIONS = [(e.display_name, e.key) for e in axis_entries]
         AXIS_LABELS = [o[0] for o in AXIS_OPTIONS]
         AXIS_VALUES = [o[1] for o in AXIS_OPTIONS]

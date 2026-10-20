@@ -39,6 +39,7 @@ from typing import (
     Callable,
     ClassVar,
     Dict,
+    Iterable,
     List,
     Literal,
     Optional,
@@ -94,6 +95,10 @@ class PlotAxisEntry:
     group:
         Optional grouping label for GUI sections (e.g. ``"Physics"``,
         ``"Quantum — upper"``, ``"Quantum — lower"``).
+    quantum_field:
+        For quantum-number entries, the schema field name this entry reads
+        (e.g. ``"J"``).  ``None`` for species-independent properties.  Used
+        to scope option lists to the molecules actually on a plot.
     """
 
     key: str
@@ -110,6 +115,7 @@ class PlotAxisEntry:
         default=None, repr=False
     )
     group: str = ""
+    quantum_field: Optional[str] = None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -223,14 +229,50 @@ class PlotAxisRegistry:
     # ── Option lists ─────────────────────────────────────────────────
 
     @classmethod
-    def get_axis_options(cls) -> List[PlotAxisEntry]:
-        """Return all entries with ``available_as_axis=True``, in order."""
-        return [e for e in cls._entries.values() if e.available_as_axis]
+    def filter_for_species(
+        cls,
+        entries: Iterable[PlotAxisEntry],
+        species: Optional[Iterable[Optional[str]]],
+    ) -> List[PlotAxisEntry]:
+        """Keep only the *entries* that apply to the given *species*.
+
+        Species-independent entries always pass.  A quantum-field entry
+        passes only when at least one of the species' registered schemas
+        declares that field — the same lookup the line-list filter window
+        uses (:meth:`QuantumStateRegistry.get_fields`).  ``species=None``
+        disables filtering and returns every entry.
+        """
+        entries = list(entries)
+        if species is None:
+            return entries
+        from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
+        allowed = QuantumStateRegistry.get_field_names(species)
+        return [e for e in entries
+                if e.quantum_field is None or e.quantum_field in allowed]
 
     @classmethod
-    def get_color_options(cls) -> List[PlotAxisEntry]:
-        """Return all entries with ``available_as_color=True``, in order."""
-        return [e for e in cls._entries.values() if e.available_as_color]
+    def get_axis_options(
+        cls, species: Optional[Iterable[Optional[str]]] = None,
+    ) -> List[PlotAxisEntry]:
+        """Return entries with ``available_as_axis=True``, in order.
+
+        When *species* is given, quantum-field entries are limited to the
+        fields those molecules' schemas declare (see :meth:`filter_for_species`).
+        """
+        return cls.filter_for_species(
+            (e for e in cls._entries.values() if e.available_as_axis), species)
+
+    @classmethod
+    def get_color_options(
+        cls, species: Optional[Iterable[Optional[str]]] = None,
+    ) -> List[PlotAxisEntry]:
+        """Return entries with ``available_as_color=True``, in order.
+
+        When *species* is given, quantum-field entries are limited to the
+        fields those molecules' schemas declare (see :meth:`filter_for_species`).
+        """
+        return cls.filter_for_species(
+            (e for e in cls._entries.values() if e.available_as_color), species)
 
     @classmethod
     def keys(cls) -> List[str]:
