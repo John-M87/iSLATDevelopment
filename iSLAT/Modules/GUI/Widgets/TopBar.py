@@ -216,12 +216,35 @@ class TopBar(ResizableFrame):
                 label=_view_name,
                 command=lambda n=_view_name: self.main_plot.switch_view(n),
             )
+
+        # Main-plot options: Y auto-scale / manual limits and observed-data
+        # visibility.  The check marks are re-read from the plot controller
+        # each time the menu opens so they always reflect the real state.
+        views_menu.add_separator()
+        self._y_autoscale_var = tk.BooleanVar(value=True)
+        self._observed_var = tk.BooleanVar(value=True)
+        views_menu.add_checkbutton(
+            label="Auto-scale Y Axis",
+            variable=self._y_autoscale_var,
+            command=lambda: self.main_plot.set_y_autoscale(self._y_autoscale_var.get()),
+        )
+        views_menu.add_command(label="Set Y Limits\u2026", command=self.open_y_limits_dialog)
+        views_menu.add_checkbutton(
+            label="Show Observed Data",
+            variable=self._observed_var,
+            command=lambda: self.main_plot.toggle_observed_data(self._observed_var.get()),
+        )
+        views_menu.configure(postcommand=self._sync_plot_option_vars)
+
         views_drpwn.config(menu=views_menu)
         MenuToolTip(views_menu, {
             "Three Panel":        "Standard 3-panel layout:\nfull spectrum, line inspection,\nand population diagram.",
             "Full Spectrum":      "Multi-panel full-spectrum view\nshowing the entire wavelength range.",
             "Population Diagram": "Standalone Boltzmann / rotation\ndiagram for the active molecule.",
             "Line Grid":          "Grid of individual line fits\nfrom the most recent fit run.",
+            "Auto-scale Y Axis":  "ON: the main plot's Y axis follows\nthe data in view.\nOFF: it stays at the current / set limits.",
+            "Set Y Limits\u2026":  "Pin the main plot's Y axis to\nspecific values (turns auto-scale off).",
+            "Show Observed Data": "Show / hide the observed spectrum\non the main plot.",
         })
         # ──────────────────────────────────────────────────────────────
 
@@ -1425,3 +1448,67 @@ class TopBar(ResizableFrame):
     def toggle_legend(self):
         #print("Toggled legend on plot")
         self.main_plot.toggle_legend()
+
+    # ------------------------------------------------------------------
+    # Main-plot options (Views dropdown)
+    # ------------------------------------------------------------------
+    def _sync_plot_option_vars(self) -> None:
+        """Refresh the Views-menu check marks from the plot controller's state."""
+        try:
+            self._y_autoscale_var.set(bool(getattr(self.main_plot, 'y_autoscale_toggle', True)))
+            self._observed_var.set(bool(getattr(self.main_plot, 'observed_toggle', True)))
+        except Exception:
+            pass
+
+    def open_y_limits_dialog(self) -> None:
+        """Open a small dialog to pin the main plot's Y axis to specific values."""
+        pm = self.main_plot
+        try:
+            cur_lo, cur_hi = pm.get_y_limits()
+        except Exception:
+            cur_lo, cur_hi = 0.0, 1.0
+
+        win = tk.Toplevel(self)
+        win.title("Main Plot \u2014 Y Limits")
+        win.resizable(False, False)
+        win.grab_set()
+        pad = {"padx": 8, "pady": 4}
+
+        tk.Label(win, text="Y min (Jy):").grid(row=0, column=0, sticky="w", **pad)
+        lo_var = tk.StringVar(value=f"{cur_lo:.4g}")
+        lo_entry = tk.Entry(win, textvariable=lo_var, width=12)
+        lo_entry.grid(row=0, column=1, sticky="w", **pad)
+
+        tk.Label(win, text="Y max (Jy):").grid(row=1, column=0, sticky="w", **pad)
+        hi_var = tk.StringVar(value=f"{cur_hi:.4g}")
+        tk.Entry(win, textvariable=hi_var, width=12).grid(row=1, column=1, sticky="w", **pad)
+
+        status = tk.Label(win, text="", fg="red")
+        status.grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+
+        def _apply(*_):
+            try:
+                lo = float(lo_var.get().strip())
+                hi = float(hi_var.get().strip())
+            except ValueError:
+                status.config(text="Enter numeric values for both limits.")
+                return
+            if lo >= hi:
+                status.config(text="Y min must be less than Y max.")
+                return
+            pm.set_y_limits(lo, hi)
+            win.destroy()
+
+        def _auto():
+            pm.set_y_autoscale(True)
+            win.destroy()
+
+        btns = tk.Frame(win)
+        btns.grid(row=3, column=0, columnspan=2, pady=8)
+        ttk.Button(btns, text="Apply", command=_apply).pack(side="left", padx=4)
+        ttk.Button(btns, text="Auto-scale", command=_auto).pack(side="left", padx=4)
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=4)
+
+        win.bind("<Return>", _apply)
+        win.bind("<Escape>", lambda _e: win.destroy())
+        lo_entry.focus_set()

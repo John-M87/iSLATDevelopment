@@ -3,7 +3,8 @@ ToggleMixin - shared toggle-state management for PlotView implementations.
 
 Both :class:`ThreePanelView` and :class:`FullSpectrumView` need to
 reconcile visual state (atomic lines, saved lines, summed spectrum,
-legend) with the controller's canonical ``toggle_state`` dict.
+legend, observed-data visibility, Y-axis limits) with the controller's
+canonical ``toggle_state`` dict.
 
 This mixin extracts the common *orchestration* logic so each view only
 has to implement a few small hooks describing **where** its axes live
@@ -97,6 +98,13 @@ class ToggleMixin:
                 if hasattr(coll, "_islat_summed"):
                     coll.set_visible(visible)
 
+    # Observed-data / Y-policy hooks (see PlotView): every toggle axis takes part.
+    def _iter_observed_axes(self):
+        return self._iter_toggle_axes()
+
+    def _iter_y_axes(self):
+        return self._iter_toggle_axes()
+
     def _set_legend_visibility(self, visible: bool) -> None:
         """Show / hide the legend on all toggle axes.
 
@@ -131,6 +139,9 @@ class ToggleMixin:
 
         # Legend
         self._set_legend_visibility(toggle_state.get("legend", True))
+
+        # Observed-data visibility and manual Y limits
+        self._reapply_display_state(toggle_state)
 
         self.draw()
 

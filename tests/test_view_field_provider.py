@@ -3,7 +3,7 @@
 
 Covers:
   - PlotView._register_control_fields() default is a no-op
-  - ThreePanelView does not register any fields (no bus present)
+  - ThreePanelView does not register any fields (options live in the Views menu)
   - FullSpectrumView registers an n_panels EntryField and a
     DisplayRangeField on the control_panel surface
   - ControlBus routes registrations to the correct surface
@@ -123,7 +123,11 @@ class TestPlotViewRegisterFields:
 # ======================================================================
 
 class TestThreePanelViewNoFields:
-    """ThreePanelView does not register any fields on the ControlBus."""
+    """ThreePanelView does not register any fields on the ControlBus.
+
+    Its Y-scale and observed-data options live in the TopBar's Views menu
+    instead, so they are available regardless of surface wiring order.
+    """
 
     def test_no_fields_registered_when_bus_present(self):
         from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
@@ -131,12 +135,14 @@ class TestThreePanelViewNoFields:
         bus = ControlBus()
         surface = _NoopSurface()
         bus.register_surface("control_panel", surface)
+        bus.register_surface("top_bar", _NoopSurface())
         pm.control_bus = bus
 
         view = ThreePanelView(pm)
         view._register_control_fields()
 
         assert surface.fields() == []
+        assert bus.get_surface("top_bar").fields() == []
 
     def test_deactivate_unregister_owner_is_safe(self):
         from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView

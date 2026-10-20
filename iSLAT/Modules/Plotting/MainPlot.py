@@ -12,7 +12,7 @@ import iSLAT.Constants as c
 
 from .BasePlot import BasePlot
 from .MainPlotGrid import MainPlotGrid
-from .PlotView import PlotView
+from .PlotView import PlotView, fit_y_limits_to_data
 from .ThreePanelView import ThreePanelView
 from .FullSpectrumView import FullSpectrumView
 from .PopulationDiagramView import PopulationDiagramView
@@ -84,6 +84,9 @@ class iSLATPlot:
             "show_residuals": False,
             "data_density": False,       # XScaling.DATA_DENSITY when True
             "current_selection": None,   # (xmin, xmax) or None
+            "y_autoscale":  True,        # main-plot Y axis follows the data in view
+            "y_limits":     None,        # manual (ymin, ymax) used when y_autoscale is False
+            "observed":     True,        # observed-spectrum artists visible
         }
 
         #self.fig = plt.Figure(figsize=(15, 8.5))
@@ -204,6 +207,22 @@ class iSLATPlot:
     @residual_toggle.setter
     def residual_toggle(self, value: bool) -> None:
         self.toggle_state["show_residuals"] = value
+
+    @property
+    def y_autoscale_toggle(self) -> bool:
+        return self.toggle_state.get("y_autoscale", True)
+
+    @y_autoscale_toggle.setter
+    def y_autoscale_toggle(self, value: bool) -> None:
+        self.toggle_state["y_autoscale"] = bool(value)
+
+    @property
+    def observed_toggle(self) -> bool:
+        return self.toggle_state.get("observed", True)
+
+    @observed_toggle.setter
+    def observed_toggle(self, value: bool) -> None:
+        self.toggle_state["observed"] = bool(value)
 
     def create_toolbar(self, frame):
         self.toolbar = iSLATNavigationToolbar(
@@ -410,21 +429,130 @@ class iSLATPlot:
             # If islat has no display_range attribute, do nothing
             return
 
-        # Adjust y-limits
-        wmin, wmax = self.ax1.get_xlim()
-        mask = (self.islat.wave_data >= wmin) & (self.islat.wave_data <= wmax)
-        range_flux_cnts = self.islat.flux_data[mask]
-        if range_flux_cnts.size == 0:
-            fig_height = np.nanmax(self.islat.flux_data)
-            fig_bottom_height = 0
-        else:
-            fig_height = np.nanmax(range_flux_cnts)
-            fig_bottom_height = np.nanmin(range_flux_cnts)
-        
-        if match_y:
-            self.ax1.set_ylim(ymin=fig_bottom_height, ymax=fig_height + (fig_height / 8))
+        # Adjust y-limits according to the auto / manual policy.
+        self.apply_y_limits(autoscale_now=match_y)
 
         self.canvas.draw_idle()
+
+    # ------------------------------------------------------------------
+    # Main-plot Y axis: auto-scale toggle and manual limits
+    # ------------------------------------------------------------------
+    def _y_policy_view(self):
+        """Return the active view when it implements the shared Y policy, else ``None``."""
+        view = getattr(self, 'active_view', None)
+        if view is not None and hasattr(view, 'apply_y_limits') and hasattr(view, 'get_y_limits'):
+            return view
+        return None
+
+    def apply_y_limits(self, autoscale_now: bool = True) -> bool:
+        """Apply the Y-axis policy (``toggle_state['y_autoscale']`` / ``['y_limits']``).
+
+        Delegates to the active view's :meth:`PlotView.apply_y_limits`, so
+        every view that exposes Y axes (three-panel main plot, full-spectrum
+        panels, ...) honours the same setting.  Before a view exists the main
+        plot's ``ax1`` is handled directly.
+
+        * Auto-scale on and *autoscale_now*: re-fit the axes to the data.
+        * Auto-scale on but *autoscale_now* False: leave them alone.
+        * Auto-scale off: pin the axes to the stored manual limits.
+
+        Returns ``True`` when the limits were set.
+        """
+        view = self._y_policy_view()
+        if view is not None:
+            return bool(view.apply_y_limits(self.toggle_state, autoscale_now=autoscale_now))
+        # Fallback: no active view yet - operate on the main-plot axes.
+        if not self.y_autoscale_toggle:
+            manual = self.toggle_state.get("y_limits")
+            if manual is None:
+                return False
+            self.ax1.set_ylim(*manual)
+            return True
+        if not autoscale_now:
+            return False
+        auto = fit_y_limits_to_data(
+            self.ax1,
+            getattr(self.islat, 'wave_data', None),
+            getattr(self.islat, 'flux_data', None),
+        )
+        if auto is None:
+            return False
+        self.ax1.set_ylim(*auto)
+        return True
+
+    def get_y_limits(self) -> Tuple[float, float]:
+        """Return the active view's current ``(ymin, ymax)`` (main-plot axes as fallback)."""
+        view = self._y_policy_view()
+        if view is not None:
+            lims = view.get_y_limits()
+            if lims is not None:
+                return lims
+        lo, hi = self.ax1.get_ylim()
+        return (float(lo), float(hi))
+
+    def _draw_active_view(self) -> None:
+        """Flush the active view's canvas (falls back to the main canvas)."""
+        view = getattr(self, 'active_view', None)
+        if view is not None and hasattr(view, 'draw'):
+            view.draw()
+        else:
+            self.canvas.draw_idle()
+
+    def set_y_autoscale(self, enabled: bool) -> None:
+        """Turn Y auto-scaling on or off.
+
+        Turning it on re-fits the axes immediately.  Turning it off freezes
+        them at their current limits, which become the manual limits.
+        """
+        enabled = bool(enabled)
+        self.y_autoscale_toggle = enabled
+        if not enabled and self.toggle_state.get("y_limits") is None:
+            self.toggle_state["y_limits"] = self.get_y_limits()
+        self.apply_y_limits(autoscale_now=True)
+        self._draw_active_view()
+
+    def toggle_y_autoscale(self) -> None:
+        """Flip the Y auto-scale toggle."""
+        self.set_y_autoscale(not self.y_autoscale_toggle)
+
+    def set_y_limits(
+        self,
+        ymin: Optional[float] = None,
+        ymax: Optional[float] = None,
+    ) -> None:
+        """Pin the Y axes to specific values.
+
+        Either bound may be omitted to keep its current value.  Setting a
+        manual limit switches Y auto-scaling off.  Reversed bounds are
+        ignored.
+        """
+        cur_lo, cur_hi = self.get_y_limits()
+        lo = float(ymin) if ymin is not None else cur_lo
+        hi = float(ymax) if ymax is not None else cur_hi
+        if not (np.isfinite(lo) and np.isfinite(hi)) or lo >= hi:
+            return
+        self.toggle_state["y_limits"] = (lo, hi)
+        self.y_autoscale_toggle = False
+        self.apply_y_limits()
+        self._draw_active_view()
+
+    # ------------------------------------------------------------------
+    # Observed-data visibility
+    # ------------------------------------------------------------------
+    def toggle_observed_data(self, visible: Optional[bool] = None) -> None:
+        """Show or hide the observed spectrum on the active view.
+
+        Parameters
+        ----------
+        visible : bool, optional
+            If *None* the toggle is flipped; otherwise the explicit state
+            is applied.
+        """
+        if visible is None:
+            self.observed_toggle = not self.observed_toggle
+        else:
+            self.observed_toggle = visible
+        self.active_view.toggle_observed_data(self.observed_toggle)
 
     # ================================
     # Loading Indicator for Async Display

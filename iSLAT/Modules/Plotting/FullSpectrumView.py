@@ -213,6 +213,37 @@ class FullSpectrumView(ToggleMixin, PlotView):
     def _iter_toggle_axes(self):
         return self._iter_all_axes()
 
+    def _iter_observed_axes(self):
+        """The spectrum axes of every panel (residual panels carry no observed data)."""
+        return iter(self.subplots.values())
+
+    def _iter_y_axes(self):
+        """The spectrum axes of every panel share the Y policy."""
+        return iter(self.subplots.values())
+
+    def _autoscale_y_axes(self) -> bool:
+        """Re-fit every panel with the composed plot's own per-panel rule.
+
+        Uses the same ``_compute_panel_ylims`` the plot applies when it
+        renders, so turning auto-scale back on restores exactly the
+        layout's limits (including the uniform-ylim option).
+        """
+        plot = self._plot
+        if plot is None or not hasattr(plot, "_compute_panel_ylims"):
+            return super()._autoscale_y_axes()
+        try:
+            ylims = plot._compute_panel_ylims(
+                ylim_fn=getattr(plot, "_spectrum_ylim_fn", None),
+            )
+        except Exception:
+            return super()._autoscale_y_axes()
+        changed = False
+        for idx, ax in self.subplots.items():
+            if idx < len(ylims):
+                ax.set_ylim(*ylims[idx])
+                changed = True
+        return changed
+
     def _load_saved_line_data(self):
         return self._load_line_data()
 
@@ -851,6 +882,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
         # the user has toggled the legend off.
         if not self._pm.legend_toggle:
             self.toggle_legend(False)
+        # ...and recreates observed artists / panel Y limits.
+        self._reapply_display_state(self._pm.toggle_state)
         if self._canvas is not None:
             self._canvas.draw_idle()
 
@@ -903,6 +936,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         if entry is None:
             # Molecule not in cache - trigger a full inplace refresh instead.
             self._plot.update_panels_inplace()
+            self._reapply_display_state(self._pm.toggle_state)
             if self._canvas is not None:
                 self._canvas.draw_idle()
             return
@@ -982,6 +1016,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
             # residual panels, and refreshes the per-panel and global chi^2
             # annotations - all in one call.
             self._plot.update_panels_inplace()
+            self._reapply_display_state(self._pm.toggle_state)
         else:
             try:
                 summed_wavelengths, summed_flux = molecules_dict.get_summed_flux(
@@ -1046,6 +1081,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
 
         # Legend
         self._set_legend_visibility(toggle_state.get("legend", True))
+
+        # Observed-data visibility and manual Y limits
+        self._reapply_display_state(toggle_state)
 
         self.draw()
 

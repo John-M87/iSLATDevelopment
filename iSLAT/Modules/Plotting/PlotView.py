@@ -16,6 +16,32 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.Molecule import Molecule
 
+def fit_y_limits_to_data(ax: Any, wave: Any, flux: Any) -> Optional[Tuple[float, float]]:
+    """Return ``(ymin, ymax)`` fitting *flux* inside *ax*'s current x-range.
+
+    This is the historical main-plot auto-scale rule: the minimum and
+    maximum observed flux in view, with one-eighth of the peak as headroom.
+    When nothing falls in range the whole array's peak is used with a zero
+    floor.  Returns ``None`` when there is no usable flux.
+    """
+    import numpy as np
+    if wave is None or flux is None or len(flux) == 0:
+        return None
+    wave = np.asarray(wave)
+    flux = np.asarray(flux)
+    wmin, wmax = ax.get_xlim()
+    in_range = flux[(wave >= wmin) & (wave <= wmax)]
+    if in_range.size == 0:
+        top = np.nanmax(flux)
+        bottom = 0.0
+    else:
+        top = np.nanmax(in_range)
+        bottom = np.nanmin(in_range)
+    if not np.isfinite(top) or not np.isfinite(bottom):
+        return None
+    return (float(bottom), float(top + top / 8))
+
+
 class PlotView(ABC):
     """
     Abstract base for a swappable plot view inside the main iSLAT window.
@@ -190,6 +216,101 @@ class PlotView(ABC):
     def toggle_atomic_lines(self, show: bool) -> None:
         """Add or remove atomic line annotations."""
         ...
+
+    # ------------------------------------------------------------------
+    # Observed-data visibility and Y-axis policy (shared implementation)
+    # ------------------------------------------------------------------
+    # Views opt in by yielding axes from the two iterator hooks below.
+    # :class:`ToggleMixin` wires both to ``_iter_toggle_axes`` so every
+    # toggle-aware view gets the behaviour; views without a spectrum keep
+    # the empty defaults and the public methods become no-ops.
+
+    def _iter_observed_axes(self):
+        """Yield axes that carry observed-spectrum artists (``_islat_observed``)."""
+        return iter(())
+
+    def _iter_y_axes(self):
+        """Yield axes governed by the Y auto-scale / manual-limit policy."""
+        return iter(())
+
+    def _set_observed_visibility(self, visible: bool, axes=None) -> bool:
+        """Show / hide every observed-spectrum artist on *axes*.
+
+        *axes* defaults to :meth:`_iter_observed_axes`.  Returns ``True``
+        when at least one artist was found.
+        """
+        found = False
+        for ax in (axes if axes is not None else self._iter_observed_axes()):
+            for artist in list(ax.lines) + list(ax.collections):
+                if hasattr(artist, "_islat_observed"):
+                    artist.set_visible(visible)
+                    found = True
+        return found
+
+    def toggle_observed_data(self, visible: bool) -> None:
+        """Show or hide the observed spectrum on this view's observed axes."""
+        if self._set_observed_visibility(visible):
+            self.draw()
+
+    def _autoscaled_y_limits_for(self, ax: Any) -> Optional[Tuple[float, float]]:
+        """Default auto-scale rule: fit *ax* to the observed flux inside its x-range."""
+        islat = getattr(self, "_islat", None)
+        return fit_y_limits_to_data(
+            ax,
+            getattr(islat, "wave_data", None),
+            getattr(islat, "flux_data", None),
+        )
+
+    def _autoscale_y_axes(self) -> bool:
+        """Re-fit every Y axis.  Views with their own layout rules override this."""
+        changed = False
+        for ax in self._iter_y_axes():
+            lims = self._autoscaled_y_limits_for(ax)
+            if lims is not None:
+                ax.set_ylim(*lims)
+                changed = True
+        return changed
+
+    def apply_y_limits(self, toggle_state: dict, autoscale_now: bool = True) -> bool:
+        """Apply the controller's Y-axis policy to this view's Y axes.
+
+        * ``y_autoscale`` on and *autoscale_now*: re-fit the axes.
+        * ``y_autoscale`` on but *autoscale_now* False: leave them alone.
+        * ``y_autoscale`` off: pin every Y axis to ``y_limits``.
+
+        Returns ``True`` when any limits were set.
+        """
+        if not toggle_state.get("y_autoscale", True):
+            manual = toggle_state.get("y_limits")
+            if manual is None:
+                return False
+            changed = False
+            for ax in self._iter_y_axes():
+                ax.set_ylim(*manual)
+                changed = True
+            return changed
+        if not autoscale_now:
+            return False
+        return self._autoscale_y_axes()
+
+    def get_y_limits(self) -> Optional[Tuple[float, float]]:
+        """Return ``(ymin, ymax)`` of the first Y axis, or ``None`` if the view has none."""
+        for ax in self._iter_y_axes():
+            lo, hi = ax.get_ylim()
+            return (float(lo), float(hi))
+        return None
+
+    def _reapply_display_state(self, toggle_state: dict) -> None:
+        """Re-impose observed visibility and manual Y limits after a re-render.
+
+        Re-rendering recreates observed artists (visible) and lets the plot
+        pick its own Y limits, so both settings must be put back.  Call it
+        at the end of every re-render path and from ``sync_toggle_state``.
+        """
+        if not isinstance(toggle_state, dict):
+            return
+        self._set_observed_visibility(toggle_state.get("observed", True))
+        self.apply_y_limits(toggle_state, autoscale_now=False)
 
     # ------------------------------------------------------------------
     # File output

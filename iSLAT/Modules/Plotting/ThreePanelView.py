@@ -279,6 +279,8 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             if leg is not None:
                 leg.set_visible(False)
 
+        self._reapply_display_state(self._pm.toggle_state)
+
     def _do_update_model_plot(self) -> None:
         """Internal full re-render via the composed :class:`MainPlotGrid`.
 
@@ -340,6 +342,8 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
                 leg = ax.get_legend()
                 if leg is not None:
                     leg.set_visible(False)
+
+        self._reapply_display_state(self._pm.toggle_state)
 
         # Recreate span selector and redraw
         self._pm.make_span_selector()
@@ -1138,6 +1142,14 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         """ThreePanelView is always ready (it delegates to pre-existing axes)."""
         return True
 
+    def _iter_observed_axes(self):
+        """Only the main spectrum panel carries the toggleable observed data."""
+        yield self.ax1
+
+    def _iter_y_axes(self):
+        """The Y auto-scale / manual-limit policy governs the main spectrum panel."""
+        yield self.ax1
+
     def _iter_toggle_axes(self):
         """Yield the three fixed axes."""
         yield self.ax1
@@ -1216,6 +1228,9 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
 
         # Legend
         self._set_legend_visibility(toggle_state.get("legend", True))
+
+        # Observed-data visibility and manual Y limits (main panel)
+        self._reapply_display_state(toggle_state)
 
         self.draw()
 
