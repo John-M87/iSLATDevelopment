@@ -221,6 +221,40 @@ class BasePlot(ABC):
         color = getattr(molecule, "color", None)
         return color if color else "blue"
 
+    #: Multiplier applied to the base model line width when a molecule is bold.
+    BOLD_LINEWIDTH_FACTOR: float = 2.5
+
+    @classmethod
+    def get_molecule_linewidth(cls, molecule: Optional["Molecule"], base_linewidth: float) -> float:
+        """Return the line width to draw *molecule* with.
+
+        Molecules flagged ``is_bold`` are drawn ``BOLD_LINEWIDTH_FACTOR`` times
+        thicker than *base_linewidth*; everything else uses *base_linewidth*.
+        """
+        # Compare against True explicitly so non-bool stand-ins (e.g. mocks) are not treated as bold.
+        if molecule is not None and getattr(molecule, "is_bold", False) is True:
+            return float(base_linewidth) * cls.BOLD_LINEWIDTH_FACTOR
+        return float(base_linewidth)
+
+    def get_molecule_linewidth_by_name(self, molecule_name: str, base_linewidth: float) -> float:
+        """Like :meth:`get_molecule_linewidth` but looks the molecule up in ``self.molecules``.
+
+        Used by the ``mol_cache`` rendering loops, which only carry the molecule *name*.
+        Falls back to *base_linewidth* when no molecule collection is attached.
+        """
+        molecule = None
+        single = getattr(self, "molecule", None)
+        if single is not None and getattr(single, "name", None) == molecule_name:
+            molecule = single
+        else:
+            molecules = getattr(self, "molecules", None)
+            if molecules is not None:
+                try:
+                    molecule = molecules.get(molecule_name)
+                except Exception:
+                    molecule = None
+        return self.get_molecule_linewidth(molecule, base_linewidth)
+
     @staticmethod
     def build_molecule_legend(
         ax: Axes,

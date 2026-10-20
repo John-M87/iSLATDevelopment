@@ -220,6 +220,41 @@ class TestSpectrumPanelRenderingHelpers:
         plt.close(fig)
 
 
+class TestMoleculeLinewidth:
+    """BasePlot.get_molecule_linewidth / get_molecule_linewidth_by_name."""
+
+    def test_plain_molecule_keeps_base_width(self):
+        from types import SimpleNamespace
+        mol = SimpleNamespace(name="A", is_bold=False)
+        assert BasePlot.get_molecule_linewidth(mol, 1.2) == 1.2
+
+    def test_bold_molecule_is_scaled(self):
+        from types import SimpleNamespace
+        mol = SimpleNamespace(name="A", is_bold=True)
+        assert BasePlot.get_molecule_linewidth(mol, 1.2) == pytest.approx(1.2 * BasePlot.BOLD_LINEWIDTH_FACTOR)
+
+    def test_missing_or_non_bool_flag_is_not_bold(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        assert BasePlot.get_molecule_linewidth(None, 2.0) == 2.0
+        assert BasePlot.get_molecule_linewidth(SimpleNamespace(name="A"), 2.0) == 2.0
+        assert BasePlot.get_molecule_linewidth(MagicMock(), 2.0) == 2.0
+
+    def test_by_name_looks_up_molecules_collection(self):
+        from types import SimpleNamespace
+        panel = ConcreteSpectralPanel(np.arange(5.0), np.ones(5), 0.0, 4.0)
+        panel.molecules = {"A": SimpleNamespace(name="A", is_bold=True),
+                           "B": SimpleNamespace(name="B", is_bold=False)}
+        assert panel.get_molecule_linewidth_by_name("A", 1.0) == pytest.approx(BasePlot.BOLD_LINEWIDTH_FACTOR)
+        assert panel.get_molecule_linewidth_by_name("B", 1.0) == 1.0
+        assert panel.get_molecule_linewidth_by_name("missing", 1.0) == 1.0
+
+    def test_by_name_without_molecules_uses_base(self):
+        panel = ConcreteSpectralPanel(np.arange(5.0), np.ones(5), 0.0, 4.0)
+        panel.molecules = None
+        assert panel.get_molecule_linewidth_by_name("A", 0.8) == 0.8
+
+
 class TestBuildMoleculeLegend:
     def test_empty(self):
         fig, ax = plt.subplots()

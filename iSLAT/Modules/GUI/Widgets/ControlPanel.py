@@ -1419,6 +1419,10 @@ class ControlPanel(ttk.Frame):
             command=lambda: self._edit_molecule_label(mol_name),
         )
         menu.add_command(
+            label="Unbold on Plot" if self._is_molecule_bold(mol_name) else "Bold on Plot",
+            command=lambda: self._toggle_molecule_bold_action(mol_name),
+        )
+        menu.add_command(
             label="Filter Line List",
             command=lambda: self._filter_line_list_action(mol_name),
         )
@@ -1450,6 +1454,26 @@ class ControlPanel(ttk.Frame):
             menu.tk_popup(event.x_root, event.y_root, 0)
         finally:
             menu.grab_release()
+
+    def _is_molecule_bold(self, mol_name: str) -> bool:
+        """Return True if *mol_name* is currently drawn bold on the plot."""
+        mol_dict = getattr(self.islat, 'molecules_dict', None)
+        if mol_dict is None or mol_name not in mol_dict:
+            return False
+        return bool(getattr(mol_dict[mol_name], 'is_bold', False))
+
+    def _toggle_molecule_bold_action(self, mol_name: str) -> None:
+        """Toggle the molecule's bold flag.
+
+        Setting ``is_bold`` fires the molecule parameter-change callback, which
+        makes the active plot view redraw the molecule with a heavier line.
+        """
+        mol_dict = getattr(self.islat, 'molecules_dict', None)
+        if mol_dict is None or mol_name not in mol_dict:
+            print(f"ControlPanel: cannot bold unknown molecule '{mol_name}'.")
+            return
+        mol_obj = mol_dict[mol_name]
+        mol_obj.is_bold = not getattr(mol_obj, 'is_bold', False)
 
     def _delete_molecule_action(self, mol_name: str) -> None:
         """Wrapper: call self._delete_molecule and report any failure."""

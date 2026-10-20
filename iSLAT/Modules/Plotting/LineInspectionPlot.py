@@ -188,7 +188,7 @@ class LineInspectionPlot(SpectrumPanel):
             model_flux_range,
             color=self.get_molecule_color(molecule),
             linestyle="--",
-            linewidth=2,
+            linewidth=self.get_molecule_linewidth(molecule, 2),
             label=self.get_molecule_display_name(molecule),
         )
         return float(np.nanmax(model_flux_range))

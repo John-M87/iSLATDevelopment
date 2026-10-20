@@ -184,8 +184,10 @@ class OpticalDepthPanel(SpectralPanel):
                 ax.plot(
                     lam_seg, tau_seg,
                     color=m_color, alpha=0.8,
-                    linewidth=self._get_theme_value(
-                        "full_spectrum_model_linewidth", 0.8),
+                    linewidth=self.get_molecule_linewidth_by_name(
+                        m_name,
+                        self._get_theme_value("full_spectrum_model_linewidth", 0.8),
+                    ),
                     label=m_label,
                     zorder=self._get_theme_value("zorder_model", 3),
                 )

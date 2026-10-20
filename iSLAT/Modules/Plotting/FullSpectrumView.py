@@ -914,7 +914,10 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 m_lam[m_mask], m_flux[m_mask],
                 linestyle="--", color=m_color,
                 alpha=self._plot._get_theme_value("full_spectrum_model_alpha", 0.8),
-                linewidth=self._plot._get_theme_value("full_spectrum_model_linewidth", 0.8),
+                linewidth=self._plot.get_molecule_linewidth(
+                    molecule,
+                    self._plot._get_theme_value("full_spectrum_model_linewidth", 0.8),
+                ),
                 label=m_label,
                 zorder=self._plot._get_theme_value("zorder_model", 3),
             )

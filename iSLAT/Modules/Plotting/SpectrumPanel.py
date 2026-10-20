@@ -104,6 +104,7 @@ class SpectrumPanel(SpectralPanel):
         # NOTE: Gap indicators are drawn later by _post_render_cell() after y-limits are finalised, so that the break-mark lines and text annotations are positioned correctly.
 
         # -- Molecule models (slice pre-computed cache) -----------------
+        base_model_linewidth = kwargs.get("model_linewidth", self._get_theme_value("model_linewidth", 1.2))
         for m_lam, m_flux, m_color, m_label, m_name in self.mol_cache:
             m_mask = (m_lam >= xr[0]) & (m_lam <= xr[1])
             if np.any(m_mask):
@@ -113,7 +114,7 @@ class SpectrumPanel(SpectralPanel):
                     linestyle="--",
                     color=m_color,
                     alpha = kwargs.get("model_alpha", self._get_theme_value("model_alpha", 1.0)),
-                    linewidth = kwargs.get("model_linewidth", self._get_theme_value("model_linewidth", 1.2)),
+                    linewidth=self.get_molecule_linewidth_by_name(m_name, base_model_linewidth),
                     #alpha=self._get_theme_value(
                     #    #"full_spectrum_model_alpha", 0.8
                     #    "model_alpha", 1.0
@@ -252,6 +253,7 @@ class SpectrumPanel(SpectralPanel):
         """Plot a single molecule's model spectrum on *ax*."""
         if linewidth is None:
             linewidth = self._get_theme_value("model_linewidth", 1.2)
+        linewidth = self.get_molecule_linewidth(molecule, linewidth)
         if alpha is None:
             alpha = self._get_theme_value("model_alpha", 0.8)
         plot_lam, plot_flux = self.get_molecule_spectrum_data(

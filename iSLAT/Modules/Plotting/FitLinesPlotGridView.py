@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 
 from .PlotView import PlotView
+from .BasePlot import BasePlot
 from .FitLinesPlotGrid import FitLinesPlotGrid
 
 if TYPE_CHECKING:
@@ -545,7 +546,7 @@ class FitLinesPlotGridView(PlotView):
                         linestyle="--",
                         color=getattr(mol, "color", None),
                         alpha=0.8,
-                        linewidth=0.8,
+                        linewidth=BasePlot.get_molecule_linewidth(mol, 0.8),
                         label=getattr(mol, "displaylabel", mol_name),
                         zorder=3,
                     )

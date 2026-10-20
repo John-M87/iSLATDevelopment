@@ -435,14 +435,17 @@ class FullSpectrumPlot(StackedSpectralPanel):
                     existing_mol_lines[art._molecule_name] = art
 
             rendered_names = set()
+            base_model_linewidth = self._get_theme_value("full_spectrum_model_linewidth", 0.8)
             for m_lam, m_flux, m_color, m_label, m_name in mol_cache:
                 m_mask = (m_lam >= xr[0]) & (m_lam <= xr[1])
                 rendered_names.add(m_name)
+                m_linewidth = self.get_molecule_linewidth_by_name(m_name, base_model_linewidth)
                 if m_name in existing_mol_lines:
                     line = existing_mol_lines[m_name]
                     if np.any(m_mask):
                         line.set_data(m_lam[m_mask], m_flux[m_mask])
                         line.set_color(m_color)
+                        line.set_linewidth(m_linewidth)
                         line.set_visible(True)
                     else:
                         line.set_data([], [])
@@ -452,7 +455,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
                             m_lam[m_mask], m_flux[m_mask],
                             linestyle="--", color=m_color,
                             alpha=self._get_theme_value("full_spectrum_model_alpha", 0.8),
-                            linewidth=self._get_theme_value("full_spectrum_model_linewidth", 0.8),
+                            linewidth=m_linewidth,
                             label=m_label,
                             zorder=self._get_theme_value("zorder_model", 3),
                         )

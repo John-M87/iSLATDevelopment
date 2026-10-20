@@ -97,6 +97,34 @@ class TestMolecule:
         mol.is_visible = '0'
         assert mol.is_visible is False
 
+    def test_is_bold_defaults_false(self):
+        mol = self._make_molecule()
+        assert mol.is_bold is False
+
+    def test_is_bold_toggle_and_string_conversion(self):
+        mol = self._make_molecule(is_bold=True)
+        assert mol.is_bold is True
+        mol.is_bold = False
+        assert mol.is_bold is False
+        mol.is_bold = 'true'
+        assert mol.is_bold is True
+        mol.is_bold = '0'
+        assert mol.is_bold is False
+
+    def test_is_bold_notifies_without_invalidating_flux(self):
+        from iSLAT.Modules.DataTypes.Molecule import Molecule
+        mol = self._make_molecule()
+        mol._dirty_flags['flux'] = False
+        events = []
+        cb = lambda name, param, old, new: events.append((name, param, old, new))
+        Molecule.add_molecule_parameter_change_callback(cb)
+        try:
+            mol.is_bold = True
+        finally:
+            Molecule.remove_molecule_parameter_change_callback(cb)
+        assert events == [('TestH2O', 'is_bold', False, True)]
+        assert mol._dirty_flags['flux'] is False
+
     def test_wavelength_range_property(self):
         mol = self._make_molecule()
         mol.wavelength_range = (5.0, 25.0)

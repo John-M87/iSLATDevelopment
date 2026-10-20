@@ -57,7 +57,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
     Optimized Molecule class with enhanced caching and performance improvements.
     """
     __slots__ = (
-        'name', 'filepath', 'displaylabel', 'color', '_is_visible', '_rv_shift',
+        'name', 'filepath', 'displaylabel', 'color', '_is_visible', '_is_bold', '_rv_shift',
         'user_save_data', 'hitran_data', 'initial_molecule_parameters',
         'lines', 'intensity', 'spectrum',
         '_temp', '_radius', '_n_mol', '_distance', '_fwhm', '_broad',
@@ -82,6 +82,8 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
     # model_pixel_res is spectrum-affecting because Spectrum is built with dlambda=model_pixel_res
     SPECTRUM_AFFECTING_PARAMS = {'radius', 'distance', 'fwhm', 'keplerian_fwhm', 'instrumental_profile_key', 'rv_shift', 'wavelength_range', 'model_pixel_res'}
     FLUX_AFFECTING_PARAMS = INTENSITY_AFFECTING_PARAMS | SPECTRUM_AFFECTING_PARAMS | {'model_pixel_res'}
+    # Purely cosmetic parameters: changing them must never invalidate any computed cache.
+    DISPLAY_ONLY_PARAMS = {'is_bold'}
 
     # Parameters transferred by Copy/Paste Parameters and Duplicate.
     COPY_PARAMS: Tuple[str, ...] = (
@@ -113,6 +115,8 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         self.__class__._notify_molecule_parameter_change(self.name, parameter_name, old_value, new_value)
     
     def _invalidate_caches_for_parameter(self, parameter_name):
+        if parameter_name in self.DISPLAY_ONLY_PARAMS:
+            return
         if parameter_name in self.INTENSITY_AFFECTING_PARAMS:
             self._dirty_flags['intensity'] = True
             self._dirty_flags['spectrum'] = True
@@ -264,6 +268,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         self._n_mol_val = usd.get('N_Mol', kwargs.get('n_mol', None))
         self.color = usd.get('Color', kwargs.get('color', None))
         self._is_visible = usd.get('Vis', kwargs.get('is_visible', True))
+        self._is_bold = self._to_bool(kwargs.get('is_bold', False))  # display-only; not persisted to save files
 
         # Get instance values from user save data or kwargs
         self._distance_val = usd.get('Dist', kwargs.get('distance', c.DEFAULT_DISTANCE))
@@ -292,6 +297,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         self._n_mol_val = kwargs.get('n_mol', self.initial_molecule_parameters.get('n_mol', None))
         self.color = kwargs.get('color', None)
         self._is_visible = kwargs.get('is_visible', True)
+        self._is_bold = self._to_bool(kwargs.get('is_bold', False))
 
         # Get instance values from kwargs or defaults
         self._distance_val = kwargs.get('Dist', kwargs.get('distance', c.DEFAULT_DISTANCE))
@@ -834,6 +840,24 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
             self._is_visible = bool(value)
         self._notify_my_parameter_change('is_visible', old_value, self._is_visible)
 
+    @staticmethod
+    def _to_bool(value) -> bool:
+        """Coerce a bool-ish value (including CSV strings like 'True'/'0') to bool."""
+        if isinstance(value, str):
+            return value.strip().lower() in ('true', '1', 'yes', 'on')
+        return bool(value)
+
+    @property
+    def is_bold(self) -> bool:
+        """Whether this molecule's model line is drawn with a heavier line width."""
+        return self._to_bool(getattr(self, '_is_bold', False))
+
+    @is_bold.setter
+    def is_bold(self, value):
+        old_value = self.is_bold
+        self._is_bold = self._to_bool(value)
+        self._notify_my_parameter_change('is_bold', old_value, self._is_bold)
+
     @property
     def line_list(self) -> Optional[MoleculeLineList]:
         '''Access the MoleculeLineList, loading it if necessary.'''
@@ -897,6 +921,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         # Properties with special converters - default to float for all others
         special_converters = {
             'is_visible': lambda x: x.lower() in ('true', '1', 'yes', 'on') if isinstance(x, str) else bool(x),
+            'is_bold': lambda x: x.lower() in ('true', '1', 'yes', 'on') if isinstance(x, str) else bool(x),
             'instrumental_profile_key': lambda x: str(x or 'constant'),
         }
         
