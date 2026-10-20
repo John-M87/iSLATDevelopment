@@ -1020,7 +1020,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         else:
             try:
                 summed_wavelengths, summed_flux = molecules_dict.get_summed_flux(
-                    wave_obs, visible_only=True,
+                    wave_obs, visible_only=True, extend_to_global_range=True,
                 )
             except Exception as exc:
                 debug_config.warning("full_spectrum_view", f"Could not compute summed flux: {exc}")

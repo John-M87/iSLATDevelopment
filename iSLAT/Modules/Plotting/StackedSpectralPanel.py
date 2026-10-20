@@ -885,7 +885,9 @@ def _extract_cell_kwargs(ssp: StackedSpectralPanel) -> Dict[str, Any]:
     if hasattr(ssp, "molecules") and ssp.molecules is not None:
         try:
             wave_obs = getattr(ssp, "wave_data_obs", ssp.wave_data)
-            sw, sf = ssp.molecules.get_summed_flux(wave_obs, visible_only=True)
+            sw, sf = ssp.molecules.get_summed_flux(
+                wave_obs, visible_only=True, extend_to_global_range=True,
+            )
             kw["summed_wave"] = sw
             kw["summed_flux"] = sf
         except Exception:

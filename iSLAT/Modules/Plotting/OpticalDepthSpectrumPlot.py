@@ -154,6 +154,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
                 mol, self.wave_data,
                 interpolate_to_input=use_interp,
                 target_wavelengths=target_wave,
+                extend_to_range=True,
             )
             if lam is not None and tau is not None and len(tau) > 0:
                 cache.append((

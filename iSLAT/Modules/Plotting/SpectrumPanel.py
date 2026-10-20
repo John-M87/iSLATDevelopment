@@ -259,6 +259,7 @@ class SpectrumPanel(SpectralPanel):
             molecule, wave_data,
             interpolate_to_input=interpolate_to_input,
             target_wavelengths=target_wavelengths,
+            extend_to_range=True,
         )
         if plot_lam is None or plot_flux is None or len(plot_flux) == 0:
             return None

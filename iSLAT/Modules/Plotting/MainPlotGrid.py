@@ -327,6 +327,7 @@ class MainPlotGrid(CompositePlot):
                         mol, self.wave_data,
                         interpolate_to_input=use_interp,
                         target_wavelengths=target_wave,
+                        extend_to_range=True,
                     )
                     if lam is not None and flux is not None and len(flux) > 0:
                         mol_cache.append((
@@ -341,6 +342,7 @@ class MainPlotGrid(CompositePlot):
             try:
                 summed_wave, summed_flux = self.molecules.get_summed_flux(
                     self.wave_data_obs, visible_only=True,
+                    extend_to_global_range=True,
                 )
             except Exception:
                 pass
@@ -794,6 +796,7 @@ class MainPlotGrid(CompositePlot):
         try:
             s_wave, s_flux = self.molecules.get_summed_flux(
                 self.wave_data_obs, visible_only=True,
+                extend_to_global_range=True,
             )
             if s_wave is not None and len(s_flux) > 0 and np.any(s_flux > 0):
                 # Delegate to SpectrumPanel which owns _plot_summed_spectrum

@@ -137,6 +137,37 @@ def spectres(
 
     return new_fluxes
 
+def extend_grid_to_range(grid: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Pad a sorted wavelength *grid* so it covers ``[lo, hi]``.
+
+    Extra pixels are added below and/or above at the grid's median spacing,
+    so the extension keeps the sampling of the observed data.  The input is
+    returned unchanged when it already covers the range, has fewer than two
+    points, or has no usable spacing.
+    """
+    grid = np.asarray(grid, dtype=float)
+    if grid.ndim != 1 or grid.size < 2:
+        return grid
+    finite = grid[np.isfinite(grid)]
+    if finite.size < 2:
+        return grid
+    spacing = float(np.median(np.diff(np.sort(finite))))
+    if not np.isfinite(spacing) or spacing <= 0:
+        return grid
+    gmin, gmax = float(finite.min()), float(finite.max())
+    parts = []
+    if lo is not None and np.isfinite(lo) and lo < gmin - spacing:
+        n_lo = int(np.ceil((gmin - lo) / spacing))
+        parts.append(gmin - spacing * np.arange(n_lo, 0, -1))
+    parts.append(grid)
+    if hi is not None and np.isfinite(hi) and hi > gmax + spacing:
+        n_hi = int(np.ceil((hi - gmax) / spacing))
+        parts.append(gmax + spacing * np.arange(1, n_hi + 1))
+    if len(parts) == 1:
+        return grid
+    return np.concatenate(parts)
+
+
 def flux_integral(lam, flux, err, lam_min, lam_max) -> Tuple[float, float]:
     wavelength_mask = (lam >= lam_min) & (lam <= lam_max)
 

@@ -260,7 +260,26 @@ class MoleculeDict(ObservableMixin, dict):
         rest_frame_wave = self.apply_stellar_rv(wave_data)
         return True, rest_frame_wave
 
-    def get_summed_flux(self, wave_data: np.ndarray, visible_only: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+    def extend_grid_to_global_range(self, grid: np.ndarray) -> np.ndarray:
+        """Pad *grid* at its own median spacing so it spans ``global_wavelength_range``.
+
+        Used by the plot layer under *match spectral sampling*: the observed
+        grid only covers the data, but the user may have extended the model
+        range beyond it (e.g. a lower *Min. Wave*).  Exports keep the exact
+        observed grid and do not use this.
+        """
+        from iSLAT.Modules.DataProcessing.spectral_utils import extend_grid_to_range
+        rng = self._global_wavelength_range
+        if rng is None or grid is None:
+            return grid
+        return extend_grid_to_range(np.asarray(grid, dtype=float), float(rng[0]), float(rng[1]))
+
+    def get_summed_flux(
+        self,
+        wave_data: np.ndarray,
+        visible_only: bool = True,
+        extend_to_global_range: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Get summed flux from visible molecules.
 
@@ -284,6 +303,10 @@ class MoleculeDict(ObservableMixin, dict):
             positions.
         visible_only : bool, default True
             Whether to include only visible molecules.
+        extend_to_global_range : bool, default False
+            Under matched sampling, pad the observed grid so the sum also
+            covers ``global_wavelength_range`` where it reaches beyond the
+            data (plotting only; exports keep the exact observed grid).
 
         Returns
         -------
@@ -303,7 +326,8 @@ class MoleculeDict(ObservableMixin, dict):
         if self._match_spectral_sampling:
             cache_key = hash((cache_key, 'matched_sampling',
                               wave_data.tobytes() if hasattr(wave_data, 'tobytes') else str(wave_data),
-                              self._global_stellar_rv))
+                              self._global_stellar_rv,
+                              bool(extend_to_global_range), self._global_wavelength_range))
         current_param_hash = self._compute_molecules_parameter_hash(molecules)
 
         if cache_key in self._summed_flux_cache:
@@ -314,6 +338,9 @@ class MoleculeDict(ObservableMixin, dict):
 
         # ---- determine interpolation settings ---------------------------
         use_interpolation, target_wave = self.get_matched_sampling_wavelengths(wave_data)
+        if use_interpolation and extend_to_global_range:
+            # Let the plotted sum reach the model range beyond the data.
+            target_wave = self.extend_grid_to_global_range(target_wave)
 
         # ---- canonical output grid (Step 1) -----------------------------
         # When matched-sampling is off, each molecule's get_flux returns its

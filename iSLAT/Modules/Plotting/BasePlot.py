@@ -329,11 +329,46 @@ class BasePlot(ABC):
             txt._islat_mol_color = True
 
     @staticmethod
+    def _extend_sampling_grids(
+        molecule: "Molecule",
+        interp_wave: Optional[np.ndarray],
+        wave_data: Optional[np.ndarray],
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Pad the matched-sampling grids so they span the molecule's wavelength range.
+
+        *interp_wave* is the (rest-frame) grid the model is resampled onto and
+        *wave_data* the display-frame grid returned to the caller; both are
+        padded at the data's median spacing so a model range wider than the
+        observed data (e.g. a lower *Min. Wave*) is still drawn.  Returns
+        the inputs unchanged when no padding is needed.
+        """
+        from iSLAT.Modules.DataProcessing.spectral_utils import extend_grid_to_range
+        rng = getattr(molecule, "wavelength_range", None)
+        if interp_wave is None or rng is None:
+            return interp_wave, wave_data
+        base = np.asarray(interp_wave, dtype=float)
+        ext = extend_grid_to_range(base, float(rng[0]), float(rng[1]))
+        if ext is base or len(ext) == len(base):
+            return interp_wave, wave_data
+        if wave_data is None or wave_data is interp_wave:
+            return ext, None if wave_data is None else ext
+        # wave_data and interp_wave differ by the (constant) stellar-RV factor.
+        wd = np.asarray(wave_data, dtype=float)
+        ratio = 1.0
+        if len(wd) == len(base) and len(base) > 0:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                r = np.nanmedian(wd / base)
+            if np.isfinite(r) and r > 0:
+                ratio = float(r)
+        return ext, ext * ratio
+
+    @staticmethod
     def get_molecule_spectrum_data(
         molecule: "Molecule",
         wave_data: Optional[np.ndarray] = None,
         interpolate_to_input: bool = False,
         target_wavelengths: Optional[np.ndarray] = None,
+        extend_to_range: bool = False,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Retrieve ``(wavelength, flux)`` from a *Molecule* object.
@@ -354,11 +389,17 @@ class BasePlot(ABC):
             When *interpolate_to_input* is True and this is provided, the model
             is resampled to these wavelengths (typically the data wavelengths
             corrected for the global stellar RV) while the returned wavelength array is *wave_data* (the observer-frame grid).
+        extend_to_range : bool, default False
+            When interpolating, pad the grids so the model is also returned
+            where the molecule's wavelength range reaches beyond the data
+            (plotting only; exports keep the exact observed grid).
         """
         if molecule is None:
             return None, None
         try:
             interp_wave = target_wavelengths if target_wavelengths is not None else wave_data
+            if interpolate_to_input and extend_to_range:
+                interp_wave, wave_data = BasePlot._extend_sampling_grids(molecule, interp_wave, wave_data)
             lam, flux = molecule.get_flux(
                 wavelength_array=interp_wave,
                 return_wavelengths=True,
@@ -380,6 +421,7 @@ class BasePlot(ABC):
         wave_data: Optional[np.ndarray] = None,
         interpolate_to_input: bool = False,
         target_wavelengths: Optional[np.ndarray] = None,
+        extend_to_range: bool = False,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Retrieve ``(wavelength, tau)`` from a *Molecule* object.
 
@@ -395,11 +437,15 @@ class BasePlot(ABC):
             When True the model tau is resampled onto *target_wavelengths* (or *wave_data* when *target_wavelengths* is None).
         target_wavelengths : np.ndarray, optional
             Rest-frame wavelength grid to interpolate onto.
+        extend_to_range : bool, default False
+            See :meth:`get_molecule_spectrum_data`.
         """
         if molecule is None:
             return None, None
         try:
             interp_wave = target_wavelengths if target_wavelengths is not None else wave_data
+            if interpolate_to_input and extend_to_range:
+                interp_wave, wave_data = BasePlot._extend_sampling_grids(molecule, interp_wave, wave_data)
             lam, tau = molecule.get_tau(
                 wavelength_array=interp_wave,
                 return_wavelengths=True,

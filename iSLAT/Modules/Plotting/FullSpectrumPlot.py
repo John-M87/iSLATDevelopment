@@ -203,6 +203,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
                     mol, self.wave_data,
                     interpolate_to_input=use_interp,
                     target_wavelengths=target_wave,
+                    extend_to_range=True,
                 )
                 if lam is not None and flux is not None and len(flux) > 0:
                     mol_cache.append((
@@ -329,6 +330,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
             try:
                 summed_wave, summed_flux = self.molecules.get_summed_flux(
                     self.wave_data_obs, visible_only=True,
+                    extend_to_global_range=True,
                 )
             except Exception:
                 pass
@@ -381,6 +383,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
             try:
                 summed_wave, summed_flux = self.molecules.get_summed_flux(
                     self.wave_data_obs, visible_only=True,
+                    extend_to_global_range=True,
                 )
             except Exception:
                 pass
