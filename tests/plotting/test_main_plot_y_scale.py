@@ -7,7 +7,7 @@ matplotlib.use("Agg")
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure  # not pyplot-managed: no open-figure warnings
 import numpy as np
 import pytest
 
@@ -23,7 +23,7 @@ def _make_controller(ax=None):
     wave = np.linspace(5.0, 10.0, 101)
     flux = np.where(wave < 7.5, 1.0, 4.0)  # left half 1 Jy, right half 4 Jy
     pm.islat = SimpleNamespace(wave_data=wave, flux_data=flux, display_range=(5.0, 10.0))
-    pm.ax1 = ax if ax is not None else plt.figure().add_subplot(111)
+    pm.ax1 = ax if ax is not None else Figure().add_subplot(111)
     pm.ax1.set_xlim(5.0, 10.0)
     pm.canvas = MagicMock()
     pm.control_bus = None
@@ -131,7 +131,7 @@ class TestObservedToggle:
     @staticmethod
     def _view_with_observed_line():
         from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
-        fig = plt.figure()
+        fig = Figure()
         ax1, ax2, ax3 = (fig.add_subplot(3, 1, i) for i in (1, 2, 3))
         (obs,) = ax1.plot([1, 2], [1, 2])
         obs._islat_observed = True
@@ -275,3 +275,153 @@ class TestViewsWithoutSpectrumAreNoOps:
         assert view.apply_y_limits({"y_autoscale": False, "y_limits": (0.0, 1.0)}) is False
         assert view.get_y_limits() is None
         view.toggle_observed_data(False)  # must not raise or draw
+
+
+class TestLineInspectionViewInheritsPolicy:
+    """The dedicated line-inspection view participates through the same hooks."""
+
+    @staticmethod
+    def _make_view(selection=(6.0, 8.0)):
+        from iSLAT.Modules.Plotting.LineInspectionView import LineInspectionView
+        wave = np.linspace(5.0, 11.0, 300)
+        flux = np.where(wave < 7.0, 1.0, 4.0)
+        pm = MagicMock()
+        pm.islat = SimpleNamespace(wave_data=wave, flux_data=flux, error_data=None,
+                                   active_molecule=None, molecules_dict=None)
+        pm.theme = {}
+        pm.summed_toggle = False
+        pm.toggle_state = {"summed": False, "observed": True, "y_autoscale": True,
+                           "y_limits": None, "current_selection": selection}
+        pm.control_bus = None
+        view = LineInspectionView(pm)
+        view._current_selection = selection
+        view._build_plot()
+        view._initialised = True
+        view._canvas = MagicMock()
+        return view, pm
+
+    @staticmethod
+    def _observed(view):
+        return [l for l in view._plot.ax.lines if hasattr(l, "_islat_observed")]
+
+    def test_observed_artists_are_tagged_and_hooks_yield_axes(self):
+        view, _pm = self._make_view()
+        assert list(view._iter_y_axes()) == [view._plot.ax]
+        assert list(view._iter_observed_axes()) == [view._plot.ax]
+        assert self._observed(view)
+
+    def test_observed_toggle(self):
+        view, _pm = self._make_view()
+        view.toggle_observed_data(False)
+        assert all(not l.get_visible() for l in self._observed(view))
+        view._canvas.draw_idle.assert_called()
+
+    def test_manual_limits_pin_axis(self):
+        view, _pm = self._make_view()
+        assert view.apply_y_limits({"y_autoscale": False, "y_limits": (0.0, 9.0)}) is True
+        assert view._plot.ax.get_ylim() == (0.0, 9.0)
+        assert view.get_y_limits() == (0.0, 9.0)
+
+    def test_rebuild_keeps_hidden_observed_and_manual_limits(self):
+        view, pm = self._make_view()
+        pm.toggle_state.update({"observed": False, "y_autoscale": False, "y_limits": (0.0, 9.0)})
+        view.on_selection(6.5, 7.5)  # rebuilds the figure from scratch
+        assert all(not l.get_visible() for l in self._observed(view))
+        assert view._plot.ax.get_ylim() == (0.0, 9.0)
+
+    def test_autoscale_restores_plot_layout(self):
+        view, pm = self._make_view()
+        natural = view._plot.ax.get_ylim()
+        view.apply_y_limits({"y_autoscale": False, "y_limits": (0.0, 9.0)})
+        assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
+        assert view._plot.ax.get_ylim() == pytest.approx(natural)
+
+    def test_placeholder_without_selection_is_noop(self):
+        view, _pm = self._make_view(selection=None)
+        assert view.get_y_limits() is None
+        view.toggle_observed_data(False)  # nothing to hide, must not raise
+
+
+class TestCenterViewUsesActiveViewRange:
+    @staticmethod
+    def _handler(view):
+        from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+        h = InteractionHandler.__new__(InteractionHandler)
+        h.plot_manager = SimpleNamespace(active_view=view)
+        h.islat = SimpleNamespace(display_range=None)
+        h.ax1 = Figure().add_subplot(111)
+        h.ax1.set_xlim(5.0, 10.0)
+        return h
+
+    def test_view_with_display_range_binding_wins(self):
+        h = self._handler(SimpleNamespace(_get_display_range=lambda: (6.0, 8.0)))
+        assert h._get_active_plot_range() == (6.0, 8.0)
+
+    def test_empty_binding_falls_back_to_main_axes(self):
+        h = self._handler(SimpleNamespace(_get_display_range=lambda: (0.0, 0.0)))
+        assert h._get_active_plot_range() == (5.0, 10.0)
+
+    def test_view_without_binding_uses_main_axes(self):
+        h = self._handler(SimpleNamespace())
+        assert h._get_active_plot_range() == (5.0, 10.0)
+
+
+class TestLineInspectionViewPickSurvivesRebuild:
+    """Clicking line markers must keep working after the figure is rebuilt."""
+
+    class _FakeCanvas:
+        def __init__(self, fig, master=None):
+            self.figure = fig
+            self.connections = []
+
+        def mpl_connect(self, name, cb):
+            self.connections.append((name, cb))
+            return len(self.connections)
+
+        def mpl_disconnect(self, cid):
+            pass
+
+        def get_tk_widget(self):
+            return MagicMock()
+
+        def draw_idle(self):
+            pass
+
+    def _make_view(self, monkeypatch):
+        import importlib
+        # The package re-exports the class under the module name, so go via importlib.
+        spv = importlib.import_module("iSLAT.Modules.Plotting.SpectrumPanelView")
+        monkeypatch.setattr(spv, "_FigureCanvasTkAgg", self._FakeCanvas)
+        view, pm = TestLineInspectionViewInheritsPolicy._make_view()
+        view._canvas = None
+        view._parent_frame = object()
+        return view
+
+    @staticmethod
+    def _pick_handlers(canvas):
+        return [cb for name, cb in canvas.connections if name == "pick_event"]
+
+    def test_pick_reconnected_on_each_new_canvas(self, monkeypatch):
+        view = self._make_view(monkeypatch)
+        view._ensure_canvas()
+        view._connect_pick_event()
+        first = view._canvas
+        assert self._pick_handlers(first) == [view._on_pick_line]
+
+        view.on_selection(6.5, 7.5)       # rebuilds figure -> new canvas
+        second = view._canvas
+        assert second is not first
+        assert self._pick_handlers(second) == [view._on_pick_line]
+
+        view.update_model_plot()          # and again
+        third = view._canvas
+        assert third is not second
+        assert self._pick_handlers(third) == [view._on_pick_line]
+
+    def test_pick_not_duplicated_when_canvas_unchanged(self, monkeypatch):
+        view = self._make_view(monkeypatch)
+        view._ensure_canvas()
+        view._connect_pick_event()
+        view._connect_pick_event()
+        view._ensure_canvas()             # same figure -> same canvas
+        assert len(self._pick_handlers(view._canvas)) == 1

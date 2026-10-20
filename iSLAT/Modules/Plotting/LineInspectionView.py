@@ -176,6 +176,32 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
                 f"LineInspectionPlot.generate_plot failed: {exc}",
             )
 
+        # A fresh plot draws the observed data visible and picks its own
+        # Y limits; re-impose the controller's settings.
+        self._reapply_display_state(getattr(self._pm, "toggle_state", None))
+
+    # ------------------------------------------------------------------
+    # Observed-data / Y-policy hooks (see PlotView)
+    # ------------------------------------------------------------------
+    def _inspection_axes(self):
+        """Yield the inspection axes when a plot has been rendered."""
+        ax = getattr(self._plot, "ax", None) if self._plot is not None else None
+        if ax is not None:
+            yield ax
+
+    def _iter_observed_axes(self):
+        return self._inspection_axes()
+
+    def _iter_y_axes(self):
+        return self._inspection_axes()
+
+    def _autoscale_y_axes(self) -> bool:
+        """Re-fit by rebuilding the plot so its own Y layout is restored exactly."""
+        if self._plot is None or not self._initialised:
+            return False
+        self.update_model_plot()
+        return True
+
     def _render_summed_overlay(self) -> None:
         """Plot the summed model fill on the inspection axes."""
         if self._plot is None or self._fig is None:
@@ -230,6 +256,9 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         summed = toggle_state.get("summed", False)
         if summed and self._initialised:
             self.toggle_summed_spectrum(True)
+        # Observed-data visibility and manual Y limits
+        self._reapply_display_state(toggle_state)
+        self.draw()
 
     # ==================================================================
     # PlotView - display range sync
@@ -264,6 +293,21 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     # ==================================================================
     # Pick event - active line interaction
     # ==================================================================
+    def _ensure_canvas(self) -> None:
+        """Build the canvas and keep the pick handler attached to it.
+
+        Every selection change creates a fresh figure, so the base class
+        replaces the canvas.  The old pick connection dies with the old
+        canvas, so forget its id and connect again on the new one;
+        otherwise clicks on line markers stop working after the first
+        rebuild.
+        """
+        old_canvas = self._canvas
+        super()._ensure_canvas()
+        if self._canvas is not old_canvas:
+            self._pick_cid = None
+            self._connect_pick_event()
+
     def _connect_pick_event(self) -> None:
         """Connect a pick-event handler to the current canvas (idempotent)."""
         if self._canvas is None or self._pick_cid is not None:
@@ -393,6 +437,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
 
         self._ensure_canvas()
         self.apply_theme(self._pm.theme)
+        self.sync_toggle_state(self._pm.toggle_state)
         self._register_control_fields()
         self._connect_pick_event()
 

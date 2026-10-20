@@ -174,9 +174,10 @@ class SpectrumPanel(SpectralPanel):
             Legend label.
         deduplicate : bool
             When *True*, remove any existing artists tagged with
-            ``_islat_observed`` before plotting new ones, and tag the
-            newly created artists.  Useful in GUI contexts where the
-            method may be called repeatedly on the same axes.
+            ``_islat_observed`` before plotting new ones.  Useful in GUI
+            contexts where the method may be called repeatedly on the
+            same axes.  The new artists are always tagged so that the
+            observed-data visibility toggle can find them.
         """
         from .BasePlot import BasePlot
         if flux_data is None or len(flux_data) == 0:
@@ -192,20 +193,18 @@ class SpectrumPanel(SpectralPanel):
                 zorder=self._get_theme_value("zorder_observed", 2),
                 elinewidth=0.5, capsize=0,
             )
-            if deduplicate:
-                container[0]._islat_observed = True
-                for cap in container[1]:
-                    cap._islat_observed = True
-                for bar_col in container[2]:
-                    bar_col._islat_observed = True
+            container[0]._islat_observed = True
+            for cap in container[1]:
+                cap._islat_observed = True
+            for bar_col in container[2]:
+                bar_col._islat_observed = True
         else:
             (line,) = ax.plot(
                 wave_data, flux_data,
                 color=color, linewidth=1, label=label,
                 zorder=self._get_theme_value("zorder_observed", 2),
             )
-            if deduplicate:
-                line._islat_observed = True
+            line._islat_observed = True
 
     def _plot_summed_spectrum(
         self,

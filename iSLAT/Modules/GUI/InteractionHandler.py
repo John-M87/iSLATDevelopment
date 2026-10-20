@@ -671,11 +671,27 @@ class InteractionHandler:
             self.plot_manager.toggle_residuals()
 
     def _get_active_plot_range(self) -> Tuple[float, float]:
-        """Return the current active (xmin, xmax) of the main plot view."""
-        try:
-            xmin, xmax = self.ax1.get_xlim()
-        except Exception:
-            xmin, xmax = None, None
+        """Return the current active (xmin, xmax) of the active plot view.
+
+        Views that bind the Plot Start / Plot Range controls (full spectrum,
+        dedicated line inspection) report their own window through
+        ``_get_display_range``; otherwise the main-plot axes are used.
+        """
+        xmin, xmax = None, None
+        view = getattr(self.plot_manager, 'active_view', None)
+        getter = getattr(view, '_get_display_range', None)
+        if callable(getter):
+            try:
+                lo, hi = getter()
+                if lo is not None and hi is not None and float(hi) != float(lo):
+                    xmin, xmax = float(lo), float(hi)
+            except Exception:
+                xmin, xmax = None, None
+        if xmin is None or xmax is None:
+            try:
+                xmin, xmax = self.ax1.get_xlim()
+            except Exception:
+                xmin, xmax = None, None
         if xmin is None or xmax is None:
             if hasattr(self.islat, 'display_range') and self.islat.display_range:
                 xmin, xmax = self.islat.display_range
