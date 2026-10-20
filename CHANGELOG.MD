@@ -1,5 +1,278 @@
 # Changelog
 
+## v5.03.04 - October 20, 2026
+
+### New Features
+
+#### Plot Views & Y Axis
+- Added Y-axis controls to the `Views` menu in the top bar: an `Auto-scale Y Axis` toggle, an `Auto-scale Y to Model Flux` toggle (fits the axis to the plotted models instead of the observed data), a `Set Y Limits…` dialog for pinning a manual Y range, and a `Show Observed Data` toggle
+- Added new options to the Center View function (center on a wavelength, display an exact wavelength range, or display a fixed number of data points) and added a `Center View… (C)` entry to the Spectral Functions menu
+- Added the ability to bold a molecule's model line in the plot via a new `Bold on Plot` / `Unbold on Plot` option in the molecule right-click menu
+- Updated the population diagram plot to make better use of the quantum state schema module
+
+#### Line List Filtering
+- Added a new `LineFilterExpression` module for filtering line lists with composable condition groups (value ranges, derived quantities, velocity separation, quantum fields/labels, species) that can be saved to and loaded from JSON
+- Added a new `FilteredPopulationDiagramWindow` for displaying population diagrams of filtered line lists
+- Updated `LineListMaker` to support filtering based on expressions (`filter_expression`, `filter_any`, `filter_all`, `filter_quantum_field`, `filter_vib_band`)
+- Added a velocity separation filter and percentile-based filtering to the line list filter window
+- Added the ability to filter by either percentile rank or percentage of the largest value
+- Added `Save Line List…` and `Load Line List…` options to the line list filter window
+- The line list viewer window can now display the currently loaded line list
+
+#### Export & Bulk Apply
+- Added the optical depth as a function of wavelength to the CSV output of the Export Models function
+- Added the ability to set the file name/location in the Export Models popup window; exports now use the `MoleculeDict` match pixel sampling when writing a model to CSV
+- Added the instrumental profile to the Bulk Apply window
+- The Bulk Apply window now lets you specify how the properties should be applied (e.g. to visible molecules only)
+
+### Bug Fixes
+- Fixed a bug with the model range extension in the spectrum plotting modules: models are now drawn over the full global wavelength range even when `Match Pix. Sampling` resamples them onto a narrower observed grid
+- Fixed issues with the dedicated Line Inspection plot view
+- Fixed incorrect line picking when multiple molecules are plotted in the line inspection plot
+- Fixed a memory leak in the `PopulationDiagramView`
+- Fixed the `_compute_intensity_hash` method of the `Molecule` class to use the `INTENSITY_AFFECTING_PARAMS` attribute instead of a hardcoded list of parameters
+- Added `model_pixel_res` to the molecule's `SPECTRUM_AFFECTING_PARAMS` list so that pixel resolution changes correctly invalidate cached spectra
+
+### Code Quality
+- Changed the weak blend threshold in the `Intensity` class from 4.0 to 0.01
+- The `Intensity` line info output now reports line center flux, line center opacity, and model opacity in range
+- Updated the population diagram examples notebook to use the new method of setting the active molecule in the grid
+- Added tests for the filtered population diagram window, line filter expression module, center view, and model range extension
+- Bumped version to `v5.03.04`
+
+---
+
+## v5.03.03 - August 11, 2026
+
+### New Features
+
+#### GUI Improvements
+- Added the ability to sort molecules in the control panel by their properties (new `Sort Molecules` option in the Molecules menu)
+- Added a new `Bulk Apply Properties` popout window to the Molecules menu for applying parameter values to many molecules at once
+- Added `N Cols` and `N Rows` fields to the control panel when in the Line Grid view
+- Updated the Sample Manager window: the loaded sample is now saved to `SampleConfig.json` and can be restored on startup via the new `restore_sample_on_startup` user setting (user settings version bumped to 1.4)
+- Clicking on the text label of a line in the line inspection view now also highlights the line
+- Added a match sampling toggle to the Residual Spectrum Plot module
+
+#### Keyboard Shortcuts
+- Added the `C` key to open the Center View dialog for centering the GUI on a specific wavelength
+- Holding `Shift` while advancing or retreating the plot start (`>` / `<`) now moves by half of the current plot range
+
+#### Data
+- Updated the list of available HITRAN isotopologues (additional SO2, NO2, OCS, HCOOH, SO and CH3F isotopologues, plus H3+, CH3, S2, COFCl, HONO and ClNO2). Note: the new entries will not work until the `hitran` module of `astroquery` is updated to include them
+
+### Bug Fixes
+- Fixed various bugs with the Line Grid view
+- Fixed model lines not honoring the pixel sampling setting in the main plot grid
+- The Save Line function now uses the actual selection range (`current_selection`) instead of the nearest pixels in the wavelength array (`selected_wave`)
+- Fixed an issue with the loading order of the Manage Sample function that caused the control panel to get out of sync
+
+### Code Quality
+- Added `SampleConfig.json` to `.gitignore`
+- Bumped version to `v5.03.03`
+
+---
+
+## v5.03.02 - June 09, 2026
+
+### New Features
+
+#### GUI Improvements
+- Added a new iSLAT logo, now used as the application window icon (WIP)
+- Added the ability to drag and drop molecules in the control panel to reorder them
+- Added a new `View Line List` window (with search, refresh and `Export CSV…`) opened from the molecule right-click menu
+- Added a `Download and Add to iSLAT` button to the HITRAN query window
+- Added a new merge molecules function to the GUI and `MoleculeDict` (`Merge Selected` in the molecule right-click menu)
+- Added a WIP `SampleManagerWindow` to the Spectral Functions menu (`Manage Sample…`)
+- Updated scrolling to work across platforms
+- Plot start/range values are now displayed with general (`g`) formatting at 4 significant digits, with increased precision
+
+#### Population Diagram
+- Added percentile and exact value options to the population diagram axis settings
+- Added a WIP `Shape By` option to the population diagram axis settings menu
+
+#### Keyboard Shortcuts
+- Changed the keybind for advancing and retreating the plot start to `>` / `<` instead of `N` / `Shift+N`
+
+#### Plotting API
+- The model line width and alpha used by the `SpectrumPanel` generate plot method are now configurable via kwargs, and model lines are more visible in the three panel view
+
+### Bug Fixes
+- Fixed a bug where the `Molecule` class would use the wrong pixel resolution when calculating its flux
+- Fixed a bug in the `FullSpectrumPlot` where setting the wave min/max overrode the plot range set from the GUI
+- The save figure function of the `FullSpectrumView` now uses the wave min/max values from the GUI
+- Fixed the legend toggle not syncing, and fixed the toggle legend state not being respected when a molecule's visibility is updated
+
+### Code Quality
+- Updated comment/docstring formatting in several files
+- Bumped version to `v5.03.02`
+
+---
+
+## v5.03.01 - May 27, 2026
+
+### Plotting System Refactor
+- Completed the migration of the GUI plotting onto the view-based architecture: the `PlotRenderer` class has been deleted and `MainPlot` now delegates rendering to the active `PlotView`
+- Added a new `CompositePlot` abstract base class; `MainPlotGrid`, `FitLinesPlotGrid` and `StackedSpectralPanel` now inherit from it
+- Moved fit rendering from `MainPlotGrid` to the `SpectrumPanel` class, and moved active-line handling onto `BasePlot` (implemented by `LineInspectionPlot` and `PopulationDiagramPlot`)
+- Moved the flux integral calculation from `LineAnalyzer` to a new `spectral_utils` module
+- Moved line property labels and names into the `MoleculeLine` class
+- The `Spectrum` class now owns the Keplerian FWHM
+
+### New Features
+
+#### Plot Views
+- Added a new `Views` drop-down menu to the top bar for switching between plot views
+- Added new `PopulationDiagramView`, `LineInspectionView`, `SpectrumPanelView` and `FitLinesPlotGridView` ("Line Grid") views
+- Views now control their own right-click context menus; added `Switch to …` options to move between views, a `Save Figure…` option on every view's context menu, and `Open in Full Spectrum` / `Open in Three Panel` interactions
+- Added a toggle in the GUI to scale the full spectrum view by data density instead of wavelength
+- The Line Grid view can toggle the visibility of model lines, and opening a line in the three panel view opens a span that encompasses that line
+- Added the `T` key to toggle the three panel view
+
+#### Population Diagram
+- Added log scale and percentile cutoff options to the population diagram `Color By…` function, with suggested log scale fields in the color-by window
+- Added an `Axis Settings…` dialog to the population diagram right-click menu, including FWHM and quantum-state-label axis options
+- Shift-clicking any line on the population diagram now sets the line inspection plot to that line
+- Added a `Save Active Lines as Line List…` option to the population diagram context menu
+
+#### Line Inspection
+- Added right-click context options to the line inspection plot: save/fit the current line, run the deblender, save all lines in range, hide/show the total model, match the spectrum to the inspection range, and center the spectrum on the inspection location
+
+#### Quantum State Schemas
+- Added new `QuantumStateSchema` and `HITRANQuantumSchemas` infrastructure for parsing HITRAN quantum state labels per molecule, used by the population diagram and line list filtering
+- Added a new `PlotAxisRegistry` for axis and label specification
+
+#### GUI Improvements
+- Added a new `Import Parameters From File` function to the top bar
+- Added `Change Line List…` and `Delete` options to the molecule right-click menu; the default active molecule can now be deleted from the control panel
+- Removed the plus and x buttons from the `FileInteractionPane` and moved their functionality to the other buttons
+- Removed the word "Toggle" from the toggle buttons so they take up less space in the GUI
+- Made scrolling work correctly in the control panel
+
+#### Fitting
+- Widened the `Slabfit` parameter bounds (`n_mol` upper bound raised to 1e35, log radius upper bound raised to 8.0)
+
+### Bug Fixes
+- Fixed a bug where toggling a molecule's visibility ON in the spectrum panel did not plot the molecule if it had no existing artists
+- Fixed summed flux not updating correctly in the three panel view
+- Fixed `FullSpectrumPlot`/`FullSpectrumView` not updating with molecule parameter changes, and the residual spectrum plot not updating when a new spectrum is loaded
+- Fixed residual spectrum plot models and chi² values not updating when control panel fields were changed, and fixed molecule flux still being counted in the residuals regardless of visibility
+- Fixed the main plot grid not correctly using the global wavelength range value from the control panel
+- Fixed x-axis labels overlapping in the full spectrum view
+- Fixed the atomic lines toggle error and the full spectrum view molecule visibility toggle
+- Fixed the toggle full spectrum button, click events in the `LineInspectionView`, and the toggle total model function across the different views
+- Fixed an error when deleting a molecule that was created via the duplication function
+- Fixed an error message from the tooltip code
+
+### Code Quality
+- Removed unused code from `MainPlot`, `BasePlot` and other plotting classes
+- Updated the README with the Zenodo DOI and citation for version 5
+- Bumped version to `v5.03.01`
+
+---
+
+## v5.03.00 - May 03, 2026
+
+### New Features
+
+#### Multiple Active Molecules
+- Added the ability to select multiple active molecules; the active set is now managed by `MoleculeDict` (`active_molecule`, `comparison_molecules`, `get_active_set`, `toggle_comparison_molecule`, `promote_to_active_molecule`)
+- The line inspection plot and its legend now render all active molecules
+- Draft population diagram support for the current set of active molecules from within the UI
+
+#### Instrumental Profiles
+- Added the ability to set instrumental profiles for determining the resolving power in the control panel (`Constant FWHM` or `JWST MIRI MRS` wavelength-dependent R(λ)); profiles are defined in the new `InstrumentalProfiles` module
+- Split the FWHM control into `Inst. FWHM` and `Kep. FWHM` fields (Keplerian broadening is added in quadrature with the instrumental profile)
+- Added a new readout to the data field that displays the instrumental, Keplerian, and convolved FWHM
+
+#### Molecule Right-Click Menu
+- Added a new context menu that opens when a molecule name is right-clicked in the control panel, with `Export Model` and `Filter Line List` options
+- Added a new `LineListFilterWindow` with tooltips, an `Apply to Molecule` button, and an export to `.par` button
+
+#### Population Diagram & Line Inspection
+- Refactored the population diagram plot for more flexible plotting options and added a new `Population_Diagram_Examples.ipynb` notebook
+- Added a right-click context menu to the population diagram exposing the color-by functionality, including line center opacity as a color-by option
+- Added right-click options to the line inspection plot
+
+#### GUI Improvements
+- Moved the plot step controls to the top bar instead of the control panel
+- Reorganized the GUI menus and added tooltips to the drop-down menu functions
+- Added a drop-down selection to the file interaction pane for switching between spectra when a sample is loaded
+- The data field now extends to the bottom of the window automatically
+- When a slab fit finishes, the control panel is now updated with the new parameter values
+- Added new `ControlField`/`ControlSurface` abstractions that allow GUI components to register fields in various control locations
+
+#### Fitting & Data Processing
+- First draft of the `Slabfit` refactor (`SlabModel`, `FitParameter`, `FitResult`, with `from_molecule`/`from_intensity`/`from_line_list`/`from_spectrum` constructors)
+- Reworked `MoleculeDict` flux summation to work more consistently with different molecule FWHMs/grid sizes
+
+### Bug Fixes
+- Fixed the population diagram rendering with all molecules on launch
+- Fixed the line inspection threshold being ignored
+- Fixed an issue with the `MoleculeDict` and `FullSpectrumView` residual toggle
+- Fixed an incorrect saved lines toggle
+- Fixed the active molecule being overridden when multiple molecules are selected
+- Fixed an incorrect callback attribute check in the `ControlPanel`
+- Fixed an issue with the Subtract Models from Data function and added tests for it
+
+### Code Quality
+- Refactored `MainPlot`, `MainPlotGrid` and `ThreePanelView` to make better use of the view and `BasePlot` based infrastructure; `ThreePanelView` now composes a `MainPlotGrid` in the same fashion as `FullSpectrumView`
+- Removed old/unused code from the interaction handler, `iSLAT` class, `MainPlot` and `PlotRenderer`
+- Bumped version to `v5.03.00`
+
+---
+
+## v5.02.05 - April 12, 2026
+
+### Plotting Module Refactor
+- Introduced a new abstract `StackedSpectralPanel` class that composes an arbitrary number of `SpectralPanel` objects, with concrete `SpectrumPanel` and `ResidualPanel` implementations
+- Added a new `ResidualSpectrumPlot` class (a subclass of `FullSpectrumPlot`) with an additional residual sub-panel and chi² calculation per panel
+- Added new `OpticalDepthPanel` and `OpticalDepthSpectrumPlot` classes for plotting τ(λ), with a new `Optical_Depth_Examples.ipynb` notebook
+- Split the `CompositeStackedPanel` class (merged cells from two source plots) into its own file
+- `FullSpectrumView` now works with any class that implements `StackedSpectralPanel`
+- Added WIP shading for gaps in data (`GapMode`) and a WIP option to scale the x-axis by data density instead of wavelength (`XScaling`)
+- Started a legend handling refactor (`LegendStrategy`, `StandardLegend`, `MoleculeColorLegend`)
+- `PopulationDiagramPlot` can now be used with bare `Intensity` objects
+- Improved `BasePlot` behaviour in notebooks (figure management and embedding)
+
+### New Features
+
+#### Data Types
+- Added support for format-neutral line data sources in `Molecule`, `MoleculeDict` and `MoleculeLineList`: a `line_data_source` path plus a `line_format` (`hitran`, `csv`, or `saved`) handled by the new `line_list_readers` module
+- Added an experimental wavelength-dependent resolving power to the `Spectrum` class, and a `reset` method for reusing a `Spectrum` object with different parameters
+- Added additional batch calculation methods to the `Intensity` class
+- `Slabfit` now exports results as JSON by default
+
+#### GUI Improvements
+- Experimental residual spectrum toggle in the full spectrum view (`R` key)
+- Added a new `Load Parameters From File (Ctrl+Shift+L)` button to let the user select a specific parameter file to load
+- Added new buttons/keybinds to advance or reverse the plot start by the current range value
+- When a line list is not set when running a slab fit, the user is now prompted to select one
+- Refactored the control panel and plot view classes to allow for dynamically created control panel fields
+
+### Performance Improvements
+- Reworked many calculations in the `Intensity` and `Spectrum` classes to use in-place operations, vectorized more operations, and reduced the number of temporary arrays created, especially in the blended line processing
+- Added a unique-wavelength summarization step to the `Spectrum` class for when multiple intensity components share the same wavelength
+- Added `wavelength_range` to the `Intensity`/`Molecule` hash functions to allow caching of intensity arrays for different wavelength ranges
+- Improved the startup import call chain to avoid circular imports and speed up startup time
+
+### Bug Fixes
+- Fixed the population diagram plot having incorrect lines, and refactored the intensity table methods
+- Fixed the full spectrum view theme not persisting
+- Fixed annotations and gap detection when the gap mode is set to skip in the residual/full spectrum plots
+- Fixed a bug when loading new data in the full spectrum / residual views
+- Fixed the distance and stellar RV fields not being visible by default after the control panel changes, and fixed the display range field not syncing between views
+- Fixed the attribute assignment for the `spectres` flag in `Molecule.py`
+- Fixed a notebook embedding error and pyplot figure management in the `BasePlot` class
+
+### Code Quality
+- Added a `pytest` test suite (`tests/`) covering the data types, data processing, plotting and GUI modules
+- Added an `__init__` file to the `Widgets` folder
+- Updated the plotting example notebooks
+- Bumped version to `v5.02.05`
+
+---
+
 ## v5.02.04 - April 12, 2026
 
 ### New Features
