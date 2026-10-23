@@ -26,6 +26,47 @@ _MATCH_BTN_PADX = 3 if _IS_WINDOWS else 1
 _VIS_COL_MINSIZES = (14, 30, 62, 30, 32) if _IS_WINDOWS else (12, 20, 42, 20, 22)
 
 # ---------------------------------------------------------------------------
+# Drag-and-drop reorder helpers (pure functions, unit-tested without Tk)
+# ---------------------------------------------------------------------------
+def drag_delta(src_idx: int, insert_after: int) -> int:
+    """Row displacement implied by dropping row *src_idx* below row *insert_after*.
+
+    *insert_after* is the index of the row the drop indicator sits beneath (``-1`` means above the first row), measured in the order *before* the move.
+    Dropping a row onto its own slot, or onto the slot immediately above it, leaves it where it is.
+    """
+    new_idx = insert_after + 1 if insert_after < src_idx else insert_after
+    return new_idx - src_idx
+
+
+def shift_group_in_order(order, group, delta: int) -> list:
+    """Move every name in *group* by *delta* rows within *order*.
+
+    All members move by the same amount, so the group's shape (relative order and any gaps between members) is preserved and the remaining names fill the vacated slots in their existing order.
+    *delta* is clamped so that no member leaves the list; a group already touching the edge it is pushed towards therefore does not move.
+    A single-name group reduces to the usual remove-and-insert reorder.
+    Returns a new list; *order* is not modified.
+    """
+    order = list(order)
+    members = set(group)
+    positions = [i for i, name in enumerate(order) if name in members]
+    if not positions or delta == 0:
+        return order
+    n = len(order)
+    delta = max(delta, -positions[0])
+    delta = min(delta, n - 1 - positions[-1])
+    if delta == 0:
+        return order
+    result = [None] * n
+    for i in positions:
+        result[i + delta] = order[i]
+    others = iter(name for name in order if name not in members)
+    for i in range(n):
+        if result[i] is None:
+            result[i] = next(others)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # ControlPanelSurface — ControlSurface implementation for the view-fields area
 # ---------------------------------------------------------------------------
 class ControlPanelSurface(ControlSurface):
@@ -418,7 +459,7 @@ class ControlPanel(ttk.Frame):
             'source': None,
             'target_idx': None,
             'indicator': None,
-            'original_bg': None,
+            'original_bgs': {},
         }
 
         # Molecule rows — each packed with fill="x" for consistent width,
@@ -440,7 +481,7 @@ class ControlPanel(ttk.Frame):
                 fg="#888888",
             )
             drag_handle.grid(row=0, column=0, sticky="nsew", padx=1)
-            CreateToolTip(drag_handle, "Drag to reorder")
+            CreateToolTip(drag_handle, "Drag to reorder\nSelected molecules move together")
             drag_handle.bind("<ButtonPress-1>",   lambda e, n=mol_name: self._on_drag_start(n, e))
             drag_handle.bind("<B1-Motion>",        lambda e: self._on_drag_motion(e))
             drag_handle.bind("<ButtonRelease-1>",  lambda e: self._on_drag_release(e))
@@ -516,24 +557,46 @@ class ControlPanel(ttk.Frame):
     # ------------------------------------------------------------------
 
     def _on_drag_start(self, mol_name: str, event) -> None:
-        """Record which molecule row the user started dragging."""
+        """Record which molecule row the user started dragging.
+
+        When the dragged row is part of the current selection (active molecule plus shift-clicked comparison molecules) the whole selection is dragged as a group, so every member row is highlighted.
+        """
         self._drag_state['source'] = mol_name
         self._drag_state['target_idx'] = None
-        # Visually highlight the dragged row
-        frame = self.mol_frames.get(mol_name)
-        if frame:
-            original = frame.cget('bg')
-            self._drag_state['original_bg'] = original
-            frame.configure(bg='#c8e6ff')
-            for child in frame.winfo_children():
-                try:
-                    child.configure(bg='#c8e6ff')
-                except Exception:
-                    pass
+        self._drag_state['original_bgs'] = {}
+        for name in self._drag_group(mol_name):
+            frame = self.mol_frames.get(name)
+            if frame is None:
+                continue
+            self._drag_state['original_bgs'][name] = frame.cget('bg')
+            self._set_row_bg(frame, '#c8e6ff')
         # Create the drop-indicator line (created fresh each drag)
         self._drag_state['indicator'] = tk.Frame(
             self.color_vis_frame, height=2, bg='#0078d4'
         )
+
+    def _drag_group(self, source: str) -> list:
+        """Names that move together when *source* is dragged, in panel order.
+
+        The selection (see :meth:`_get_selected_molecule_names`) moves as a group when the dragged row belongs to it; otherwise only the dragged row moves.
+        """
+        selected = self._get_selected_molecule_names()
+        if source in selected and len(selected) > 1:
+            return [name for name in self.mol_dict.keys() if name in selected]
+        return [source]
+
+    @staticmethod
+    def _set_row_bg(frame, bg) -> None:
+        """Recolour a molecule row frame and its child widgets."""
+        try:
+            frame.configure(bg=bg)
+            for child in frame.winfo_children():
+                try:
+                    child.configure(bg=bg)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _on_drag_motion(self, event) -> None:
         """Update the drop-indicator line as the cursor moves."""
@@ -579,7 +642,10 @@ class ControlPanel(ttk.Frame):
                 indicator.pack(fill='x')
 
     def _on_drag_release(self, event) -> None:
-        """Finalise the drop: reorder mol_dict and rebuild the panel."""
+        """Finalise the drop: reorder mol_dict and rebuild the panel.
+
+        The dragged row's displacement in rows (:func:`drag_delta`) is applied to every row in its drag group (:meth:`_drag_group`, :func:`shift_group_in_order`), so a multi-molecule selection moves up or down as one block.
+        """
         source = self._drag_state['source']
         if not source:
             return
@@ -593,23 +659,15 @@ class ControlPanel(ttk.Frame):
             except Exception:
                 pass
 
-        # Restore dragged-row background
-        frame = self.mol_frames.get(source)
-        original_bg = self._drag_state['original_bg'] or self.bg_color
-        if frame:
-            try:
-                frame.configure(bg=original_bg)
-                for child in frame.winfo_children():
-                    try:
-                        child.configure(bg=original_bg)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+        # Restore the highlighted rows' backgrounds
+        for name, original_bg in self._drag_state['original_bgs'].items():
+            frame = self.mol_frames.get(name)
+            if frame:
+                self._set_row_bg(frame, original_bg or self.bg_color)
 
         target_idx = self._drag_state['target_idx']
         # Reset state before any early return
-        self._drag_state = {'source': None, 'target_idx': None, 'indicator': None, 'original_bg': None}
+        self._drag_state = {'source': None, 'target_idx': None, 'indicator': None, 'original_bgs': {}}
 
         if target_idx is None:
             return
@@ -618,21 +676,12 @@ class ControlPanel(ttk.Frame):
         if source not in mol_names:
             return
 
-        src_idx = mol_names.index(source)
-        insert_after = target_idx
+        delta = drag_delta(mol_names.index(source), target_idx)
+        new_order = shift_group_in_order(mol_names, self._drag_group(source), delta)
+        if new_order == mol_names:
+            return  # dropped in place, or the group is already against the edge
 
-        # No-op when dropped on its own position or the slot immediately above
-        if insert_after == src_idx or insert_after == src_idx - 1:
-            return
-
-        # Build the new order
-        mol_names.pop(src_idx)
-        # Adjust insert_after for the removed element
-        if insert_after > src_idx:
-            insert_after -= 1
-        mol_names.insert(insert_after + 1, source)
-
-        self.mol_dict.reorder(mol_names)
+        self.mol_dict.reorder(new_order)
         self._rebuild_color_and_vis_controls()
 
     def _apply_vis_col_config(self, frame):
