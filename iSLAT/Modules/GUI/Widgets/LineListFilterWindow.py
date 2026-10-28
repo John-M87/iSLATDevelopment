@@ -40,6 +40,7 @@ from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     FilterExpression,
     MaskContext,
     describe_expression,
+    expression_mask,
     fold_masks,
     group_mask,
     validate,
@@ -584,6 +585,72 @@ def _rows_align(frame: pd.DataFrame, data: Mapping[str, Any]) -> bool:
                             equal_nan=True))
 
 
+def molecule_population_data(mol, base: pd.DataFrame):
+    """Population-diagram arrays for *mol*, checked to describe *base*'s rows.
+
+    Returns ``(data, error_message)``.  *base* is the active-range line list
+    frame the caller evaluates against; arrays that do not line up with it
+    row for row are refused rather than returned.
+
+    ``full_range=False`` is deliberate.  The filter evaluates against
+    ``LineListMaker.original_df``, which is the line list's *active*
+    wavelength range; ``full_range=True`` would return every line in the
+    file instead.  With a wavelength range set those two differ (e.g. 494
+    rows against 28517), and a mask built for one cannot index the other.
+    With no wavelength range the two are identical, so this costs nothing.
+    """
+    line_list = getattr(mol, "line_list", None)
+    if line_list is None:
+        return None, "This molecule has no line list."
+    try:
+        intensity = getattr(mol, "intensity", None)
+        if intensity is None and hasattr(mol, "calculate_intensity"):
+            mol.calculate_intensity()
+            intensity = getattr(mol, "intensity", None)
+        if intensity is None:
+            from iSLAT.Modules.DataTypes.Intensity import Intensity
+            intensity = Intensity(line_list)
+            intensity.calc_intensity(
+                t_kin=getattr(mol, "temp", None),
+                n_mol=getattr(mol, "n_mol", None),
+                dv=getattr(mol, "broad", None),
+            )
+        data = intensity.get_population_diagram_data(
+            getattr(mol, "radius", 1.0),
+            getattr(mol, "distance", 160.0),
+            molecule=mol,
+            full_range=False,
+        )
+    except Exception as exc:
+        return None, f"Could not compute population-diagram data: {exc}"
+    if data is None:
+        return None, "No population-diagram data for this molecule."
+
+    # Refuse to serve arrays a filter mask cannot index: plotting the
+    # wrong lines is far worse than plotting none.  Matching row COUNTS is
+    # not enough - two different wavelength windows can hold the same
+    # number of lines - so check the wavelengths line up element for
+    # element before trusting the mask against these arrays.
+    expected = len(base)
+    actual = _population_row_count(data)
+    if actual is not None and actual != expected:
+        return None, (
+            f"Population-diagram data has {actual} rows but the filter "
+            f"works on {expected}; cannot align the two.")
+    if not _rows_align(base, data):
+        return None, ("Population-diagram data does not line up with the "
+                      "filtered line list; cannot plot it safely.")
+    return data, None
+
+
+def model_quantity_frame(data: Mapping[str, Any], index: pd.Index) -> pd.DataFrame:
+    """The model quantities (``intens``, ``tau``) in *data*, indexed by *index*."""
+    columns = {key: np.asarray(data[key], dtype=float)
+               for key in _DERIVED_KEYS
+               if data.get(key) is not None}
+    return pd.DataFrame(columns, index=index)
+
+
 def diagnose_empty_group(g: ConditionGroup, df: pd.DataFrame,
                          ctx: MaskContext) -> Optional[str]:
     """Explain an empty group, but only when the diagnosis is a computed fact.
@@ -1116,6 +1183,9 @@ class LineListFilterWindow(tk.Toplevel):
         self._table_view = None
         self._pop_window = None
         self._last_mask = None
+        # Rows the last Apply kept, as a mask over original_df.  The maker's
+        # own frame is re-indexed, so it cannot be lined up with the baseline.
+        self._committed_mask = None
         self._table_job = None
 
         self._build_ui()
@@ -1419,11 +1489,7 @@ class LineListFilterWindow(tk.Toplevel):
         if data is None:
             raise ConditionError(error or
                                  "No model data is available for this molecule.")
-        base = self._maker.original_df
-        columns = {key: np.asarray(data[key], dtype=float)
-                   for key in _DERIVED_KEYS
-                   if data.get(key) is not None}
-        frame = pd.DataFrame(columns, index=base.index)
+        frame = model_quantity_frame(data, self._maker.original_df.index)
         self._derived_cache = frame
         self._derived_id = fingerprint
         return frame
@@ -1590,6 +1656,7 @@ class LineListFilterWindow(tk.Toplevel):
             title=f"Filtered Line List: {mol_name}",
             data_field=self.data_field,
             export_basename=f"{mol_name}_filtered",
+            column_source=self._table_column_source,
         )
         view.protocol("WM_DELETE_WINDOW",
                       lambda v=view: self._close_table_view(v))
@@ -1609,12 +1676,44 @@ class LineListFilterWindow(tk.Toplevel):
 
         Uses the live preview mask when one is available so the table matches
         the count on screen, and falls back to the committed result otherwise.
+        Either way the rows keep ``original_df``'s index, so the table's added
+        columns (model quantities, velocity separation) can be read back from
+        the baseline the filter evaluated them over.
         """
         mask = self._last_mask
         base = self._maker.original_df
         if mask is not None and len(mask) == len(base):
             return base.loc[np.asarray(mask, dtype=bool)]
+        if not self._maker.filters:
+            return base.copy()
+        committed = self._committed_mask
+        if committed is not None and len(committed) == len(base):
+            return base.loc[committed]
         return self._maker.df
+
+    def _table_column_source(self):
+        """Extra-column source for the table view, bound to the current maker.
+
+        Evaluates every added column exactly as a filter condition on it would
+        be: over the whole unfiltered baseline, with this window's species and
+        its cached model quantities.
+        """
+        from iSLAT.Modules.GUI.Widgets.LineListViewWindow import LineListColumnSource
+        maker = self._maker
+
+        def derived(_reference):
+            # _derived_frame follows self._maker; refuse to pair it with rows
+            # taken from a maker this window has since replaced.
+            if self._maker is not maker:
+                raise ConditionError(
+                    "The filter's line list has changed; refresh the table.")
+            return self._derived_frame()
+
+        return LineListColumnSource(
+            species=maker.species,
+            derived_source=derived,
+            baseline_source=lambda: maker.original_df,
+        )
 
     def _open_pop_diagram(self) -> None:
         """Open (or raise) a live population diagram of the filtered lines."""
@@ -1653,59 +1752,10 @@ class LineListFilterWindow(tk.Toplevel):
         """Population-diagram arrays for the rows this filter operates on.
 
         Computed once and then only indexed, so changing the filter never
-        re-runs the intensity physics.  Returns ``(data, error_message)``.
-
-        ``full_range=False`` is deliberate.  The filter evaluates against
-        ``LineListMaker.original_df``, which is the line list's *active*
-        wavelength range; ``full_range=True`` would return every line in the
-        file instead.  With a wavelength range set those two differ (e.g. 494
-        rows against 28517), and a mask built for one cannot index the other.
-        With no wavelength range the two are identical, so this costs nothing.
+        re-runs the intensity physics.  Returns ``(data, error_message)``;
+        see :func:`molecule_population_data` for the alignment guarantees.
         """
-        mol = self.mol_obj
-        line_list = getattr(mol, "line_list", None)
-        if line_list is None:
-            return None, "This molecule has no line list."
-        try:
-            intensity = getattr(mol, "intensity", None)
-            if intensity is None and hasattr(mol, "calculate_intensity"):
-                mol.calculate_intensity()
-                intensity = getattr(mol, "intensity", None)
-            if intensity is None:
-                from iSLAT.Modules.DataTypes.Intensity import Intensity
-                intensity = Intensity(line_list)
-                intensity.calc_intensity(
-                    t_kin=getattr(mol, "temp", None),
-                    n_mol=getattr(mol, "n_mol", None),
-                    dv=getattr(mol, "broad", None),
-                )
-            data = intensity.get_population_diagram_data(
-                getattr(mol, "radius", 1.0),
-                getattr(mol, "distance", 160.0),
-                molecule=mol,
-                full_range=False,
-            )
-        except Exception as exc:
-            return None, f"Could not compute population-diagram data: {exc}"
-        if data is None:
-            return None, "No population-diagram data for this molecule."
-
-        # Refuse to serve arrays a filter mask cannot index: plotting the
-        # wrong lines is far worse than plotting none.  Matching row COUNTS is
-        # not enough - two different wavelength windows can hold the same
-        # number of lines - so check the wavelengths line up element for
-        # element before trusting the mask against these arrays.
-        base = self._maker.original_df
-        expected = len(base)
-        actual = _population_row_count(data)
-        if actual is not None and actual != expected:
-            return None, (
-                f"Population-diagram data has {actual} rows but the filter "
-                f"works on {expected}; cannot align the two.")
-        if not _rows_align(base, data):
-            return None, ("Population-diagram data does not line up with the "
-                          "filtered line list; cannot plot it safely.")
-        return data, None
+        return molecule_population_data(self.mol_obj, self._maker.original_df)
 
     def _notify_companions(self) -> None:
         """Push the current selection to whichever companion views are open."""
@@ -1800,6 +1850,7 @@ class LineListFilterWindow(tk.Toplevel):
             return
 
         self._maker.reset()
+        self._committed_mask = None
         try:
             self._maker.filter_expression(expr,
                                           derived_source=self._derived_frame)
@@ -1808,6 +1859,12 @@ class LineListFilterWindow(tk.Toplevel):
             messagebox.showerror("Invalid Filter", str(exc), parent=self)
             self._refresh_status()
             return
+        try:
+            # ctx was warmed by validate(), so this only re-folds the masks.
+            self._committed_mask = expression_mask(
+                self._maker.original_df, expr, ctx).to_numpy(dtype=bool)
+        except ConditionError:
+            self._committed_mask = None
 
         self._refresh_status()
         if self.data_field is not None:
@@ -1867,6 +1924,7 @@ class LineListFilterWindow(tk.Toplevel):
                                                self._maker.species,
                                                derived=_DERIVED_KEYS)
         self._last_mask = None
+        self._committed_mask = None
         for group in self._group_rows:
             for row in group.rows:
                 row.set_catalog(self._catalog)
@@ -1882,6 +1940,7 @@ class LineListFilterWindow(tk.Toplevel):
     def _reset_all(self):
         """Clear every condition and restore the full line list."""
         self._maker.reset()
+        self._committed_mask = None
         for group in list(self._group_rows):
             group.destroy()
         self._group_rows = []
