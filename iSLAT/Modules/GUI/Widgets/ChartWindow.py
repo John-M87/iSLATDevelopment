@@ -1,5 +1,6 @@
+import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from iSLAT.Modules.Hitran_data import download_hitran_data
 from iSLAT.Modules.GUI.Tooltips import CreateToolTip
 
@@ -9,9 +10,6 @@ class MoleculeSelector:
         self.data_field = data_field  # Reference to the data field in the main GUI
         self.user_settings = user_settings or {}
         self.islat = islat
-        self.mols = []
-        self.basem = []
-        self.isot = []
 
         # Isotopologue data with assigned numbers
         self.isotopologue_data = {
@@ -105,14 +103,52 @@ class MoleculeSelector:
         self.isotopologue_var = tk.StringVar()
         self.isotopologue_combobox = ttk.Combobox(self.frame, textvariable=self.isotopologue_var)
         self.isotopologue_combobox.grid(row=1, column=1, padx=5, pady=5)
+        self.isotopologue_combobox.bind('<<ComboboxSelected>>', self.update_file_name)
         CreateToolTip(
             self.isotopologue_combobox,
             "Select the specific isotopologue of the chosen molecule.\n"
             "Each entry corresponds to a distinct HITRAN isotopologue number."
         )
 
+        self.file_name_label = ttk.Label(self.frame, text="File name:")
+        self.file_name_label.grid(row=2, column=0, padx=5, pady=5)
+
+        self.file_name_var = tk.StringVar()
+        self.file_name_entry = ttk.Entry(self.frame, textvariable=self.file_name_var)
+        self.file_name_entry.grid(row=2, column=1, padx=5, pady=5)
+        CreateToolTip(
+            self.file_name_entry,
+            "Name of the .par file saved to the HITRANdata folder.\n"
+            "Filled in with the default name when an isotopologue is selected;\n"
+            "'.par' is added if omitted."
+        )
+
+        self.min_wave_label = ttk.Label(self.frame, text="Min wavelength (µm):")
+        self.min_wave_label.grid(row=3, column=0, padx=5, pady=5)
+
+        self.min_wave_var = tk.StringVar(value=str(self.user_settings.get("hitran_min_wave", 0.3)))
+        self.min_wave_entry = ttk.Entry(self.frame, textvariable=self.min_wave_var)
+        self.min_wave_entry.grid(row=3, column=1, padx=5, pady=5)
+        CreateToolTip(
+            self.min_wave_entry,
+            "Shortest wavelength (in microns) of the lines to download.\n"
+            "Defaults to the 'hitran_min_wave' user setting."
+        )
+
+        self.max_wave_label = ttk.Label(self.frame, text="Max wavelength (µm):")
+        self.max_wave_label.grid(row=4, column=0, padx=5, pady=5)
+
+        self.max_wave_var = tk.StringVar(value=str(self.user_settings.get("hitran_max_wave", 1000.0)))
+        self.max_wave_entry = ttk.Entry(self.frame, textvariable=self.max_wave_var)
+        self.max_wave_entry.grid(row=4, column=1, padx=5, pady=5)
+        CreateToolTip(
+            self.max_wave_entry,
+            "Longest wavelength (in microns) of the lines to download.\n"
+            "Defaults to the 'hitran_max_wave' user setting."
+        )
+
         self.add_button = ttk.Button(self.frame, text="Download HITRAN file", command=self.add_molecule)
-        self.add_button.grid(row=2, column=0, columnspan=2, pady=(10, 2))
+        self.add_button.grid(row=5, column=0, columnspan=2, pady=(10, 2))
         CreateToolTip(
             self.add_button,
             "Download the HITRAN line-list file for the selected isotopologue\n"
@@ -125,7 +161,7 @@ class MoleculeSelector:
             text="Download and Add to iSLAT",
             command=self.download_and_add_molecule,
         )
-        self.download_add_button.grid(row=3, column=0, columnspan=2, pady=2)
+        self.download_add_button.grid(row=6, column=0, columnspan=2, pady=2)
         if self.islat is None:
             self.download_add_button.configure(state="disabled")
         CreateToolTip(
@@ -135,7 +171,7 @@ class MoleculeSelector:
         )
 
         self.done_button = ttk.Button(self.frame, text="Close Window", command=self.on_done)
-        self.done_button.grid(row=4, column=0, columnspan=2, pady=(2, 10))
+        self.done_button.grid(row=7, column=0, columnspan=2, pady=(2, 10))
         CreateToolTip(self.done_button, "Close this window.")
 
     def update_isotopologues(self, event):
@@ -147,40 +183,53 @@ class MoleculeSelector:
             self.isotopologue_var.set(isotopologues[0][0])
         else:
             self.isotopologue_var.set("")
+        self.update_file_name()
 
-    def add_molecule(self):
-        print("adding molecule")
-        mol = self.molecule_var.get()
+    def update_file_name(self, event=None):
         isotopologue = self.isotopologue_var.get()
-        isotopologue_list = self.isotopologue_data.get(mol, [])
-        isotope = next((num for iso, num in isotopologue_list if iso == isotopologue), None)
+        self.file_name_var.set(f"data_Hitran_{isotopologue}.par" if isotopologue else "")
 
-        if isotope is not None:
-            self.mols.append(mol)
-            self.basem.append(isotopologue)
-            self.isot.append(isotope)
-            
-
-            missed_mols = download_hitran_data(
-                self.basem, self.mols, self.isot,
-                min_wave=self.user_settings.get("hitran_min_wave", 0.3),
-                max_wave=self.user_settings.get("hitran_max_wave", 1000.0),
+    def get_file_name(self, isotopologue):
+        """Return the .par file name entered by the user, or None if invalid."""
+        file_name = self.file_name_var.get().strip() or f"data_Hitran_{isotopologue}.par"
+        if os.sep in file_name or (os.altsep and os.altsep in file_name):
+            self.data_field.insert_text(
+                "File name must not contain a folder path; files are saved to the HITRANdata folder.",
+                clear_after=False, console_print=True,
             )
-            if missed_mols:
-                for (bm, mol, iso) in missed_mols:
-                    error_message = f"Could not load Molecule: {bm}, Isotopologue: {mol}, Isotope Number: {iso}"
-                    self.data_field.insert_text(error_message, clear_after=False, console_print=True)
-                    return
-            
+            return None
+        if not file_name.lower().endswith(".par"):
+            file_name += ".par"
+        return file_name
 
-            print(f"Added Molecule: {mol}, Isotopologue: {isotopologue}, Isotope Number: {isotope}")
+    def get_wave_range(self):
+        """Return the (min, max) wavelength range in microns entered by the user, or None if invalid."""
+        try:
+            min_wave = float(self.min_wave_var.get())
+            max_wave = float(self.max_wave_var.get())
+        except ValueError:
+            self.data_field.insert_text(
+                "Wavelength range must be numeric (in microns).",
+                clear_after=False, console_print=True,
+            )
+            return None
 
-            # Update the main GUI data_field
-            self.data_field.delete('1.0', "end")
-            self.data_field.insert_text(f"{isotopologue} downloaded from HITRAN.", clear_after=True, console_print=True)
+        if min_wave <= 0 or max_wave <= 0 or min_wave >= max_wave:
+            self.data_field.insert_text(
+                "Wavelength range must be positive with min < max.",
+                clear_after=False, console_print=True,
+            )
+            return None
 
-    def download_and_add_molecule(self):
-        """Download the selected isotopologue from HITRAN and immediately add it to iSLAT."""
+        return min_wave, max_wave
+
+    def download_selected(self):
+        """
+        Download the selected isotopologue over the requested wavelength range.
+
+        Returns the path to the .par file (newly downloaded or existing), or
+        None if nothing usable was produced.
+        """
         mol = self.molecule_var.get()
         isotopologue = self.isotopologue_var.get()
         if not mol or not isotopologue:
@@ -188,34 +237,77 @@ class MoleculeSelector:
                 "Please select a molecule and isotopologue first.",
                 clear_after=False, console_print=True,
             )
-            return
+            return None
 
         isotopologue_list = self.isotopologue_data.get(mol, [])
         isotope = next((num for iso, num in isotopologue_list if iso == isotopologue), None)
         if isotope is None:
-            return
+            return None
 
-        # Download the HITRAN file (same as add_molecule, but single-shot lists)
+        wave_range = self.get_wave_range()
+        if wave_range is None:
+            return None
+        min_wave, max_wave = wave_range
+
+        file_name = self.get_file_name(isotopologue)
+        if file_name is None:
+            return None
+
+        from iSLAT.Modules.FileHandling import hitran_data_folder_path
+        file_path = os.path.join(str(hitran_data_folder_path), file_name)
+
+        # An existing file would otherwise be skipped, ignoring the requested range
+        if os.path.exists(file_path):
+            overwrite = messagebox.askyesno(
+                "File already exists",
+                f"A file named {file_name} already exists.\n\n"
+                f"Replace it with a new download covering {min_wave:g}-{max_wave:g} µm?\n"
+                f"Choose 'No' to keep the existing file.",
+                parent=self.window,
+            )
+            if not overwrite:
+                self.data_field.insert_text(
+                    f"Kept existing file {file_name}.",
+                    clear_after=True, console_print=True,
+                )
+                return file_path
+        else:
+            overwrite = False
+
         missed_mols = download_hitran_data(
             [isotopologue], [mol], [isotope],
-            min_wave=self.user_settings.get("hitran_min_wave", 0.3),
-            max_wave=self.user_settings.get("hitran_max_wave", 1000.0),
+            min_wave=min_wave,
+            max_wave=max_wave,
+            overwrite=overwrite,
+            file_names=[file_name],
         )
-        if missed_mols:
-            for (bm, m, iso) in missed_mols:
-                self.data_field.insert_text(
-                    f"Could not download: {bm}, {m}, isotope {iso}",
-                    clear_after=False, console_print=True,
-                )
+        if missed_mols or not os.path.exists(file_path):
+            self.data_field.insert_text(
+                f"Could not download: {mol}, {isotopologue}, isotope {isotope}",
+                clear_after=False, console_print=True,
+            )
+            return None
+
+        print(f"Added Molecule: {mol}, Isotopologue: {isotopologue}, Isotope Number: {isotope}")
+        self.data_field.insert_text(
+            f"{isotopologue} downloaded from HITRAN ({min_wave:g}-{max_wave:g} µm) to {file_name}.",
+            clear_after=True, console_print=True,
+        )
+        return file_path
+
+    def add_molecule(self):
+        print("adding molecule")
+        self.download_selected()
+
+    def download_and_add_molecule(self):
+        """Download the selected isotopologue from HITRAN and immediately add it to iSLAT."""
+        file_path = self.download_selected()
+        if file_path is None:
             return
 
-        # Locate the file that was just written
-        from iSLAT.Modules.FileHandling import hitran_data_folder_path
-        import os
-        file_path = os.path.join(str(hitran_data_folder_path), f"data_Hitran_{isotopologue}.par")
-
+        isotopologue = self.isotopologue_var.get()
         self.data_field.insert_text(
-            f"{isotopologue} downloaded from HITRAN - adding to iSLAT…",
+            f"Adding {isotopologue} to iSLAT…",
             clear_after=True, console_print=True,
         )
 

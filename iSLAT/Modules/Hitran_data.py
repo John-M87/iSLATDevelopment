@@ -261,6 +261,8 @@ def download_hitran_data(
     max_wave: float = 1000.0,
     min_vu: Optional[float] = None,
     max_vu: Optional[float] = None,
+    overwrite: bool = False,
+    file_names: Optional[List[Optional[str]]] = None,
 ) -> List[Tuple]:
     """Download HITRAN line data and write .par files for the requested molecules.
 
@@ -285,6 +287,13 @@ def download_hitran_data(
         Minimum wavenumber in cm⁻¹.  Overrides *min_wave* when given.
     max_vu : float, optional
         Maximum wavenumber in cm⁻¹.  Overrides *max_wave* when given.
+    overwrite : bool, optional
+        Re-download and replace .par files that already exist instead of
+        skipping them (default False).
+    file_names : List[str], optional
+        File names (without directory) to save each molecule under.  Any
+        entry that is *None*, or a missing list, falls back to
+        ``data_Hitran_<mol>.par``.
 
     Returns
     -------
@@ -306,10 +315,15 @@ def download_hitran_data(
     if save_folder is None:
         from .FileHandling import hitran_data_folder_path as save_folder
 
-    for mol, bm, iso in zip(mols, basem, isot):
-        file_path: str = os.path.join(save_folder, "data_Hitran_{:}.par".format(mol))
+    if file_names is None:
+        file_names = [None] * len(mols)
 
-        if os.path.exists(file_path):
+    for mol, bm, iso, file_name in zip(mols, basem, isot, file_names):
+        if file_name is None:
+            file_name = "data_Hitran_{:}.par".format(mol)
+        file_path: str = os.path.join(save_folder, file_name)
+
+        if os.path.exists(file_path) and not overwrite:
             print("File already exists for mol: {:}. Skipping.".format(mol))
             continue
 
