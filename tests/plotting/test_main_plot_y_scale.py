@@ -531,3 +531,62 @@ class TestFullSpectrumLayoutChangesKeepToggleState:
         assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
         for idx, ax in plot.subplots.items():
             assert ax.get_ylim()[1] == pytest.approx((idx + 1) * (1 + 1 / 8))
+
+
+class TestFullSpectrumModelAutoscaleSurvivesRerender:
+    """Every full-spectrum re-render resets the panels to the data rule; model mode must refit on top."""
+
+    MODEL_PEAK = 0.2   # well below the 1-4 Jy observed flux, so the two rules differ
+
+    @classmethod
+    def _make_view(cls, source="model"):
+        view, plot, pm = TestFullSpectrumViewInheritsPolicy._make_view()
+        wave = plot.wave_data
+        model = cls.MODEL_PEAK * np.exp(-0.5 * ((wave - 8.0) / 2.0) ** 2)
+        plot._build_mol_cache = lambda: ([(wave, model, "#f00", "CO", "CO")], ["CO"], ["#f00"])
+        pm.legend_toggle = True
+        pm.toggle_state.update({"y_autoscale": True, "y_autoscale_source": source})
+        return view, plot, pm, wave, model
+
+    @staticmethod
+    def _model_tops(plot, wave, model):
+        tops = {}
+        for idx, ax in plot.subplots.items():
+            x0, x1 = ax.get_xlim()
+            sel = (wave >= x0) & (wave <= x1)
+            tops[idx] = float(model[sel].max()) * (1 + 1 / 8)
+        return tops
+
+    def _assert_fit_to_model(self, plot, wave, model):
+        for idx, top in self._model_tops(plot, wave, model).items():
+            assert plot.subplots[idx].get_ylim()[1] == pytest.approx(top, rel=1e-6)
+
+    def test_layout_regeneration_refits_to_model(self):
+        view, plot, _pm, wave, model = self._make_view()
+        view._regenerate_layout()
+        self._assert_fit_to_model(plot, wave, model)
+
+    def test_inplace_model_update_refits_to_model(self):
+        view, plot, pm, wave, model = self._make_view()
+        plot.update_panels_inplace()
+        view._reapply_display_state(pm.toggle_state)
+        self._assert_fit_to_model(plot, wave, model)
+
+    def test_panel_count_change_refits_to_model(self):
+        view, plot, _pm, wave, model = self._make_view()
+        view._set_n_panels(2)
+        assert len(plot.subplots) == 2
+        self._assert_fit_to_model(plot, wave, model)
+
+    def test_data_source_keeps_layout_limits(self):
+        view, plot, _pm, _wave, _model = self._make_view(source="data")
+        view._regenerate_layout()
+        expected = plot._compute_panel_ylims(ylim_fn=plot._spectrum_ylim_fn)
+        for idx, ax in plot.subplots.items():
+            assert ax.get_ylim() == pytest.approx(expected[idx])
+
+    def test_manual_limits_win_over_model_source(self):
+        view, plot, pm, _wave, _model = self._make_view()
+        pm.toggle_state.update({"y_autoscale": False, "y_limits": (0.0, 9.0)})
+        view._regenerate_layout()
+        assert all(ax.get_ylim() == (0.0, 9.0) for ax in plot.subplots.values())

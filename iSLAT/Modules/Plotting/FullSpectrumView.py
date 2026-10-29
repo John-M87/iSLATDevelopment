@@ -247,6 +247,20 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 changed = True
         return changed
 
+    def _reapply_display_state(self, toggle_state: dict) -> None:
+        """Also refit to the model after a re-render when auto-scaling to it.
+
+        Every render path sets each panel to the layout's data-based limits,
+        which the base leaves alone while auto-scaling.  That matches the
+        ``"data"`` source but would silently drop a ``"model"`` fit on every
+        model update, panel-count or range change.
+        """
+        super()._reapply_display_state(toggle_state)
+        if (isinstance(toggle_state, dict)
+                and toggle_state.get("y_autoscale", True)
+                and self._y_autoscale_source() == "model"):
+            self._autoscale_y_axes()
+
     def _load_saved_line_data(self):
         return self._load_line_data()
 
