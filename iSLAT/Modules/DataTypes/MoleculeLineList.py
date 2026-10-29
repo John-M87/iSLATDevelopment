@@ -296,6 +296,28 @@ class MoleculeLineList(WavelengthRangeMixin):
         self._filtered_raw_data = self._raw_lines_data[mask]
         return self._filtered_raw_data
 
+    def without_wavelength_range(self) -> "MoleculeLineList":
+        """Return this line list with no *wavelength_range* applied.
+
+        The copy shares the already-loaded line data rather than re-reading
+        the source file, so it also covers lists built in memory (e.g. a
+        filtered result) that have no file behind them.  Returns ``self``
+        when no range is set.
+        """
+        self._ensure_data_loaded()
+        if self._wavelength_range is None or self._raw_lines_data is None:
+            return self
+        full = MoleculeLineList(molecule_id=self.molecule_id,
+                                format=self._source_format,
+                                extra_fields=dict(self._extra_fields))
+        full._filename = self._filename
+        full._raw_lines_data = self._raw_lines_data
+        full.partition_function = self.partition_function
+        full._molar_mass = self._molar_mass
+        full.lines = None  # Created on demand
+        full._data_loaded = True
+        return full
+
     def _load_from_data(self, lines_data: List[dict]):
         """Load from provided line data with optimized batch processing."""
         # Convert list of dicts to structured numpy array for fast column access

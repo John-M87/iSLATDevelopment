@@ -377,6 +377,21 @@ def has_quantum_schema(species: Optional[str]) -> bool:
     return bool(_quantum_field_specs(species))
 
 
+#: Format choice meaning "pick the schema from the line list's own name".
+FORMAT_AUTO = "Auto"
+
+
+def quantum_format_choices() -> List[str]:
+    """Formats a line list can be parsed as: ``FORMAT_AUTO``, then every registered schema."""
+    try:
+        from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
+        import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
+        names = QuantumStateRegistry.list_molecules()
+    except Exception:
+        names = []
+    return [FORMAT_AUTO] + names
+
+
 # ---------------------------------------------------------------------------
 # Widget-state -> Condition mapping
 # ---------------------------------------------------------------------------
@@ -585,7 +600,7 @@ def _rows_align(frame: pd.DataFrame, data: Mapping[str, Any]) -> bool:
                             equal_nan=True))
 
 
-def molecule_population_data(mol, base: pd.DataFrame):
+def molecule_population_data(mol, base: pd.DataFrame, line_list=None):
     """Population-diagram arrays for *mol*, checked to describe *base*'s rows.
 
     Returns ``(data, error_message)``.  *base* is the active-range line list
@@ -598,13 +613,20 @@ def molecule_population_data(mol, base: pd.DataFrame):
     file instead.  With a wavelength range set those two differ (e.g. 494
     rows against 28517), and a mask built for one cannot index the other.
     With no wavelength range the two are identical, so this costs nothing.
+
+    *line_list*, when given, is the list *base* was built from if that is not
+    the molecule's own (e.g. the whole list with no wavelength range).  The
+    model is then evaluated over it with the molecule's parameters instead
+    of reusing the molecule's range-limited result.
     """
-    line_list = getattr(mol, "line_list", None)
+    own = getattr(mol, "line_list", None)
+    if line_list is None:
+        line_list = own
     if line_list is None:
         return None, "This molecule has no line list."
     try:
-        intensity = getattr(mol, "intensity", None)
-        if intensity is None and hasattr(mol, "calculate_intensity"):
+        intensity = getattr(mol, "intensity", None) if line_list is own else None
+        if intensity is None and line_list is own and hasattr(mol, "calculate_intensity"):
             mol.calculate_intensity()
             intensity = getattr(mol, "intensity", None)
         if intensity is None:
@@ -614,6 +636,7 @@ def molecule_population_data(mol, base: pd.DataFrame):
                 t_kin=getattr(mol, "temp", None),
                 n_mol=getattr(mol, "n_mol", None),
                 dv=getattr(mol, "broad", None),
+                method=getattr(mol, "intensity_calculation_method", "curve_growth"),
             )
         data = intensity.get_population_diagram_data(
             getattr(mol, "radius", 1.0),
@@ -1126,6 +1149,12 @@ class LineListFilterWindow(tk.Toplevel):
 
     #: Live windows, keyed by (iSLAT instance, molecule name).
     _instances: Dict[Tuple[int, str], "LineListFilterWindow"] = {}
+    #: Line-list format overrides, keyed like ``_instances`` so a molecule's
+    #: choice survives closing and reopening its window.
+    _format_overrides: Dict[Tuple[int, str], str] = {}
+    #: Molecules whose window filters the whole line list rather than only
+    #: the lines inside the model's wavelength range; keyed the same way.
+    _whole_list_choices: Dict[Tuple[int, str], bool] = {}
 
     @classmethod
     def open(cls, parent, mol_obj: "Molecule", data_field=None, islat=None,
@@ -1168,13 +1197,20 @@ class LineListFilterWindow(tk.Toplevel):
         if line_list is None:
             self.destroy()
             raise ValueError(f"Molecule '{mol_name}' has no line list loaded.")
-        self._maker = LineListMaker(line_list)
+        self._choice_key = (id(islat), str(getattr(mol_obj, "name", "")))
+        self._whole_list = type(self)._whole_list_choices.get(self._choice_key, False)
+        # The list as handed over, and the one actually filtered (the
+        # former without its wavelength range in whole-list mode)
+        self._source_line_list = line_list
+        self._filter_line_list = self._scoped(line_list)
+        self._maker = LineListMaker(self._filter_line_list)
+        self._maker.quantum_format = type(self)._format_overrides.get(self._choice_key)
         self._baseline_id = self._baseline_fingerprint()
         self._total_lines = len(self._maker)
         self._derived_cache: Optional[pd.DataFrame] = None
         self._derived_id: Optional[Tuple] = None
         self._catalog = build_property_catalog(self._maker.original_df,
-                                               self._maker.species,
+                                               self._maker.schema_species,
                                                derived=_DERIVED_KEYS)
 
         self._group_rows: List[_GroupRow] = []
@@ -1270,16 +1306,58 @@ class LineListFilterWindow(tk.Toplevel):
         CreateToolTip(quick_btn,
                       "Insert a ready-made condition for a common property.")
 
+        # ── Line-list format ─────────────────────────────────────────
+        fmt_row = ttk.Frame(head_wrap)
+        fmt_row.pack(fill="x", pady=(4, 0))
+        ttk.Label(fmt_row, text="Line list format").pack(side="left")
+        self._format_var = tk.StringVar(
+            value=self._maker.quantum_format or FORMAT_AUTO)
+        format_combo = ttk.Combobox(fmt_row, textvariable=self._format_var,
+                                    values=quantum_format_choices(),
+                                    state="readonly", width=10)
+        format_combo.pack(side="left", padx=4)
+        format_combo.bind("<<ComboboxSelected>>", self._on_format_changed)
+        CreateToolTip(format_combo,
+                      "Which molecule's quantum-number format to parse the "
+                      "level labels with.\n\n"
+                      "Auto = use the line list's own name.\n"
+                      "Pick a molecule to override it, e.g. read a list "
+                      "named 'H2O_v2-1' as H2O.\n"
+                      "Only parsing changes; the line list keeps its name.")
+        self._format_info_var = tk.StringVar()
+        ttk.Label(fmt_row, textvariable=self._format_info_var,
+                  style="Muted.TLabel").pack(side="left", padx=(4, 0))
+
+        # ── Lines to filter ──────────────────────────────────────────
+        scope_row = ttk.Frame(head_wrap)
+        scope_row.pack(fill="x", pady=(2, 0))
+        ttk.Label(scope_row, text="Lines to filter").pack(side="left")
+        self._scope_var = tk.StringVar(
+            value="whole" if self._whole_list else "range")
+        self._range_radio = ttk.Radiobutton(
+            scope_row, variable=self._scope_var, value="range",
+            command=self._on_scope_changed)
+        self._range_radio.pack(side="left", padx=(4, 0))
+        CreateToolTip(self._range_radio,
+                      "Filter only the lines inside the molecule's current "
+                      "model wavelength range.")
+        self._whole_radio = ttk.Radiobutton(
+            scope_row, variable=self._scope_var, value="whole",
+            command=self._on_scope_changed)
+        self._whole_radio.pack(side="left", padx=(4, 0))
+        CreateToolTip(self._whole_radio,
+                      "Filter every line in the line list, including those "
+                      "outside the model wavelength range.\n"
+                      "Applying the result keeps the filtered lines outside "
+                      "the range, so widening the range later shows them.")
+        self._update_scope_ui()
+
         # An absent schema means no parsed quantum-number properties are on
         # offer.  Say so, rather than leaving a gap that reads as a bug.
-        if not has_quantum_schema(self._maker.species):
-            ttk.Label(
-                head_wrap, style="Muted.TLabel", anchor="w", justify="left",
-                wraplength=560,
-                text=(f"No quantum-number schema is registered for "
-                      f"'{self._maker.species}', so only column properties and "
-                      f"raw level-label matching are available."),
-            ).pack(fill="x", pady=(2, 0))
+        self._schema_note = ttk.Label(
+            head_wrap, style="Muted.TLabel", anchor="w", justify="left",
+            wraplength=560)
+        self._update_format_ui()
 
         # ── Groups area (scrollable) ─────────────────────────────────
         scroll_host = ttk.Frame(outer)
@@ -1461,6 +1539,111 @@ class LineListFilterWindow(tk.Toplevel):
         return [g.to_state() for g in self._group_rows]
 
     # ------------------------------------------------------------------
+    # Line-list format
+    # ------------------------------------------------------------------
+    def _rebuild_catalog(self) -> None:
+        """Rebuild the property list for the current maker and format, and hand it to every row."""
+        self._catalog = build_property_catalog(self._maker.original_df,
+                                               self._maker.schema_species,
+                                               derived=_DERIVED_KEYS)
+        for group in self._group_rows:
+            for row in group.rows:
+                row.set_catalog(self._catalog)
+
+    def _update_format_ui(self) -> None:
+        """Describe the format in use, and show the no-schema note only when it applies."""
+        species = self._maker.species
+        override = self._maker.quantum_format
+        if override:
+            self._format_info_var.set(f"(overriding '{species}')")
+        else:
+            self._format_info_var.set(f"(from name '{species}')")
+
+        schema_species = self._maker.schema_species
+        if has_quantum_schema(schema_species):
+            self._schema_note.pack_forget()
+            return
+        text = (f"No quantum-number schema is registered for "
+                f"'{schema_species}', so only column properties and "
+                f"raw level-label matching are available.")
+        if not override:
+            text += " Choose a line list format above to parse its quantum numbers."
+        self._schema_note.configure(text=text)
+        self._schema_note.pack(fill="x", pady=(2, 0))
+
+    # ------------------------------------------------------------------
+    # Lines to filter (model range or whole list)
+    # ------------------------------------------------------------------
+    def _scoped(self, line_list):
+        """*line_list* as this window filters it: whole, or as the molecule limits it."""
+        if self._whole_list and hasattr(line_list, "without_wavelength_range"):
+            return line_list.without_wavelength_range()
+        return line_list
+
+    def _update_scope_ui(self) -> None:
+        """Label both choices with how many lines each would filter."""
+        source = self._source_line_list
+        n_range = len(source)
+        n_whole = len(self._filter_line_list) if self._whole_list else len(
+            source.without_wavelength_range()
+            if hasattr(source, "without_wavelength_range") else source)
+        self._range_radio.configure(text=f"In model range ({n_range})")
+        self._whole_radio.configure(text=f"Whole line list ({n_whole})")
+
+    def _on_scope_changed(self) -> None:
+        """Re-base on the chosen set of lines, keeping the conditions typed so far."""
+        whole = self._scope_var.get() == "whole"
+        if whole == self._whole_list:
+            return
+        self._whole_list = whole
+        if whole:
+            type(self)._whole_list_choices[self._choice_key] = True
+        else:
+            type(self)._whole_list_choices.pop(self._choice_key, None)
+        # Any applied filter was evaluated over the other set of lines;
+        # rebinding drops it, and the conditions stay on screen to re-apply.
+        self._rebind_to_line_list(self._source_line_list)
+        self._refresh_status()
+        self._refresh_table_view()
+
+    def _on_format_changed(self, *_args) -> None:
+        """Re-parse the level labels with the chosen format and re-evaluate."""
+        choice = self._format_var.get()
+        override = None if choice == FORMAT_AUTO else choice
+        if override == self._maker.quantum_format:
+            return
+        if override is None:
+            type(self)._format_overrides.pop(self._choice_key, None)
+        else:
+            type(self)._format_overrides[self._choice_key] = override
+
+        self._maker.quantum_format = override
+        # A committed filter may have parsed fields under the old format;
+        # re-apply it so the kept rows follow the new one.
+        expr = self._maker.expression
+        self._maker.reset()
+        self._committed_mask = None
+        if expr is not None:
+            try:
+                self._maker.filter_expression(expr,
+                                              derived_source=self._derived_frame)
+                self._committed_mask = expression_mask(
+                    self._maker.original_df, expr,
+                    self._mask_context()).to_numpy(dtype=bool)
+            except ConditionError as exc:
+                self._maker.reset()
+                messagebox.showwarning(
+                    "Filter Cleared",
+                    f"The applied filter cannot be evaluated with the "
+                    f"{choice} format and was cleared:\n{exc}",
+                    parent=self)
+        self._last_mask = None
+        self._rebuild_catalog()
+        self._update_format_ui()
+        self._refresh_status()
+        self._refresh_table_view()
+
+    # ------------------------------------------------------------------
     # Model quantities (line intensity, optical depth)
     # ------------------------------------------------------------------
     def _model_fingerprint(self) -> Tuple:
@@ -1496,7 +1679,7 @@ class LineListFilterWindow(tk.Toplevel):
 
     def _mask_context(self) -> MaskContext:
         """The evaluation context every pass of this window must share."""
-        return MaskContext(species=self._maker.species,
+        return MaskContext(species=self._maker.schema_species,
                            derived_source=self._derived_frame)
 
     # ------------------------------------------------------------------
@@ -1710,7 +1893,7 @@ class LineListFilterWindow(tk.Toplevel):
             return self._derived_frame()
 
         return LineListColumnSource(
-            species=maker.species,
+            species=maker.schema_species,
             derived_source=derived,
             baseline_source=lambda: maker.original_df,
         )
@@ -1755,7 +1938,9 @@ class LineListFilterWindow(tk.Toplevel):
         re-runs the intensity physics.  Returns ``(data, error_message)``;
         see :func:`molecule_population_data` for the alignment guarantees.
         """
-        return molecule_population_data(self.mol_obj, self._maker.original_df)
+        return molecule_population_data(
+            self.mol_obj, self._maker.original_df,
+            line_list=self._filter_line_list if self._whole_list else None)
 
     def _notify_companions(self) -> None:
         """Push the current selection to whichever companion views are open."""
@@ -1915,19 +2100,20 @@ class LineListFilterWindow(tk.Toplevel):
         leaving the pre-apply snapshot in place would show and export lines the
         molecule no longer contains.
         """
-        self._maker = LineListMaker(line_list)
+        quantum_format = self._maker.quantum_format
+        self._source_line_list = line_list
+        self._filter_line_list = self._scoped(line_list)
+        self._maker = LineListMaker(self._filter_line_list)
+        self._maker.quantum_format = quantum_format
         self._baseline_id = self._baseline_fingerprint()
         self._total_lines = len(self._maker)
         self._derived_cache = None
         self._derived_id = None
-        self._catalog = build_property_catalog(self._maker.original_df,
-                                               self._maker.species,
-                                               derived=_DERIVED_KEYS)
         self._last_mask = None
         self._committed_mask = None
-        for group in self._group_rows:
-            for row in group.rows:
-                row.set_catalog(self._catalog)
+        self._rebuild_catalog()
+        self._update_format_ui()
+        self._update_scope_ui()
         if self._pop_window is not None:
             data, error = self._full_population_data()
             try:
@@ -2007,9 +2193,13 @@ class LineListFilterWindow(tk.Toplevel):
             )
             return
         mol_name = getattr(self.mol_obj, "name", "this molecule")
+        scope_note = (
+            "Lines outside the model wavelength range are included and will "
+            "show if the range is widened.\n" if self._whole_list else "")
         confirm = messagebox.askyesno(
             "Apply to Molecule",
             f"Replace '{mol_name}' line list with {len(self._maker)} filtered lines?\n"
+            f"{scope_note}"
             "This overwrites the in-memory line list and cannot be undone.",
             parent=self,
         )
@@ -2017,7 +2207,9 @@ class LineListFilterWindow(tk.Toplevel):
             return
         new_ll = self._maker.to_linelist()
         self._assign_line_list(self.mol_obj, new_ll)
-        self._rebind_to_line_list(new_ll)
+        # Re-read through the molecule so its wavelength range is set on the
+        # new list before the window takes its own (possibly whole) view.
+        self._rebind_to_line_list(self.mol_obj.line_list)
         self._trigger_refresh(full_rebuild=False)
         self._refresh_status()
         if self.data_field is not None:

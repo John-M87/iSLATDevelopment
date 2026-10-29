@@ -7,17 +7,21 @@ state to a FilterExpression - so no Tk root is constructed and the tests run
 headless.
 """
 
+import os
+
 import pytest
 import numpy as np
 import pandas as pd
 
 from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     Condition,
+    ConditionError,
     ConditionGroup,
     FilterExpression,
     MaskContext,
 )
 from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import (
+    FORMAT_AUTO,
     build_expression,
     build_property_catalog,
     diagnose_empty_group,
@@ -25,6 +29,7 @@ from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import (
     group_row_indices,
     has_quantum_schema,
     parse_float_strict,
+    quantum_format_choices,
     row_state_to_condition,
     split_unit,
     _rows_align,
@@ -564,3 +569,272 @@ def test_rows_align_rejects_none_data():
 def test_rows_align_matches_nan_positions():
     frame = pd.DataFrame({'lam': [1.0, np.nan, 3.0]})
     assert _rows_align(frame, {'wavelength': np.array([1.0, np.nan, 3.0])})
+
+
+# ---------------------------------------------------------------------------
+# Line-list format override
+# ---------------------------------------------------------------------------
+
+_CO_PAR = os.path.join("iSLAT", "DATAFILES", "HITRANdata", "data_Hitran_CO.par")
+
+
+def _upper_v_is(v):
+    return FilterExpression(groups=(ConditionGroup(conditions=(
+        Condition('quantum_field', field='v', op='between',
+                  min_val=v, max_val=v, state='upper'),)),))
+
+
+@pytest.fixture
+def renamed_co_maker():
+    """A CO line list whose name ('CO_v1-0') matches no registered schema."""
+    from iSLAT.Modules.DataTypes.MoleculeLineList import MoleculeLineList
+    from iSLAT.Modules.DataProcessing.LineListMaker import LineListMaker
+    if not os.path.exists(_CO_PAR):
+        pytest.skip("CO HITRAN file not available")
+    line_list = MoleculeLineList(molecule_id='CO_v1-0',
+                                 filename=os.path.abspath(_CO_PAR),
+                                 wavelength_range=(4.9, 5.2))
+    return LineListMaker(line_list)
+
+
+def test_format_choices_start_with_auto_then_registered_schemas():
+    choices = quantum_format_choices()
+    assert choices[0] == FORMAT_AUTO
+    assert 'H2O' in choices and 'CO' in choices
+
+
+def test_maker_schema_species_defaults_to_species(renamed_co_maker):
+    assert renamed_co_maker.quantum_format is None
+    assert renamed_co_maker.schema_species == 'CO_v1-0'
+
+
+def test_maker_format_override_parses_without_renaming(renamed_co_maker):
+    maker = renamed_co_maker
+    with pytest.raises(ConditionError):
+        maker.filter_expression(_upper_v_is(2))
+
+    maker.quantum_format = 'CO'
+    maker.filter_expression(_upper_v_is(2))
+    base = maker.original_df
+    expected = (base['lev_up'].str.split('|').str[0].str.strip() == '2').sum()
+    assert 0 < len(maker) == expected
+    assert maker.species == 'CO_v1-0'
+    assert set(maker.df['species']) == {'CO_v1-0'}
+
+
+def test_maker_format_override_survives_copy_and_clears_with_blank(renamed_co_maker):
+    renamed_co_maker.quantum_format = 'CO'
+    assert renamed_co_maker.copy().quantum_format == 'CO'
+    renamed_co_maker.quantum_format = ''
+    assert renamed_co_maker.schema_species == 'CO_v1-0'
+
+
+@pytest.fixture
+def tk_root():
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display not available (headless environment)")
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+@pytest.fixture
+def renamed_co_molecule():
+    from iSLAT.Modules.DataTypes.Molecule import Molecule
+    from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import LineListFilterWindow
+    if not os.path.exists(_CO_PAR):
+        pytest.skip("CO HITRAN file not available")
+    LineListFilterWindow._format_overrides.clear()
+    LineListFilterWindow._whole_list_choices.clear()
+    yield Molecule(
+        name='CO_v1-0', displaylabel='CO_v1-0', filepath=_CO_PAR, color='#f00',
+        is_visible=True, temp=600.0, radius=0.5, n_mol=1e17, distance=140.0,
+        fwhm=130.0, wavelength_range=(4.9, 5.2), model_pixel_res=0.001,
+        initial_molecule_parameters={'t_kin': 600.0, 'scale_exponent': 17.0,
+                                     'scale_number': 1.0, 'radius_init': 0.5},
+    )
+    LineListFilterWindow._format_overrides.clear()
+    LineListFilterWindow._whole_list_choices.clear()
+
+
+def _choose_format(win, choice):
+    win._format_var.set(choice)
+    win._on_format_changed()
+
+
+def test_window_format_override_offers_quantum_fields(tk_root, renamed_co_molecule):
+    from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import LineListFilterWindow
+    win = LineListFilterWindow(tk_root, renamed_co_molecule)
+    win.withdraw()
+    try:
+        keys = {s.key for s in win._catalog}
+        assert 'qn:upper:J' not in keys
+        assert win._schema_note.winfo_manager() == 'pack'
+
+        _choose_format(win, 'CO')
+        assert 'qn:upper:J' in {s.key for s in win._catalog}
+        assert win._schema_note.winfo_manager() == ''
+        assert win._mask_context().species == 'CO'
+        assert win._maker.species == 'CO_v1-0'
+        assert all(r.spec() is None or r.spec() in win._catalog
+                   for g in win._group_rows for r in g.rows)
+    finally:
+        win._on_close()
+
+
+def test_window_remembers_format_per_molecule(tk_root, renamed_co_molecule):
+    from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import LineListFilterWindow
+    win = LineListFilterWindow(tk_root, renamed_co_molecule)
+    win.withdraw()
+    _choose_format(win, 'CO')
+    win._on_close()
+
+    win = LineListFilterWindow(tk_root, renamed_co_molecule)
+    win.withdraw()
+    try:
+        assert win._format_var.get() == 'CO'
+        assert win._maker.schema_species == 'CO'
+        _choose_format(win, FORMAT_AUTO)
+        assert win._maker.quantum_format is None
+        assert not LineListFilterWindow._format_overrides
+    finally:
+        win._on_close()
+
+
+def test_window_format_change_reapplies_committed_filter(tk_root, renamed_co_molecule):
+    from unittest import mock
+    from iSLAT.Modules.GUI.Widgets import LineListFilterWindow as mod
+    win = mod.LineListFilterWindow(tk_root, renamed_co_molecule)
+    win.withdraw()
+    try:
+        _choose_format(win, 'CO')
+        win._maker.filter_expression(_upper_v_is(2))
+        kept = len(win._maker)
+        assert 0 < kept < win._total_lines
+
+        # A schema that also declares 'v' keeps the filter applied
+        _choose_format(win, 'N2')
+        assert len(win._maker) == kept
+        assert win._committed_mask is not None and win._committed_mask.sum() == kept
+
+        # Without a schema the filter cannot be evaluated: cleared, with a warning
+        with mock.patch.object(mod.messagebox, 'showwarning') as warn:
+            _choose_format(win, FORMAT_AUTO)
+        warn.assert_called_once()
+        assert len(win._maker) == win._total_lines
+        assert not win._maker.filters
+    finally:
+        win._on_close()
+
+
+# ---------------------------------------------------------------------------
+# Whole line list vs. model wavelength range
+# ---------------------------------------------------------------------------
+
+def _lam_between(lo, hi):
+    return FilterExpression(groups=(ConditionGroup(conditions=(
+        Condition('range', field='lam', op='between', min_val=lo, max_val=hi),)),))
+
+
+def test_without_wavelength_range_returns_every_line(renamed_co_maker):
+    limited = renamed_co_maker._linelist
+    full = limited.without_wavelength_range()
+    assert full is not limited and full.wavelength_range is None
+    assert len(full) > len(limited)
+    assert full.partition_function is limited.partition_function
+    assert limited.wavelength_range == (4.9, 5.2)  # original untouched
+    assert full.without_wavelength_range() is full
+
+
+def test_without_wavelength_range_covers_in_memory_lists(renamed_co_maker):
+    """A list with no file behind it (e.g. an applied filter result) widens too."""
+    full = renamed_co_maker._linelist.without_wavelength_range()
+    from iSLAT.Modules.DataProcessing.LineListMaker import LineListMaker
+    in_memory = LineListMaker(full).to_linelist()
+    in_memory.wavelength_range = (4.9, 5.2)
+    assert len(in_memory.without_wavelength_range()) == len(full)
+
+
+def _open_whole(tk_root, mol):
+    from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import LineListFilterWindow
+    win = LineListFilterWindow(tk_root, mol)
+    win.withdraw()
+    in_range = win._total_lines
+    win._scope_var.set('whole')
+    win._on_scope_changed()
+    return win, in_range
+
+
+def test_window_whole_list_filters_lines_outside_model_range(tk_root, renamed_co_molecule):
+    win, in_range = _open_whole(tk_root, renamed_co_molecule)
+    try:
+        base = win._maker.original_df
+        assert win._total_lines == len(base) > in_range
+        assert base['lam'].min() < 4.9 or base['lam'].max() > 5.2
+        assert set(base['species']) == {'CO_v1-0'}
+
+        win._maker.filter_expression(_lam_between(4.5, 5.0))
+        assert win._maker.df['lam'].min() < 4.9
+    finally:
+        win._on_close()
+
+
+def test_window_whole_list_model_quantities_cover_every_line(tk_root, renamed_co_molecule):
+    win, _ = _open_whole(tk_root, renamed_co_molecule)
+    try:
+        derived = win._derived_frame()
+        assert len(derived) == win._total_lines
+        assert np.isfinite(derived['intens']).all()
+        # In-range lines get the same model value either way
+        base = win._maker.original_df
+        mol = renamed_co_molecule
+        mol.calculate_intensity()
+        own = mol.intensity.get_population_diagram_data(
+            mol.radius, mol.distance, molecule=mol, full_range=False)
+        inside = ((base['lam'] >= 4.9) & (base['lam'] <= 5.2)).to_numpy()
+        np.testing.assert_allclose(derived['intens'].to_numpy()[inside],
+                                   np.asarray(own['intens'], float), rtol=1e-6)
+    finally:
+        win._on_close()
+
+
+def test_window_remembers_whole_list_choice(tk_root, renamed_co_molecule):
+    from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import LineListFilterWindow
+    win, in_range = _open_whole(tk_root, renamed_co_molecule)
+    whole = win._total_lines
+    win._on_close()
+
+    win = LineListFilterWindow(tk_root, renamed_co_molecule)
+    win.withdraw()
+    try:
+        assert win._scope_var.get() == 'whole' and win._total_lines == whole
+        win._scope_var.set('range')
+        win._on_scope_changed()
+        assert win._total_lines == in_range
+    finally:
+        win._on_close()
+
+
+def test_window_whole_list_apply_keeps_lines_outside_range(tk_root, renamed_co_molecule):
+    from unittest import mock
+    from iSLAT.Modules.GUI.Widgets import LineListFilterWindow as mod
+    win, in_range = _open_whole(tk_root, renamed_co_molecule)
+    try:
+        win._maker.filter_expression(_lam_between(4.5, 5.0))
+        kept = len(win._maker)
+        with mock.patch.object(mod.messagebox, 'askyesno', return_value=True), \
+             mock.patch.object(win, '_trigger_refresh'):
+            win._apply_to_molecule()
+
+        mol_ll = renamed_co_molecule.line_list
+        assert mol_ll.wavelength_range == (4.9, 5.2)
+        assert len(mol_ll.without_wavelength_range()) == kept
+        # The window still sees the whole applied list, and can model it
+        assert win._total_lines == kept
+        assert not win._sync_baseline()
+        assert len(win._derived_frame()) == kept
+    finally:
+        win._on_close()

@@ -113,6 +113,8 @@ class LineListMaker:
         if species is None and isinstance(source, MoleculeLineList):
             species = getattr(source, "molecule_id", None)
         self._species: Optional[str] = species
+        # Schema override for parsing quantum labels (None = use species)
+        self._quantum_format: Optional[str] = None
 
         # Build the working DataFrame (include extras when available)
         if isinstance(source, MoleculeLineList) and source.extra_fields:
@@ -430,14 +432,14 @@ class LineListMaker:
         from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
         import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # register all schemas
 
-        schema = QuantumStateRegistry.get_schema(self._species)
+        schema = QuantumStateRegistry.get_schema(self.schema_species)
         labels = np.array(self._df[lev_col].fillna(""), dtype="U64")
         parsed = schema.parse_bulk(labels)
 
         if field not in parsed:
             warnings.warn(
                 f"Quantum field {field!r} not found in schema for species "
-                f"{self._species!r} — filter_quantum_field skipped."
+                f"{self.schema_species!r} — filter_quantum_field skipped."
             )
             return self
 
@@ -602,7 +604,7 @@ class LineListMaker:
         """
         expr_obj = (expr if isinstance(expr, FilterExpression)
                     else FilterExpression.from_dict(expr))
-        ctx = MaskContext(species=self._species, on_error=on_error,
+        ctx = MaskContext(species=self.schema_species, on_error=on_error,
                           derived_source=derived_source)
         # Build the mask BEFORE recording: with on_error="raise" as the
         # default, recording first would leave a recorded-but-never-applied
@@ -695,6 +697,25 @@ class LineListMaker:
             self._df["species"] = value
         if "species" in self._df_original.columns:
             self._df_original["species"] = value
+
+    @property
+    def quantum_format(self) -> Optional[str]:
+        """Registered schema to parse quantum labels with, overriding the species.
+
+        Lets a list named e.g. ``"H2O_v2-1"`` be read as ``"H2O"`` without
+        changing the species label written to the frame and exports.
+        ``None`` (the default) uses the species.
+        """
+        return self._quantum_format
+
+    @quantum_format.setter
+    def quantum_format(self, value: Optional[str]) -> None:
+        self._quantum_format = value or None
+
+    @property
+    def schema_species(self) -> Optional[str]:
+        """Key quantum schemas are looked up with: the format override, else the species."""
+        return self._quantum_format or self._species
 
     def reset(self) -> "LineListMaker":
         """Remove all filters and restore the original data."""
@@ -995,6 +1016,7 @@ class LineListMaker:
         new = LineListMaker.__new__(LineListMaker)
         new._linelist = self._linelist
         new._species = self._species
+        new._quantum_format = self._quantum_format
         new._df = self._df.copy()
         new._df_original = self._df_original.copy()
         new._filters = copy.deepcopy(self._filters)
