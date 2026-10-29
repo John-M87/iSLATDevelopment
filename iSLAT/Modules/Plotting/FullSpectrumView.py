@@ -54,6 +54,13 @@ warnings.filterwarnings(
     module="matplotlib",
 )
 
+#: Exported figure size (inches) when no override is set.
+DEFAULT_EXPORT_WIDTH: float = 12.0
+DEFAULT_EXPORT_HEIGHT: float = 16.0
+#: Upper bounds accepted for the export size overrides (inches).
+MAX_EXPORT_WIDTH: float = 200.0
+MAX_EXPORT_PANEL_HEIGHT: float = 20.0
+
 # Import debug configuration
 try:
     from iSLAT.Modules.Debug import debug_config
@@ -1234,13 +1241,17 @@ class FullSpectrumView(ToggleMixin, PlotView):
         *,
         line_list: Optional[pd.DataFrame] = None,
         atomic_lines: Optional[pd.DataFrame] = None,
-        figsize: Tuple[float, float] = (12, 16),
+        figsize: Tuple[float, float] = (DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT),
         xlim_range: Optional[Tuple[float, float]] = None,
         n_panels: Optional[int] = None,
+        display_options: Optional[Dict[str, Any]] = None,
     ) -> StackedSpectralPanel:
         """Build a fresh standalone :class:`StackedSpectralPanel` for export.
 
         Subclasses can override this to return a different stacked-panel implementation (e.g. :class:`ResidualSpectrumPlot`) when the user saves the figure from a residual-backed view.
+
+        *display_options* are the :class:`FullSpectrumPlot` display keywords
+        (see :func:`toggle_state_display_kwargs`).
 
         The returned plot is **not yet rendered**; the caller is responsible for calling :meth:`generate_plot`.
         """
@@ -1257,6 +1268,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
         )
         if n_panels is not None:
             kw["n_panels"] = n_panels
+        if display_options:
+            kw.update(display_options)
         return FullSpectrumPlot(**kw)
 
     def save_figure(
@@ -1327,25 +1340,25 @@ class FullSpectrumView(ToggleMixin, PlotView):
             wave, flux, wave_obs,
             line_list=line_list_df,
             atomic_lines=atomic_lines_df,
-            figsize=(12, 16),
+            figsize=(DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT),
             xlim_range=xlim_range,
             n_panels=n_panels,
+            display_options=toggle_state_display_kwargs(ts),
         )
+        apply_export_size(standalone, get_export_settings(self._pm))
         standalone.generate_plot()
 
-        # Respect summed toggle -- iterate all axes generically
-        if not ts.get("summed", True):
-            all_axes: list = []
-            raw = getattr(standalone, "subplots", {})
-            for val in raw.values():
-                if isinstance(val, tuple):
-                    all_axes.extend(val)
-                else:
-                    all_axes.append(val)
-            for ax in all_axes:
-                for coll in ax.collections[:]:
-                    if hasattr(coll, "_islat_summed"):
-                        coll.set_visible(False)
+        # Safety net for factory overrides whose plot ignores display_options:
+        # hide toggled-off artists on every axes (idempotent for FullSpectrumPlot).
+        hidden_tags = [
+            tag for tag, key in (("_islat_summed", "summed"), ("_islat_observed", "observed"))
+            if not ts.get(key, True)
+        ]
+        if hidden_tags:
+            for ax in standalone.fig.axes:
+                for art in list(ax.lines) + list(ax.collections):
+                    if any(hasattr(art, tag) for tag in hidden_tags):
+                        art.set_visible(False)
 
         if rasterized:
             for ax in standalone.fig.axes:
@@ -1423,11 +1436,134 @@ class FullSpectrumView(ToggleMixin, PlotView):
         self._needs_refresh = True
 
 # ======================================================================
+# Export helpers (shared by output_full_spectrum and FullSpectrumView.save_figure)
+# ======================================================================
+_EXPORT_SETTINGS_ATTR = "full_spectrum_export_settings"
+
+
+def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
+    """Translate the GUI *toggle_state* into :class:`FullSpectrumPlot` display options.
+
+    Mirrors what the interactive views show: observed-data and summed-model
+    visibility, manual Y limits while auto-scaling is off, and otherwise the
+    ``"data"`` / ``"model"`` auto-scale source.
+    """
+    ts = toggle_state if isinstance(toggle_state, dict) else {}
+    kw: Dict[str, Any] = {
+        "show_observed": bool(ts.get("observed", True)),
+        "show_summed": bool(ts.get("summed", True)),
+        "y_autoscale_source": ts.get("y_autoscale_source", "data"),
+    }
+    if not ts.get("y_autoscale", True):
+        manual = ts.get("y_limits")
+        if manual is not None:
+            kw["y_limits"] = (float(manual[0]), float(manual[1]))
+        else:
+            # Auto-scale off without stored limits leaves the layout's own limits in the GUI.
+            kw["y_autoscale_source"] = "data"
+    return kw
+
+
+def _validate_export_dim(name: str, value: Any, maximum: float) -> Optional[float]:
+    """Return *value* as a float in ``(0, maximum]``, or ``None`` for "use the default"."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number.") from None
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be greater than 0.")
+    if value > maximum:
+        raise ValueError(f"{name} must be at most {maximum:g} in.")
+    return value
+
+
+def get_export_settings(plot_manager: Any) -> Dict[str, Optional[float]]:
+    """Return the session's full-spectrum export size overrides.
+
+    ``{"width": ..., "panel_height": ...}`` in inches, where ``None`` means
+    the default (:data:`DEFAULT_EXPORT_WIDTH` wide, :data:`DEFAULT_EXPORT_HEIGHT`
+    tall in total).  Invalid stored values fall back to the defaults.
+    """
+    settings: Dict[str, Optional[float]] = {"width": None, "panel_height": None}
+    raw = getattr(plot_manager, _EXPORT_SETTINGS_ATTR, None)
+    if isinstance(raw, dict):
+        for key, maximum in (("width", MAX_EXPORT_WIDTH), ("panel_height", MAX_EXPORT_PANEL_HEIGHT)):
+            try:
+                settings[key] = _validate_export_dim(key, raw.get(key), maximum)
+            except ValueError:
+                pass
+    return settings
+
+
+def set_export_settings(
+    plot_manager: Any,
+    width: Any = None,
+    panel_height: Any = None,
+) -> Dict[str, Optional[float]]:
+    """Validate and remember the full-spectrum export size for the session.
+
+    *width* is the figure width and *panel_height* the height of each panel,
+    both in inches; ``None`` or a blank string restores the default.
+
+    Raises
+    ------
+    ValueError
+        If a value is not a positive number within the accepted range.
+    """
+    settings = {
+        "width": _validate_export_dim("Figure width", width, MAX_EXPORT_WIDTH),
+        "panel_height": _validate_export_dim("Panel height", panel_height, MAX_EXPORT_PANEL_HEIGHT),
+    }
+    setattr(plot_manager, _EXPORT_SETTINGS_ATTR, dict(settings))
+    return settings
+
+
+def apply_export_size(
+    plot: StackedSpectralPanel,
+    settings: Optional[Dict[str, Optional[float]]] = None,
+) -> Tuple[float, float]:
+    """Size *plot* for export and return the resulting ``(width, height)``.
+
+    Defaults to :data:`DEFAULT_EXPORT_WIDTH` x :data:`DEFAULT_EXPORT_HEIGHT`.
+    A ``width`` override widens the figure (longer panels); a
+    ``panel_height`` override makes the figure ``panel_height * n_panels`` tall.
+    """
+    settings = settings or {}
+    panel_height = settings.get("panel_height") or None
+    return plot.set_figure_size(
+        width=settings.get("width") or DEFAULT_EXPORT_WIDTH,
+        row_height=panel_height,
+        height=None if panel_height else DEFAULT_EXPORT_HEIGHT,
+    )
+
+
+# ======================================================================
 # Backward-compatible top-level function
 # ======================================================================
-def output_full_spectrum(islat_ref: Any, rasterized: bool = False) -> str | None:
+def output_full_spectrum(
+    islat_ref: Any,
+    rasterized: bool = False,
+    figure_width: Optional[float] = None,
+    panel_height: Optional[float] = None,
+) -> str | None:
     """
     Create a fresh full-spectrum PDF and a companion parameters CSV.
+
+    The figure follows the GUI's toggle state (saved / atomic lines, summed
+    model, observed data, Y auto-scale / manual limits) and is sized from the
+    session's export settings (see :func:`set_export_settings`).
+
+    Parameters
+    ----------
+    islat_ref : iSLAT
+        The running iSLAT instance.
+    rasterized : bool
+        Rasterize the axes (smaller PDFs for very dense data).
+    figure_width, panel_height : float, optional
+        Override the figure width / per-panel height (inches) for this export
+        only, instead of the session's export settings.
 
     This is the backward-compatible replacement for the function that previously lived in ``OutputFullSpectrum.py``.
     """
@@ -1437,12 +1573,22 @@ def output_full_spectrum(islat_ref: Any, rasterized: bool = False) -> str | None
     wave = islat_ref.molecules_dict.apply_stellar_rv(wave_obs)
     flux = np.array(islat_ref.flux_data, copy=True)
 
-    # Read toggle state if available
+    # Read toggle state and export settings if available
     ts: dict = {}
     theme: Optional[dict] = None
+    gui_plot: Any = None
     if hasattr(islat_ref, "GUI") and hasattr(islat_ref.GUI, "plot"):
-        ts = getattr(islat_ref.GUI.plot, "toggle_state", {})
-        theme = getattr(islat_ref.GUI.plot, "theme", None)
+        gui_plot = islat_ref.GUI.plot
+        ts = getattr(gui_plot, "toggle_state", {})
+        theme = getattr(gui_plot, "theme", None)
+    if not isinstance(ts, dict):
+        ts = {}
+
+    export_settings = get_export_settings(gui_plot)
+    if figure_width is not None:
+        export_settings["width"] = _validate_export_dim("Figure width", figure_width, MAX_EXPORT_WIDTH)
+    if panel_height is not None:
+        export_settings["panel_height"] = _validate_export_dim("Panel height", panel_height, MAX_EXPORT_PANEL_HEIGHT)
 
     line_list_df: Optional[pd.DataFrame] = None
     if ts.get("saved_lines", False):
@@ -1462,8 +1608,9 @@ def output_full_spectrum(islat_ref: Any, rasterized: bool = False) -> str | None
         molecules=islat_ref.molecules_dict,
         line_list=line_list_df,
         atomic_lines=atomic_lines_df,
-        figsize=(12, 16),
+        figsize=(DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT),
         wave_data_obs=wave_obs,
+        **toggle_state_display_kwargs(ts),
     )
     if theme is not None:
         standalone_kwargs["theme"] = theme
@@ -1487,14 +1634,8 @@ def output_full_spectrum(islat_ref: Any, rasterized: bool = False) -> str | None
     except Exception:
         pass
     standalone = FullSpectrumPlot(**standalone_kwargs)
+    apply_export_size(standalone, export_settings)
     standalone.generate_plot()
-
-    # Respect summed toggle
-    if not ts.get("summed", True):
-        for ax in standalone.subplots.values():
-            for coll in ax.collections[:]:
-                if hasattr(coll, "_islat_summed"):
-                    coll.set_visible(False)
 
     from tkinter import filedialog
     default_name = Path(islat_ref.loaded_spectrum_file).stem + "_full_output.pdf"

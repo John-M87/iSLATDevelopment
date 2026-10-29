@@ -22,7 +22,10 @@ from iSLAT.Modules.FileHandling.iSLATFileHandling import (
     line_saves_file_name, example_data_folder_path, read_from_user_csv
 )
 from iSLAT.Modules.FileHandling import save_folder_path, models_folder_path
-from iSLAT.Modules.Plotting.FullSpectrumView import output_full_spectrum
+from iSLAT.Modules.Plotting.FullSpectrumView import (
+    output_full_spectrum, get_export_settings, set_export_settings,
+    DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT,
+)
 from iSLAT.Modules.DataProcessing.Slabfit import SlabModel
 from iSLAT.Modules.DataProcessing.BatchFittingService import BatchFittingService
 from iSLAT.Modules.DataProcessing.DeblendingService import DeblendingService
@@ -185,6 +188,7 @@ class TopBar(ResizableFrame):
         spec_functions_menu.add_command(label="Subtract Models from Data", command=self.subtract_models_from_data)
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Output Full Spectrum (Ctrl+Shift+F)", command=lambda: output_full_spectrum(self.islat))
+        spec_functions_menu.add_command(label="Full Spectrum Export Settings\u2026", command=self.open_full_spectrum_export_settings)
         spec_functions_menu.add_command(label="Display Full Spectrum (Ctrl+F)", command=lambda: FullSpectrumWindow(self.master, self.islat))
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Center View\u2026 (C)", command=self.open_center_view_dialog)
@@ -200,7 +204,8 @@ class TopBar(ResizableFrame):
             "Single Slab Fit":                  "Run a single-slab LTE model fit\nusing the saved line measurements.",
             "Line de-Blender":                  "Fit and de-blend overlapping\nspectral lines in the selection.",
             "Subtract Models from Data":        "Subtract all visible molecule models\nfrom the observed spectrum.",
-            "Output Full Spectrum (Ctrl+Shift+F)": "Save the full combined model spectrum\nto a file.",
+            "Output Full Spectrum (Ctrl+Shift+F)": "Save the full combined model spectrum\nto a file, matching the current overlay,\nobserved-data and Y-axis settings.",
+            "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth and per-panel height.\nRemembered for this session.",
             "Display Full Spectrum (Ctrl+F)":   "Open the full combined model spectrum\nin a separate window.",
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
             "Center View\u2026 (C)":           "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nKeybind: C",
@@ -1530,3 +1535,80 @@ class TopBar(ResizableFrame):
         win.bind("<Return>", _apply)
         win.bind("<Escape>", lambda _e: win.destroy())
         lo_entry.focus_set()
+
+    def open_full_spectrum_export_settings(self) -> None:
+        """Open the full-spectrum export settings dialog.
+
+        Sets the exported figure width and per-panel height (inches).  Blank
+        fields use the defaults.  The values are remembered for the session
+        and used by *Output Full Spectrum* (Ctrl+Shift+F) and the Full
+        Spectrum view's *Save Figure…*.
+        """
+        pm = self.main_plot
+        current = get_export_settings(pm)
+
+        win = tk.Toplevel(self)
+        win.title("Full Spectrum Export Settings")
+        win.resizable(False, False)
+        win.grab_set()
+        pad = {"padx": 8, "pady": 4}
+
+        def _fmt(value: Optional[float]) -> str:
+            return "" if value is None else f"{value:g}"
+
+        tk.Label(win, text="Figure width (in):").grid(row=0, column=0, sticky="w", **pad)
+        width_var = tk.StringVar(value=_fmt(current["width"]))
+        width_entry = tk.Entry(win, textvariable=width_var, width=10)
+        width_entry.grid(row=0, column=1, sticky="w", **pad)
+        tk.Label(win, text=f"blank = default ({DEFAULT_EXPORT_WIDTH:g} in)", fg="gray").grid(
+            row=0, column=2, sticky="w", **pad)
+
+        tk.Label(win, text="Panel height (in):").grid(row=1, column=0, sticky="w", **pad)
+        height_var = tk.StringVar(value=_fmt(current["panel_height"]))
+        tk.Entry(win, textvariable=height_var, width=10).grid(row=1, column=1, sticky="w", **pad)
+        tk.Label(win, text=f"blank = auto ({DEFAULT_EXPORT_HEIGHT:g} in total)", fg="gray").grid(
+            row=1, column=2, sticky="w", **pad)
+
+        tk.Label(
+            win,
+            text=("Figure height = panel height \u00d7 number of panels.\n"
+                  "Used by Output Full Spectrum and the Full Spectrum view's\n"
+                  "Save Figure; remembered for this session."),
+            justify="left", fg="gray",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", **pad)
+
+        status = tk.Label(win, text="", fg="red")
+        status.grid(row=3, column=0, columnspan=3, sticky="w", **pad)
+
+        def _store() -> bool:
+            try:
+                set_export_settings(pm, width_var.get(), height_var.get())
+            except ValueError as exc:
+                status.config(text=str(exc))
+                return False
+            return True
+
+        def _save(*_):
+            if _store():
+                win.destroy()
+
+        def _export():
+            if _store():
+                win.destroy()
+                output_full_spectrum(self.islat)
+
+        def _reset():
+            width_var.set("")
+            height_var.set("")
+            status.config(text="")
+
+        btns = tk.Frame(win)
+        btns.grid(row=4, column=0, columnspan=3, pady=8)
+        ttk.Button(btns, text="Export\u2026", command=_export).pack(side="left", padx=4)
+        ttk.Button(btns, text="Save", command=_save).pack(side="left", padx=4)
+        ttk.Button(btns, text="Reset to Defaults", command=_reset).pack(side="left", padx=4)
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=4)
+
+        win.bind("<Return>", _save)
+        win.bind("<Escape>", lambda _e: win.destroy())
+        width_entry.focus_set()

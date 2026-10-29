@@ -6,6 +6,7 @@ import pandas as pd
 from pathlib import Path
 
 from iSLAT.Modules.Plotting.FullSpectrumPlot import FullSpectrumPlot
+from iSLAT.Modules.Plotting.FullSpectrumView import toggle_state_display_kwargs
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 
 from typing import Optional, Any, TYPE_CHECKING
@@ -102,6 +103,10 @@ class FullSpectrumWindow(tk.Toplevel):
             # Convert screen pixels to approximate matplotlib inches (100 DPI)
             max_fig_h = min((screen_h - 120) / 100.0, 14.0)
             kwargs['figsize'] = (12, max_fig_h)
+
+        # Observed-data visibility, summed model and Y-axis policy follow the GUI.
+        for key, value in toggle_state_display_kwargs(ts).items():
+            kwargs.setdefault(key, value)
 
         return FullSpectrumPlot(
             wave_data=wave,

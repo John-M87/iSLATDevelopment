@@ -68,6 +68,19 @@ class FullSpectrumPlot(StackedSpectralPanel):
         Figure size.  Height is scaled automatically if *None*.
     wave_data_obs : np.ndarray, optional
         Observer-frame wavelengths, used by MoleculeDict methods that apply the stellar RV correction internally.
+    show_observed : bool, optional
+        Draw the observed spectrum visibly.  When *False* the observed
+        artists are still created (tagged ``_islat_observed``) but hidden,
+        matching the GUI's *Show Observed Data* toggle.  Default *True*.
+    show_summed : bool, optional
+        Show the summed-model fill.  Default *True*.
+    y_limits : tuple[float, float], optional
+        Manual ``(ymin, ymax)`` applied to every panel, overriding the
+        automatic per-panel limits (the GUI's *Set Y Limits* setting).
+    y_autoscale_source : {"data", "model"}, optional
+        What the automatic per-panel limits fit to when *y_limits* is not
+        given: the observed data (default, honouring *ymax_factor* and
+        *uniform_ylim*) or the drawn molecule models and summed fill.
     """
     def __init__(
         self,
@@ -84,6 +97,10 @@ class FullSpectrumPlot(StackedSpectralPanel):
         uniform_ylim: bool = False,
         figsize: Optional[Tuple[float, float]] = None,
         wave_data_obs: Optional[np.ndarray] = None,
+        show_observed: bool = True,
+        show_summed: bool = True,
+        y_limits: Optional[Tuple[float, float]] = None,
+        y_autoscale_source: str = "data",
         **kwargs,
     ):
         # Allow callers to pass row_height via kwargs; default to
@@ -115,9 +132,19 @@ class FullSpectrumPlot(StackedSpectralPanel):
         self.line_list = line_list
         self.atomic_lines = atomic_lines
 
+        # Display options mirroring the GUI toggle state.
+        self.show_observed: bool = bool(show_observed)
+        self.show_summed: bool = bool(show_summed)
+        self.y_limits: Optional[Tuple[float, float]] = (
+            (float(y_limits[0]), float(y_limits[1])) if y_limits is not None else None
+        )
+        self.y_autoscale_source: str = (
+            "model" if str(y_autoscale_source).lower() == "model" else "data"
+        )
+
         # Override default figsize (SSP uses 14-wide; FSP uses 12)
         if figsize is None:
-            self._figsize = (12, 1.6 * len(self._panel_edges))
+            self._figsize = (12, self.row_height * len(self._panel_edges))
 
         # Backward-compatible storage for single-Axes per row.
         # Populated in _create_cell() from the cell panels.
@@ -277,6 +304,51 @@ class FullSpectrumPlot(StackedSpectralPanel):
         return [panel]
 
     # ------------------------------------------------------------------
+    # Display options (observed / summed visibility, Y-limit policy)
+    # ------------------------------------------------------------------
+    def _apply_display_visibility(self, ax: Axes) -> None:
+        """Hide the observed / summed artists on *ax* when disabled.
+
+        Only ever hides, so the defaults leave artists exactly as drawn.
+        """
+        if self.show_observed and self.show_summed:
+            return
+        for art in list(ax.lines) + list(ax.collections):
+            if not self.show_observed and hasattr(art, "_islat_observed"):
+                art.set_visible(False)
+            elif not self.show_summed and hasattr(art, "_islat_summed"):
+                art.set_visible(False)
+
+    def _resolve_panel_ylim(
+        self,
+        idx: int,
+        ax: Axes,
+        panel_ylims: Optional[List[Tuple[float, float]]] = None,
+    ) -> Optional[Tuple[float, float]]:
+        """Return the Y limits for panel *idx* under the current policy.
+
+        Manual :attr:`y_limits` win.  Otherwise the ``"model"`` source fits
+        the visible models drawn on *ax* (falling back to the observed data
+        in range, as the GUI does), and the ``"data"`` source uses the
+        pre-computed layout limits *panel_ylims* (default
+        :attr:`_panel_ylims`).
+        """
+        if self.y_limits is not None:
+            return self.y_limits
+        if self.y_autoscale_source == "model":
+            from .PlotView import fit_y_limits_to_data, fit_y_limits_to_model
+            lims = fit_y_limits_to_model(ax)
+            if lims is None:
+                lims = fit_y_limits_to_data(ax, self.wave_data, self.flux_data)
+            if lims is not None:
+                return lims
+        if panel_ylims is None:
+            panel_ylims = getattr(self, "_panel_ylims", None)
+        if panel_ylims is not None and idx < len(panel_ylims):
+            return panel_ylims[idx]
+        return None
+
+    # ------------------------------------------------------------------
     def _post_render_cell(
         self,
         idx: int,
@@ -286,12 +358,16 @@ class FullSpectrumPlot(StackedSpectralPanel):
         """Apply per-panel y-limits, tick formatting, and annotations."""
         fg = self._get_theme_value("foreground", "black")
 
-        # Apply pre-computed y-limits
-        ylims = getattr(self, "_panel_ylims", None)
-        if ylims is not None and idx < len(ylims):
-            cell_panels[0].ax.set_ylim(*ylims[idx])
-
         ax = cell_panels[0].ax
+
+        # Visibility first: a hidden summed fill must not count towards a
+        # model-based Y fit.  Limits are then set before the annotations,
+        # whose labels are positioned from the final Y range.
+        self._apply_display_visibility(ax)
+        ylim = self._resolve_panel_ylim(idx, ax)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+
         ax.tick_params(axis="x", labelsize=7)
         ax.tick_params(axis="y", labelsize=7)
         ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
@@ -467,9 +543,6 @@ class FullSpectrumPlot(StackedSpectralPanel):
             # data -- see _update_observed_inplace.
             self._update_observed_inplace(idx, ax, xr)
 
-            ymin, ymax = panel_ylims[idx]
-            ax.set_ylim(ymin, ymax)
-
             # Update molecule lines in place
             existing_mol_lines = {}
             for art in ax.lines[:]:
@@ -516,6 +589,12 @@ class FullSpectrumPlot(StackedSpectralPanel):
                 s_mask = (summed_wave >= xr[0]) & (summed_wave <= xr[1])
                 if np.any(s_mask):
                     self._plot_summed_spectrum(ax, summed_wave[s_mask], summed_flux[s_mask])
+
+            # Limits last, so a model-based fit sees the updated artists.
+            self._apply_display_visibility(ax)
+            ylim = self._resolve_panel_ylim(idx, ax, panel_ylims)
+            if ylim is not None:
+                ax.set_ylim(*ylim)
 
         # --- Update legend on first panel -------------------------------
         legend_ax = self._legend_axes

@@ -252,6 +252,49 @@ class StackedSpectralPanel(CompositePlot):
         """
         return float(self._panel_ends[idx])
 
+    def set_figure_size(
+        self,
+        width: Optional[float] = None,
+        row_height: Optional[float] = None,
+        height: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """Override the figure width and/or height.
+
+        Any argument may be omitted to keep its current value.  Setting
+        *row_height* makes the figure ``row_height * n_rows`` tall, so every
+        row keeps the requested height whatever the panel count; it takes
+        precedence over a total *height*.  Applies to an existing figure
+        immediately, otherwise to the next :meth:`generate_plot`.
+
+        Returns the resulting ``(width, height)`` in inches.
+
+        Raises
+        ------
+        ValueError
+            If a given value is not a finite, positive number.
+        """
+        def _positive(name: str, value: float) -> float:
+            value = float(value)
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be a positive number, got {value!r}")
+            return value
+
+        cur_w, cur_h = (
+            self._figsize if self._figsize is not None
+            else (14.0, self.row_height * max(len(self._panel_edges), 1))
+        )
+        if width is not None:
+            cur_w = _positive("width", width)
+        if row_height is not None:
+            self.row_height = _positive("row_height", row_height)
+            cur_h = self.row_height * max(len(self._panel_edges), 1)
+        elif height is not None:
+            cur_h = _positive("height", height)
+        self._figsize = (float(cur_w), float(cur_h))
+        if self.fig is not None:
+            self.fig.set_size_inches(*self._figsize, forward=False)
+        return self._figsize
+
     # ------------------------------------------------------------------
     # CompositePlot abstract-method implementations
     # ------------------------------------------------------------------

@@ -90,6 +90,10 @@ class iSLATPlot:
             "observed":     True,        # observed-spectrum artists visible
         }
 
+        # Session-only size overrides for full-spectrum exports (inches; None = default).
+        # Read / written through FullSpectrumView.get_export_settings / set_export_settings.
+        self.full_spectrum_export_settings: dict = {"width": None, "panel_height": None}
+
         #self.fig = plt.Figure(figsize=(15, 8.5))
         self.fig = plt.Figure(constrained_layout=True)
         # Use shared 3-panel layout helper from MainPlotGrid

@@ -24,8 +24,10 @@
 - Added the ability to set the file name/location in the Export Models popup window; exports now use the `MoleculeDict` match pixel sampling when writing a model to CSV
 - Added the instrumental profile to the Bulk Apply window
 - The Bulk Apply window now lets you specify how the properties should be applied (e.g. to visible molecules only)
+- Added a `Full Spectrum Export Settings…` dialog to the Spectral Functions menu for overriding the exported full-spectrum figure width (longer panels) and per-panel height; the values are remembered for the session and used by `Output Full Spectrum (Ctrl+Shift+F)` and the Full Spectrum view's `Save Figure…`. `output_full_spectrum` also accepts `figure_width` / `panel_height` overrides, and `FullSpectrumPlot` gains `set_figure_size`
 
 ### Bug Fixes
+- Fixed the full spectrum output (`Output Full Spectrum`, the Full Spectrum view's `Save Figure…`, and the `Display Full Spectrum` window) ignoring the `Show Observed Data` and Y-axis settings: exports now hide the observed data when it is hidden in the GUI and follow `Auto-scale Y Axis`, `Auto-scale Y to Model Flux`, and `Set Y Limits…` (annotations are placed against the final Y range)
 - Fixed a bug with the model range extension in the spectrum plotting modules: models are now drawn over the full global wavelength range even when `Match Pix. Sampling` resamples them onto a narrower observed grid
 - Fixed issues with the dedicated Line Inspection plot view
 - Fixed incorrect line picking when multiple molecules are plotted in the line inspection plot
