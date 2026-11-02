@@ -11,7 +11,7 @@ into a Figure this window owns.  That is what makes "the same axis and
 color/shape settings as the existing population diagram view" a fact rather
 than a promise: the axis labels, limit padding, marker sizes, alpha, colour
 norms, legends, and theming all come from the same code, and the right-click
-Color By / Axis Settings dialogs are the same
+Plot Settings dialog is the same
 :class:`~iSLAT.Modules.Plotting.PopulationDiagramContextMixin.PopulationDiagramContextMixin`
 the main view uses.  The six pieces of *state* the user can change there are
 copied from the main diagram when this window opens.
@@ -41,7 +41,7 @@ from iSLAT.Modules.Plotting.PopulationDiagramContextMixin import (
 _PER_LINE_KEYS: tuple = (
     "eu", "rd_yax", "wavelength", "intens", "a_stein", "g_up", "g_low",
     "lev_up", "lev_low", "e_low", "tau", "valid_mask",
-    "fwhm_instrumental_kms", "fwhm_convolved_kms",
+    "fwhm_instrumental_kms", "fwhm_convolved_kms", "freq", "velocity_sep_kms",
 )
 
 #: The settings a user can change through the population-diagram context menu.
@@ -387,7 +387,7 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
                           "Re-copy the axis, colour and shape settings from the "
                           "main population diagram.")
             CreateToolTip(widget,
-                          "Right-click for Color By and Axis Settings")
+                          "Right-click for Plot Settings (axes, color, markers)")
         except Exception:
             pass
 
@@ -407,15 +407,15 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
             menu.grab_release()
 
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Any:
-        """Right-click menu: the shared Color By / Axis Settings dialogs.
+        """Right-click menu: the shared Plot Settings dialog.
 
         Deliberately *not* the mixin's full menu.  That menu also offers
         "Show All Active Molecules" / "Show Active Molecule Only", which call
         ``set_molecules`` / ``set_molecule`` on the plot.  Here that would
         discard the filtered subset this window exists to show, and would
         register MoleculeDict callbacks on a popout - the leak class that was
-        fixed for the main view.  The two dialogs that carry the settings are
-        the mixin's own methods, so they stay identical to the main diagram.
+        fixed for the main view.  The dialog that carries the settings is the
+        mixin's own method, so it stays identical to the main diagram.
         """
         if self._pdp is None:
             return None
@@ -425,8 +425,8 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
                          self._pdp._color_mapping.get("log_scale", False))
 
         menu.add_command(
-            label="Color By…",
-            command=lambda: self._open_color_by_dialog(
+            label="Plot Settings…",
+            command=lambda: self._open_plot_settings_dialog(
                 self._pdp, canvas_widget, self._draw_idle))
         menu.add_command(label="Clear Color Mapping",
                          command=self._clear_color_mapping)
@@ -434,11 +434,6 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
             label=("✓ " if log_scale else "  ") + "Log Scale Colorbar",
             command=self._toggle_log_scale,
             state="normal" if has_mapping else "disabled")
-        menu.add_separator()
-        menu.add_command(
-            label="Axis Settings…",
-            command=lambda: self._open_axis_settings_dialog(
-                self._pdp, canvas_widget, self._draw_idle))
         menu.add_separator()
         menu.add_command(label="Sync Settings from Main Diagram",
                          command=self._sync_from_main)

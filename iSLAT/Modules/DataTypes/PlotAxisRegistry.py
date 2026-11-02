@@ -1,10 +1,13 @@
 """
-Unified registry for population-diagram / line-inspection plot properties.
+Unified registry of line properties.
 
-Every property that can be used as a **plot axis**, a **color-by value**, or
-that should appear in the **line-info panel** is described by a
-:class:`PlotAxisEntry` and registered with the global
-:class:`PlotAxisRegistry` singleton.
+This is the **single list of line properties** shared by the
+population-diagram X / Y axes, color-by and marker-shape settings and by the
+line-list filter (:mod:`~iSLAT.Modules.GUI.Widgets.LineListFilterWindow`).
+Every property is described by a :class:`PlotAxisEntry` and registered with
+the global :class:`PlotAxisRegistry` singleton; the entry says how the plot
+reads the property (``resolve_array`` / ``resolve_scalar``) and how the
+filter evaluates it (``filter_kind`` / ``filter_field`` / ``filter_state``).
 
 Registration happens in three places:
 
@@ -20,8 +23,9 @@ Registration happens in three places:
 3. **External / plugin entries** — any code can call
    :meth:`PlotAxisRegistry.register` at any time.
 
-Consumers (plot classes, GUI dialogs) call:
+Consumers (plot classes, GUI dialogs, the line-list filter) call:
 
+* :meth:`PlotAxisRegistry.get_property_options` — the shared, ordered list.
 * :meth:`PlotAxisRegistry.get_axis_options` — properties valid as a plot axis.
 * :meth:`PlotAxisRegistry.get_color_options` — properties valid for color-by.
 * :meth:`PlotAxisRegistry.resolve_array` — extract a numpy array from a
@@ -73,11 +77,10 @@ class PlotAxisEntry:
         LaTeX / formatted label for plot axes and colorbars.
     kind:
         ``"continuous"`` for numeric (colormap-compatible) properties;
-        ``"categorical"`` for string or discrete integer labels.
+        ``"categorical"`` for string or discrete integer labels.  A
+        categorical property on a plot axis is drawn as a category axis.
     available_as_axis:
         Whether this property can be used as a plot axis.  Default ``True``.
-        Categorical entries (``lev_up``, ``lev_low``, ``component``) are
-        typically ``False``.
     available_as_color:
         Whether this property can be used for color-by.  Default ``True``.
     suggest_log:
@@ -99,6 +102,20 @@ class PlotAxisEntry:
         For quantum-number entries, the schema field name this entry reads
         (e.g. ``"J"``).  ``None`` for species-independent properties.  Used
         to scope option lists to the molecules actually on a plot.
+    filter_kind:
+        How the line-list filter evaluates this property: the
+        :class:`~iSLAT.Modules.DataProcessing.LineFilterExpression.Condition`
+        kind (``"range"`` on the line-list column *filter_field*,
+        ``"derived"`` for a model quantity of the population-diagram data,
+        ``"velocity_sep"``, ``"quantum_label"``, ``"quantum_field"``,
+        ``"vib_band"`` or ``"species"``).  ``None`` keeps the property out of
+        the filter.
+    filter_field:
+        The condition field: a column name, model-quantity key or quantum
+        field name.
+    filter_state:
+        ``"upper"`` or ``"lower"`` for level-label and quantum-field
+        properties.
     """
 
     key: str
@@ -116,20 +133,32 @@ class PlotAxisEntry:
     )
     group: str = ""
     quantum_field: Optional[str] = None
+    filter_kind: Optional[str] = None
+    filter_field: str = ""
+    filter_state: str = "upper"
 
 
 # ═══════════════════════════════════════════════════════════════════
 #  PlotAxisRegistry
 # ═══════════════════════════════════════════════════════════════════
 
+#: Legacy / alternative keys accepted wherever a property key is.
+_KEY_ALIASES: Dict[str, str] = {
+    "lam": "wavelength",
+    "e_up": "eu",
+    "component": "molecule",
+}
+
 class PlotAxisRegistry:
-    """Global registry of plot-axis / color-by / info-panel properties.
+    """Global registry of line properties (plot axes, color-by, marker shape, filter).
 
     All methods are class-methods — no instantiation is required.
 
-    The registry is ordered by insertion time (Python 3.7+ dict ordering).
-    Later calls to :meth:`register` for the same key overwrite the existing
-    entry (idempotent for identical registrations).
+    The registry is ordered by insertion time (Python 3.7+ dict ordering),
+    which is the order every option list presents.  Later calls to
+    :meth:`register` for the same key overwrite the existing entry
+    (idempotent for identical registrations).  Every lookup also accepts the
+    legacy keys ``"lam"``, ``"e_up"`` and ``"component"``.
     """
 
     _entries: ClassVar[Dict[str, PlotAxisEntry]] = {}
@@ -147,9 +176,16 @@ class PlotAxisRegistry:
     # ── Lookup ───────────────────────────────────────────────────────
 
     @classmethod
+    def canonical_key(cls, key: str) -> str:
+        """Return the registered key for *key*, resolving legacy aliases."""
+        if key in cls._entries:
+            return key
+        return _KEY_ALIASES.get(key, key)
+
+    @classmethod
     def get(cls, key: str) -> Optional[PlotAxisEntry]:
-        """Return the entry for *key*, or ``None`` if not registered."""
-        return cls._entries.get(key)
+        """Return the entry for *key* (or its alias), or ``None`` if not registered."""
+        return cls._entries.get(cls.canonical_key(key))
 
     @classmethod
     def get_axis_label(cls, key: str) -> str:
@@ -157,7 +193,7 @@ class PlotAxisRegistry:
 
         Falls back to *key* itself when not registered.
         """
-        entry = cls._entries.get(key)
+        entry = cls.get(key)
         return entry.label if entry is not None else key
 
     @classmethod
@@ -166,7 +202,7 @@ class PlotAxisRegistry:
 
         Falls back to *key* itself when not registered.
         """
-        entry = cls._entries.get(key)
+        entry = cls.get(key)
         return entry.display_name if entry is not None else key
 
     @classmethod
@@ -175,13 +211,13 @@ class PlotAxisRegistry:
 
         Falls back to ``"continuous"`` for unknown keys.
         """
-        entry = cls._entries.get(key)
+        entry = cls.get(key)
         return entry.kind if entry is not None else "continuous"
 
     @classmethod
     def suggests_log(cls, key: str) -> bool:
         """Return whether a log scale is suggested for *key*."""
-        entry = cls._entries.get(key)
+        entry = cls.get(key)
         return entry.suggest_log if entry is not None else False
 
     # ── Resolution ───────────────────────────────────────────────────
@@ -194,9 +230,11 @@ class PlotAxisRegistry:
 
         Calls ``entry.resolve_array(cdata)`` when registered; falls back to
         ``np.asarray(cdata[key], dtype=float)`` for unknown keys.
+        Categorical properties return an object array of labels.
 
         Returns ``None`` when the property is absent or cannot be resolved.
         """
+        key = cls.canonical_key(key)
         entry = cls._entries.get(key)
         if entry is not None and entry.resolve_array is not None:
             return entry.resolve_array(cdata)
@@ -221,7 +259,7 @@ class PlotAxisRegistry:
         Returns ``None`` when no scalar resolver is registered for *key* or
         when the resolver itself returns ``None``.
         """
-        entry = cls._entries.get(key)
+        entry = cls.get(key)
         if entry is not None and entry.resolve_scalar is not None:
             return entry.resolve_scalar(line, mol_id)
         return None
@@ -250,29 +288,58 @@ class PlotAxisRegistry:
         return [e for e in entries
                 if e.quantum_field is None or e.quantum_field in allowed]
 
+    @staticmethod
+    def _schema_field_order(species: Iterable[Optional[str]]) -> List[str]:
+        """Quantum field names declared by *species*' schemas, in schema order."""
+        from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
+        order: List[str] = []
+        for mid in species:
+            for f in QuantumStateRegistry.get_fields(mid):
+                if f.name not in order:
+                    order.append(f.name)
+        return order
+
+    @classmethod
+    def get_property_options(
+        cls, species: Optional[Iterable[Optional[str]]] = None,
+    ) -> List[PlotAxisEntry]:
+        """Return the shared, ordered property list.
+
+        The population-diagram X / Y axis, color-by and marker-shape settings
+        all offer exactly this list, and the line-list filter offers the
+        entries of it that it can evaluate, so every menu shows the same
+        properties under the same names in the same order.
+
+        Species-independent properties come first, in registration order,
+        followed by the quantum numbers: every upper-state field, then every
+        lower-state field.  When *species* is given only the fields those
+        molecules' schemas declare are included, in schema order (see
+        :meth:`filter_for_species`).
+        """
+        species = None if species is None else list(species)
+        entries = cls.filter_for_species(cls._entries.values(), species)
+        plain = [e for e in entries if e.quantum_field is None]
+        quantum = [e for e in entries if e.quantum_field is not None]
+        if species is not None:
+            rank = {name: i for i, name in enumerate(cls._schema_field_order(species))}
+            quantum.sort(key=lambda e: rank.get(e.quantum_field, len(rank)))
+        # Stable: keeps the field order within each state.
+        quantum.sort(key=lambda e: 0 if e.filter_state == "upper" else 1)
+        return plain + quantum
+
     @classmethod
     def get_axis_options(
         cls, species: Optional[Iterable[Optional[str]]] = None,
     ) -> List[PlotAxisEntry]:
-        """Return entries with ``available_as_axis=True``, in order.
-
-        When *species* is given, quantum-field entries are limited to the
-        fields those molecules' schemas declare (see :meth:`filter_for_species`).
-        """
-        return cls.filter_for_species(
-            (e for e in cls._entries.values() if e.available_as_axis), species)
+        """Return the :meth:`get_property_options` entries usable as a plot axis."""
+        return [e for e in cls.get_property_options(species) if e.available_as_axis]
 
     @classmethod
     def get_color_options(
         cls, species: Optional[Iterable[Optional[str]]] = None,
     ) -> List[PlotAxisEntry]:
-        """Return entries with ``available_as_color=True``, in order.
-
-        When *species* is given, quantum-field entries are limited to the
-        fields those molecules' schemas declare (see :meth:`filter_for_species`).
-        """
-        return cls.filter_for_species(
-            (e for e in cls._entries.values() if e.available_as_color), species)
+        """Return the :meth:`get_property_options` entries usable for color-by."""
+        return [e for e in cls.get_property_options(species) if e.available_as_color]
 
     @classmethod
     def keys(cls) -> List[str]:

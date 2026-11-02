@@ -446,25 +446,33 @@ class QuantumStateRegistry:
                 _is_numeric = _f.dtype in ("int", "float")
                 _kind: str = "continuous" if _is_numeric else "categorical"
                 _fname = _f.name
-                _desc = _f.description or _fname
 
                 for _state, _lev_key in (("upper", "lev_up"), ("lower", "lev_low")):
                     _key = f"qn_{_state}:{_fname}"
                     _label = f"{_fname} ({_state})"
-                    _display = f"{_fname} \u2014 {_state} state (quantum)"
 
                     # Capture loop variables by default-argument trick
-                    def _make_resolve_array(_lk=_lev_key, _fn=_fname, _s=schema):
-                        def _resolve(cdata, __lk=_lk, __fn=_fn, __s=_s):
+                    def _make_resolve_array(_lk=_lev_key, _fn=_fname, _s=schema,
+                                            _num=_is_numeric):
+                        def _resolve(cdata, __lk=_lk, __fn=_fn, __s=_s, __num=_num):
                             lev_arr = cdata.get(__lk)
                             if lev_arr is None:
                                 return None
                             try:
+                                # Parse with the plotted molecule's own schema
+                                # (as the line-list filter does); the schema
+                                # that registered this field is the fallback.
+                                _own = cls._registry.get(cdata.get("molecule_id"))
                                 labels = _np.asarray(lev_arr, dtype="U64")
-                                parsed = __s.parse_bulk(labels)
+                                parsed = (_own or __s).parse_bulk(labels)
                                 field_vals = parsed.get(__fn)
                                 if field_vals is None:
                                     return None
+                                if not __num:
+                                    # Text field: "" marks an unparsed value.
+                                    return _np.asarray(
+                                        [str(v) if str(v).strip() else None
+                                         for v in field_vals], dtype=object)
                                 # Replace integer sentinel -999 with NaN
                                 arr = _np.asarray(field_vals, dtype=float)
                                 arr = _np.where(arr == -999, _np.nan, arr)
@@ -473,8 +481,8 @@ class QuantumStateRegistry:
                                 return None
                         return _resolve
 
-                    def _make_resolve_scalar(_st=_state, _fn=_fname):
-                        def _resolve(line, mol_id, __st=_st, __fn=_fn):
+                    def _make_resolve_scalar(_st=_state, _fn=_fname, _num=_is_numeric):
+                        def _resolve(line, mol_id, __st=_st, __fn=_fn, __num=_num):
                             try:
                                 import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
                                 from iSLAT.Modules.DataTypes.QuantumStateSchema import (
@@ -486,6 +494,8 @@ class QuantumStateRegistry:
                                 val = qd.get(__fn)
                                 if val is None or val == -999:
                                     return None
+                                if not __num:
+                                    return str(val) if str(val).strip() else None
                                 return float(val)
                             except Exception:
                                 return None
@@ -494,16 +504,19 @@ class QuantumStateRegistry:
                     PlotAxisRegistry.register(
                         PlotAxisEntry(
                             key=_key,
-                            display_name=_display,
+                            display_name=_label,
                             label=_label,
                             kind=_kind,  # type: ignore[arg-type]
-                            available_as_axis=_is_numeric,
+                            available_as_axis=True,
                             available_as_color=True,
                             suggest_log=False,
                             resolve_array=_make_resolve_array(),
                             resolve_scalar=_make_resolve_scalar(),
                             group=f"Quantum \u2014 {_state}",
                             quantum_field=_fname,
+                            filter_kind="quantum_field",
+                            filter_field=_fname,
+                            filter_state=_state,
                         )
                     )
         except Exception:
@@ -537,7 +550,7 @@ class QuantumStateRegistry:
 
         This is the single source of truth for "which parsed quantum numbers
         does this species expose" and is shared by the line-list filter
-        window and the population-diagram axis / color-by dialogs.  An
+        window and the population-diagram Plot Settings dialog.  An
         unregistered or ``None`` id resolves to the generic fallback schema,
         which declares no fields, so the result is empty.
         """

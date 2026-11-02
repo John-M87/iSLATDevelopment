@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Species-scoped quantum-field options shared by the line-list filter window
-and the population-diagram axis / color-by dialogs."""
+and the population-diagram Plot Settings dialog."""
 
 import matplotlib
 matplotlib.use("Agg")
@@ -66,17 +66,31 @@ class TestPlotAxisRegistrySpeciesScope:
         assert _quantum_fields(both) <= (h2o | co)
         assert _quantum_fields(both) & (h2o - co)
 
-    def test_scoped_lists_preserve_registry_order(self):
+    def test_scoped_lists_keep_plain_order_and_schema_quantum_order(self):
         full = PlotAxisRegistry.get_axis_options()
         scoped = PlotAxisRegistry.get_axis_options(species=["H2O"])
-        scoped_keys = [e.key for e in scoped]
-        assert scoped_keys == [e.key for e in full if e.key in scoped_keys]
+        plain = [e.key for e in scoped if e.quantum_field is None]
+        assert plain == [e.key for e in full if e.quantum_field is None]
+        # Quantum numbers follow plain properties: all upper-state fields, then
+        # all lower-state fields, each in the molecule's schema order.
+        quantum = [e for e in scoped if e.quantum_field is not None]
+        assert [e.key for e in scoped[len(plain):]] == [e.key for e in quantum]
+        schema_order = [f.name for f in QuantumStateRegistry.get_fields("H2O")]
+        for state in ("upper", "lower"):
+            fields = [e.quantum_field for e in quantum if e.filter_state == state]
+            assert fields == [f for f in schema_order if f in fields]
+        states = [e.filter_state for e in quantum]
+        assert states == sorted(states, key=lambda s: s != "upper")
 
     def test_filter_window_and_registry_agree(self):
-        from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import _quantum_field_specs
-        window_fields = {s.field for s in _quantum_field_specs("H2O")}
-        axis_fields = _quantum_fields(PlotAxisRegistry.get_color_options(species=["H2O"]))
-        assert window_fields == axis_fields
+        import pandas as pd
+        from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import build_property_catalog
+        frame = pd.DataFrame({"lam": [6.5], "lev_up": ["0_0_0|1_0_1"], "lev_low": ["0_0_0|0_0_0"]})
+        window = [(s.key, s.label) for s in build_property_catalog(frame, "H2O")
+                  if s.kind == "quantum_field"]
+        plot = [(e.key, e.display_name) for e in PlotAxisRegistry.get_color_options(species=["H2O"])
+                if e.quantum_field is not None]
+        assert window and window == plot
 
 
 class TestPopulationDiagramPlotMoleculeIds:

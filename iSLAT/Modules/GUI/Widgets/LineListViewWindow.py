@@ -14,8 +14,6 @@ filter condition on that property tests.
 """
 from __future__ import annotations
 
-import functools
-import re
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from typing import (Any, Callable, Dict, List, Optional, Sequence, Tuple,
@@ -28,7 +26,7 @@ from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     ConditionError,
     MaskContext,
     _field_valid,
-    _vib_part,
+    vib_band_label,
 )
 from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import (
     _DERIVED_KEYS,
@@ -99,30 +97,6 @@ def sort_rows(rows: Sequence[tuple], col_idx: int,
 ADDABLE_KINDS: frozenset = frozenset({
     "derived", "velocity_sep", "quantum_field", "vib_band",
 })
-
-#: A vibrational label the "Vib. band" filter can match: integers joined by
-#: underscores, e.g. ``"0_1_0"`` or ``"4"``.
-_VIB_LABEL_RE = re.compile(r"\d+(?:_\d+)*")
-
-
-@functools.lru_cache(maxsize=4096)
-def _vib_level(vib_label: str) -> Optional[int]:
-    """Vibrational level of a vib label: its largest mode quantum number."""
-    if not _VIB_LABEL_RE.fullmatch(vib_label):
-        return None
-    return max(int(q) for q in vib_label.split("_"))
-
-
-def vib_band_label(lev_up: Any, lev_low: Any) -> str:
-    """The band a line belongs to, as the ``"vN-M"`` the band filter accepts.
-
-    Returns ``""`` when either level carries no parseable vibrational label.
-    """
-    up = _vib_level(_vib_part(str(lev_up)))
-    low = _vib_level(_vib_part(str(lev_low)))
-    if up is None or low is None:
-        return ""
-    return f"v{up}-{low}"
 
 
 def infer_species(df: Optional[pd.DataFrame]) -> Optional[str]:

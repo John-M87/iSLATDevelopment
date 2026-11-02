@@ -16,9 +16,12 @@ around a group are the parentheses that are evaluated.
 
 Evaluation lives in
 :mod:`iSLAT.Modules.DataProcessing.LineFilterExpression`; this module only maps
-widgets onto that model.  Results can be saved to CSV or HITRAN ``.par``, or
-applied back onto the molecule; any supported line-list file can be loaded
-into the window as a new source to filter.
+widgets onto that model.  The selectable properties are the shared line-property
+list (:meth:`~iSLAT.Modules.DataTypes.PlotAxisRegistry.PlotAxisRegistry.get_property_options`)
+that the population diagram's Plot Settings menus also offer.  Results can be
+saved to CSV or HITRAN ``.par``, or applied back onto the molecule; any
+supported line-list file can be loaded into the window as a new source to
+filter.
 """
 from __future__ import annotations
 
@@ -32,6 +35,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, TYPE_CHE
 import numpy as np
 import pandas as pd
 
+import iSLAT.Modules.DataTypes.Intensity  # noqa: F401  (registers the shared property list)
+from iSLAT.Modules.DataTypes.PlotAxisRegistry import PlotAxisEntry, PlotAxisRegistry
 from iSLAT.Modules.DataProcessing.LineListMaker import LineListMaker
 from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     Condition,
@@ -126,7 +131,8 @@ class PropertySpec:
     Attributes
     ----------
     key : str
-        Stable identifier, e.g. ``"lam"``, ``"qn:upper:J"``, ``"vib_band"``.
+        The shared property key, e.g. ``"wavelength"``, ``"qn_upper:J"``,
+        ``"vib_band"`` (or the column name for an extra numeric column).
     label : str
         Display text, e.g. ``"Wavelength (µm)"``, ``"J (upper)"``.
     kind, field, state
@@ -146,27 +152,7 @@ class PropertySpec:
     tip: str = ""
 
 
-#: The six numeric properties the fixed form used to offer, in its exact order,
-#: with its tooltip wording preserved.
 _ONE_SIDED_NOTE = "\nLeave a bound blank to apply a one-sided limit."
-
-_CORE_NUMERIC: Tuple[Tuple[str, str, str], ...] = (
-    ("lam",     "Wavelength (µm)",
-     "Filter lines by wavelength (µm)." + _ONE_SIDED_NOTE),
-    ("e_up",    "E_up (K)",
-     "Filter by upper-level energy (in Kelvin)." + _ONE_SIDED_NOTE),
-    ("e_low",   "E_low (K)",
-     "Filter by lower-level energy (in Kelvin)." + _ONE_SIDED_NOTE),
-    ("a_stein", "Einstein A (s⁻¹)",
-     "Filter by Einstein A coefficient (spontaneous emission rate, s⁻¹)."
-     + _ONE_SIDED_NOTE),
-    ("g_up",    "g_up",
-     "Filter by upper-level statistical weight (degeneracy)." + _ONE_SIDED_NOTE),
-    ("g_low",   "g_low",
-     "Filter by lower-level statistical weight (degeneracy)." + _ONE_SIDED_NOTE),
-    ("freq",    "Frequency (Hz)",
-     "Filter by transition frequency (Hz)." + _ONE_SIDED_NOTE),
-)
 
 #: Tooltip for the derived nearest-neighbour velocity-separation property.
 _VELOCITY_SEP_TIP = (
@@ -185,35 +171,148 @@ _RELATIVE_NOTE = (
     "  'p90' = the 90th percentile (≥ p90 keeps the top tenth of the lines)."
 )
 
-#: Model quantities, taken from the same intensity calculation the population
-#: diagram plots rather than from any column of the line list.
-_DERIVED: Tuple[Tuple[str, str, str], ...] = (
-    ("intens", "Line intensity",
-     "Filter by the modelled line intensity, exactly as plotted by the "
-     "population\ndiagram.  It follows the molecule's current temperature, "
-     "column density,\nbroadening, radius and distance."
-     + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
-    ("tau", "Optical depth (τ)",
-     "Filter by the line-center optical depth τ from the molecule's current "
-     "model.\nUse an upper bound to keep optically thin lines (e.g. ≤ 1)."
-     + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+#: Note shared by every model quantity's tip.
+_MODEL_NOTE = (
+    "\nIt follows the molecule's current temperature, column density,\n"
+    "broadening, radius and distance."
 )
+
+#: Filter tooltips, keyed by shared property key.  Properties without one get
+#: a generic tip for their condition kind (see :func:`_property_tip`).
+_PROPERTY_TIPS: Dict[str, str] = {
+    "wavelength": "Filter lines by wavelength (µm)." + _ONE_SIDED_NOTE + _RELATIVE_NOTE,
+    "eu": "Filter by upper-level energy (in Kelvin)." + _ONE_SIDED_NOTE + _RELATIVE_NOTE,
+    "e_low": "Filter by lower-level energy (in Kelvin)." + _ONE_SIDED_NOTE + _RELATIVE_NOTE,
+    "a_stein": ("Filter by Einstein A coefficient (spontaneous emission rate, s⁻¹)."
+                + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "g_up": ("Filter by upper-level statistical weight (degeneracy)."
+             + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "g_low": ("Filter by lower-level statistical weight (degeneracy)."
+              + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "freq": "Filter by transition frequency (Hz)." + _ONE_SIDED_NOTE + _RELATIVE_NOTE,
+    "rd_yax": ("Filter by the population-diagram Y value ln(4πF/(hνA·g_up)),\n"
+               "exactly as the population diagram plots it." + _MODEL_NOTE
+               + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "intens": ("Filter by the modelled line intensity, exactly as plotted by the "
+               "population\ndiagram." + _MODEL_NOTE + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "tau": ("Filter by the line-center optical depth τ from the molecule's current "
+            "model.\nUse an upper bound to keep optically thin lines (e.g. ≤ 1)."
+            + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "fwhm_instrumental_kms": ("Filter by the instrumental line width (FWHM, km/s) at "
+                              "each line's wavelength,\nfrom the molecule's "
+                              "instrumental profile." + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "fwhm_convolved_kms": ("Filter by the line width (FWHM, km/s) after convolving "
+                           "the instrumental profile\nwith the molecule's Keplerian "
+                           "broadening." + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
+    "velocity_sep": _VELOCITY_SEP_TIP,
+    "vib_band": ("Filter lines belonging to a specific vibrational band.\n"
+                 "Examples: 'v1' (any band from mode 1), 'v1-0', 'v2-1'."),
+    "molecule": ("Keep only the listed species.\n"
+                 "Separate multiple names with commas."),
+}
+
+#: Condition kind -> operand widget shape.
+_EDITOR_BY_KIND: Dict[str, str] = {
+    "range": "num",
+    "derived": "num",
+    "velocity_sep": "num",
+    "quantum_field": "num",
+    "quantum_label": "text",
+    "vib_band": "band",
+    "species": "csv",
+}
 
 #: Property kinds whose bounds accept a '5%' or 'p90' relative operand.
 _RELATIVE_KINDS: frozenset = frozenset({"range", "derived"})
 
-#: Model-quantity keys, in catalogue order.
-_DERIVED_KEYS: Tuple[str, ...] = tuple(key for key, _, _ in _DERIVED)
+#: Model quantities: the shared properties evaluated from the molecule's
+#: population-diagram data rather than read off a line-list column.
+_DERIVED_KEYS: Tuple[str, ...] = tuple(
+    e.filter_field for e in PlotAxisRegistry.get_property_options(species=[])
+    if e.filter_kind == "derived"
+)
 
 #: The properties offered by the "Quick add" menu, in the legacy order.
 QUICK_ADD_KEYS: Tuple[str, ...] = (
-    "lam", "e_up", "e_low", "a_stein", "g_up", "g_low", "velocity_sep",
+    "wavelength", "eu", "e_low", "a_stein", "g_up", "g_low", "velocity_sep",
     "intens", "tau",
 )
 
-_NON_PROPERTY_COLUMNS = frozenset({
-    "species", "lev_up", "lev_low", "nr",
-} | {key for key, _, _ in _CORE_NUMERIC})
+#: Text columns the shared list already covers (labels and species) or that
+#: carry no filterable property (row number).
+_LABEL_COLUMNS = frozenset({"species", "lev_up", "lev_low", "nr"})
+
+
+def shared_property_entries(species: Optional[str]) -> List[PlotAxisEntry]:
+    """The shared line-property list, with quantum numbers scoped to *species*.
+
+    The same list (and order) the population diagram's Plot Settings menus
+    offer for the molecules on the plot.
+    """
+    try:
+        import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
+    except Exception:
+        pass
+    return PlotAxisRegistry.get_property_options(species=[species])
+
+
+def _quantum_field_descriptions(species: Optional[str]) -> Dict[str, str]:
+    """Schema descriptions of *species*' quantum fields, by field name."""
+    try:
+        from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
+        import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
+        return {f.name: getattr(f, "description", "") or ""
+                for f in QuantumStateRegistry.get_fields(species)}
+    except Exception:
+        return {}
+
+
+def _property_tip(entry: PlotAxisEntry, field_desc: Mapping[str, str]) -> str:
+    """Tooltip for *entry* in a condition row."""
+    tip = _PROPERTY_TIPS.get(entry.key)
+    if tip:
+        return tip
+    kind, state = entry.filter_kind, entry.filter_state
+    if kind == "quantum_label":
+        return (f"Filter by the {state} quantum level label.\n"
+                f"Enter text to match against the level string.\n"
+                f"'contains' keeps lines whose label contains the value;\n"
+                f"'does not contain' keeps the rest.")
+    if kind == "quantum_field":
+        desc = field_desc.get(entry.quantum_field or "", "")
+        return (f"Quantum number {entry.filter_field!r} parsed from the "
+                f"{state} level label."
+                + (f"\n{desc}" if desc else "")
+                + "\nUse '=' for a non-numeric field.")
+    if kind == "derived":
+        return (f"Filter by {entry.display_name} from the molecule's current model."
+                + _ONE_SIDED_NOTE + _RELATIVE_NOTE)
+    return f"Filter by {entry.display_name}." + _ONE_SIDED_NOTE + _RELATIVE_NOTE
+
+
+def _spec_for_entry(entry: PlotAxisEntry, columns: set, derived: set,
+                    field_desc: Mapping[str, str]) -> Optional[PropertySpec]:
+    """The condition-row spec for *entry*, or ``None`` when *columns* cannot evaluate it."""
+    kind = entry.filter_kind
+    if kind not in _EDITOR_BY_KIND:
+        return None
+    lev_col = "lev_up" if entry.filter_state == "upper" else "lev_low"
+    required = {
+        "range": (entry.filter_field,),
+        "velocity_sep": ("lam",),
+        "quantum_label": (lev_col,),
+        "quantum_field": (lev_col,),
+        "vib_band": ("lev_up", "lev_low"),
+        "species": ("species",),
+    }.get(kind, ())
+    if any(col not in columns for col in required):
+        return None
+    if kind == "derived" and entry.filter_field not in derived:
+        return None
+    return PropertySpec(key=entry.key, label=entry.display_name, kind=kind,
+                        field=entry.filter_field, state=entry.filter_state,
+                        editor=_EDITOR_BY_KIND[kind],
+                        tip=_property_tip(entry, field_desc))
 
 
 def build_property_catalog(df: pd.DataFrame,
@@ -221,107 +320,42 @@ def build_property_catalog(df: pd.DataFrame,
                            derived: Sequence[str] = ()) -> List[PropertySpec]:
     """Build the selectable property list for *df* and *species*.
 
-    Combines the static core properties, any additional numeric columns the
-    frame happens to carry (saved-lines fit results, ``xmin``/``xmax``, ...),
-    the raw quantum-label matchers, and the parsed quantum-number fields
-    declared by the molecule's schema.
+    The list is the shared line-property list
+    (:meth:`~iSLAT.Modules.DataTypes.PlotAxisRegistry.PlotAxisRegistry.get_property_options`),
+    the one the population diagram's Plot Settings menus offer, under the
+    same names and in the same order, limited to the properties this frame
+    can evaluate.  It is followed by any extra numeric columns the frame
+    happens to carry (saved-lines fit results, ``xmin``/``xmax``, ...).
 
     *derived* names the model quantities the caller can supply (``"intens"``,
-    ``"tau"``).  They are not columns, so a caller with no molecule behind it
-    passes none and they simply do not appear.
+    ``"tau"``, ``"rd_yax"``, ...).  They are not columns, so a caller with no
+    molecule behind it passes none and they simply do not appear.
 
-    The schema is looked up with the same key the evaluator uses, so every
+    Quantum numbers are scoped with the same key the evaluator uses, so every
     field offered here is a field that can actually be evaluated.  When only
     the generic fallback schema is available it declares no fields, so no
     quantum-field entries are emitted and the caller shows an explanatory note
     rather than an empty combobox that reads as a bug.
     """
     columns = set(df.columns) if df is not None else set()
-    catalog: List[PropertySpec] = []
-
-    for key, label, tip in _CORE_NUMERIC:
-        if key in columns:
-            catalog.append(PropertySpec(key=key, label=label, kind="range",
-                                        field=key, editor="num",
-                                        tip=tip + _RELATIVE_NOTE))
-
-    # Model quantities: computed by the intensity physics, not read off a column.
-    for key, label, tip in _DERIVED:
-        if key in derived:
-            catalog.append(PropertySpec(key=key, label=label, kind="derived",
-                                        field=key, editor="num", tip=tip))
-
-    # Derived, not a column: the Doppler separation to the nearest neighbour.
-    if "lam" in columns:
-        catalog.append(PropertySpec(
-            key="velocity_sep", label="Velocity sep. (km/s)",
-            kind="velocity_sep", editor="num", tip=_VELOCITY_SEP_TIP))
+    entries = shared_property_entries(species)
+    field_desc = _quantum_field_descriptions(species)
+    derived_set = set(derived)
+    catalog: List[PropertySpec] = [
+        spec for spec in (_spec_for_entry(e, columns, derived_set, field_desc)
+                          for e in entries)
+        if spec is not None
+    ]
 
     # Extra numeric columns (e.g. xmin/xmax, saved-line fit results)
-    for col in sorted(c for c in columns if c not in _NON_PROPERTY_COLUMNS):
+    covered = {e.filter_field for e in entries if e.filter_kind == "range"}
+    for col in sorted(c for c in columns if c not in covered | _LABEL_COLUMNS):
         if pd.api.types.is_numeric_dtype(df[col]):
             catalog.append(PropertySpec(
                 key=col, label=col, kind="range", field=col, editor="num",
                 tip=f"Filter by the {col!r} column of this line list."
                     + _ONE_SIDED_NOTE + _RELATIVE_NOTE))
-
-    # Raw quantum-label matching
-    for state, col, label in (("upper", "lev_up", "Quantum lev_up"),
-                              ("lower", "lev_low", "Quantum lev_low")):
-        if col in columns:
-            catalog.append(PropertySpec(
-                key=f"label:{state}", label=label, kind="quantum_label",
-                state=state, editor="text",
-                tip=f"Filter by the {'upper' if state == 'upper' else 'lower'} "
-                    f"quantum level label.\n"
-                    f"Enter text to match against the level string.\n"
-                    f"'contains' keeps lines whose label contains the value;\n"
-                    f"'does not contain' keeps the rest."))
-
-    # Parsed quantum-number fields, from the molecule's schema
-    for spec in _quantum_field_specs(species):
-        if spec.state == "upper" and "lev_up" not in columns:
-            continue
-        if spec.state == "lower" and "lev_low" not in columns:
-            continue
-        catalog.append(spec)
-
-    if "lev_up" in columns and "lev_low" in columns:
-        catalog.append(PropertySpec(
-            key="vib_band", label="Vib. band", kind="vib_band", editor="band",
-            tip="Filter lines belonging to a specific vibrational band.\n"
-                "Examples: 'v1' (any band from mode 1), 'v1-0', 'v2-1'."))
-
-    if "species" in columns:
-        catalog.append(PropertySpec(
-            key="species", label="Species", kind="species", editor="csv",
-            tip="Keep only the listed species.\n"
-                "Separate multiple names with commas."))
-
     return catalog
-
-
-def _quantum_field_specs(species: Optional[str]) -> List[PropertySpec]:
-    """Property specs for every parsed quantum field the schema declares."""
-    specs: List[PropertySpec] = []
-    try:
-        from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
-        import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
-        fields = QuantumStateRegistry.get_fields(species)
-    except Exception:
-        return specs
-    for state in ("upper", "lower"):
-        for f in fields:
-            desc = getattr(f, "description", "") or ""
-            specs.append(PropertySpec(
-                key=f"qn:{state}:{f.name}",
-                label=f"{f.name} ({state})",
-                kind="quantum_field", field=f.name, state=state, editor="num",
-                tip=(f"Quantum number {f.name!r} parsed from the "
-                     f"{state} level label."
-                     + (f"\n{desc}" if desc else "")
-                     + "\nUse '=' for a non-numeric field.")))
-    return specs
 
 
 LINE_LIST_SAVE_FILETYPES = [
@@ -374,7 +408,7 @@ def load_line_list_file(path: Path, fallback_species: Optional[str] = None):
 
 def has_quantum_schema(species: Optional[str]) -> bool:
     """True when *species* has a registered schema declaring named fields."""
-    return bool(_quantum_field_specs(species))
+    return bool(_quantum_field_descriptions(species))
 
 
 #: Format choice meaning "pick the schema from the line list's own name".

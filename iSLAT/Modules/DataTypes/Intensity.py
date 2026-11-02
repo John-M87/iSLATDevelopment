@@ -1733,7 +1733,9 @@ class Intensity(WavelengthRangeMixin):
             ``eu``, ``rd_yax``, ``wavelength``, ``intens``, ``a_stein``,
             ``g_up``, ``g_low``, ``lev_up``, ``lev_low``, ``e_low``,
             ``tau``, ``valid_mask``, ``beam_s``,
-            ``fwhm_instrumental_kms``, ``fwhm_convolved_kms``.
+            ``fwhm_instrumental_kms``, ``fwhm_convolved_kms``, ``freq``
+            (Hz) and ``velocity_sep_kms`` (Doppler separation to the
+            nearest line among those returned).
         """
         df = self.build_table(full_range=full_range)
         if df is None or df.empty:
@@ -1757,6 +1759,14 @@ class Intensity(WavelengthRangeMixin):
 
         F         = intens_mod * beam_s
         frequency = c.SPEED_OF_LIGHT_MICRONS / wavelength
+        freq_col  = np.asarray(df["freq"], dtype=float) if "freq" in df.columns else frequency
+
+        # Nearest-neighbour Doppler separation over the lines returned here,
+        # computed exactly as the line-list filter's velocity-separation test.
+        from iSLAT.Modules.DataProcessing.LineFilterExpression import (
+            nearest_neighbour_separation_kms,
+        )
+        velocity_sep_kms = nearest_neighbour_separation_kms(wavelength)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             rd_yax = np.log(
@@ -1784,7 +1794,10 @@ class Intensity(WavelengthRangeMixin):
                     profile_cls(_fwhm_const) if profile_key == "constant"
                     else profile_cls()
                 )
-                R_arr = np.asarray(profile.get_R(wavelength), dtype=float)
+                R_arr = np.broadcast_to(
+                    np.asarray(profile.get_R(wavelength), dtype=float),
+                    np.shape(wavelength),
+                )
                 R_arr = np.where(
                     (np.isfinite(R_arr)) & (R_arr > 0),
                     R_arr,
@@ -1814,6 +1827,8 @@ class Intensity(WavelengthRangeMixin):
             "beam_s":                beam_s,
             "fwhm_instrumental_kms": fwhm_instrumental_kms,
             "fwhm_convolved_kms":    fwhm_convolved_kms,
+            "freq":                  freq_col,
+            "velocity_sep_kms":      velocity_sep_kms,
         }
 
     # ------------------------------------------------------------------
@@ -2029,193 +2044,258 @@ def _register_standard_entries() -> None:
                 return None
         return _resolve
 
+    def _labels(key):
+        """Return a resolve_array callback for a categorical component-dict key."""
+        def _resolve(cdata, _k=key):
+            arr = cdata.get(_k)
+            if arr is None:
+                return None
+            return _np.asarray(arr, dtype=object)
+        return _resolve
+
+    def _freq_array(cdata):
+        """Line-list frequencies (Hz), or c/λ when the data carries none."""
+        arr = cdata.get("freq")
+        if arr is not None:
+            return _np.asarray(arr, dtype=float)
+        wav = cdata.get("wavelength")
+        if wav is None:
+            return None
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            return c.SPEED_OF_LIGHT_MICRONS / _np.asarray(wav, dtype=float)
+
+    def _freq_scalar(line, _mol_id):
+        val = getattr(line, "freq", None)
+        if val:
+            return float(val)
+        lam = getattr(line, "lam", None)
+        return c.SPEED_OF_LIGHT_MICRONS / float(lam) if lam else None
+
+    def _velocity_sep_array(cdata):
+        """Nearest-neighbour separation (km/s), as the line-list filter computes it."""
+        arr = cdata.get("velocity_sep_kms")
+        if arr is None:
+            wav = cdata.get("wavelength")
+            if wav is None:
+                return None
+            from iSLAT.Modules.DataProcessing.LineFilterExpression import (
+                nearest_neighbour_separation_kms,
+            )
+            arr = nearest_neighbour_separation_kms(wav)
+        arr = _np.asarray(arr, dtype=float)
+        # A lone line is infinitely isolated: no finite position on an axis.
+        return _np.where(_np.isinf(arr), _np.nan, arr)
+
+    def _vib_band_array(cdata):
+        up, low = cdata.get("lev_up"), cdata.get("lev_low")
+        if up is None or low is None:
+            return None
+        from iSLAT.Modules.DataProcessing.LineFilterExpression import vib_band_label
+        return _np.asarray([vib_band_label(u, l) for u, l in zip(up, low)], dtype=object)
+
+    def _vib_band_scalar(line, _mol_id):
+        from iSLAT.Modules.DataProcessing.LineFilterExpression import vib_band_label
+        return vib_band_label(getattr(line, "lev_up", ""), getattr(line, "lev_low", "")) or None
+
+    def _molecule_array(cdata):
+        wav = cdata.get("wavelength")
+        n = 0 if wav is None else len(wav)
+        return _np.full(n, cdata.get("name") or "unknown", dtype=object)
+
+    # The shared property list, in the order every menu shows it.  Each entry
+    # also says how the line-list filter evaluates it (filter_kind / field).
     entries = [
+        # ---- Line-list columns ------------------------------------------
+        PlotAxisEntry(
+            key="wavelength",
+            display_name="Wavelength (\u00b5m)",
+            label=r"$\lambda$ ($\mu$m)",
+            kind="continuous",
+            resolve_array=_arr("wavelength"),
+            resolve_scalar=_scalar("lam"),
+            group="Line",
+            filter_kind="range",
+            filter_field="lam",
+        ),
         PlotAxisEntry(
             key="eu",
-            display_name="Upper-level energy E_up (K)",
+            display_name="E_up (K)",
             label=r"$E_{u}$ (K)",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
             resolve_array=_arr("eu"),
             resolve_scalar=_scalar("e_up"),
-            group="Physics",
+            group="Line",
+            filter_kind="range",
+            filter_field="e_up",
         ),
         PlotAxisEntry(
             key="e_low",
-            display_name="Lower-level energy E_low (K)",
+            display_name="E_low (K)",
             label=r"$E_{low}$ (K)",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
             resolve_array=_arr("e_low"),
             resolve_scalar=_scalar("e_low"),
-            group="Physics",
-        ),
-        PlotAxisEntry(
-            key="rd_yax",
-            display_name="Population diagram Y [ln(4\u03c0F/h\u03bdA_u g_u)]",
-            label=r"ln(4$\pi$F/(h$\nu$$A_{u}$$g_{u}$))",
-            kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
-            resolve_array=_arr("rd_yax"),
-            resolve_scalar=None,  # requires beam_s — not derivable from bare MoleculeLine
-            group="Physics",
-        ),
-        PlotAxisEntry(
-            key="wavelength",
-            display_name="Wavelength (\u03bcm)",
-            label=r"$\lambda$ ($\mu$m)",
-            kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
-            resolve_array=_arr("wavelength"),
-            resolve_scalar=_scalar("lam"),
-            group="Physics",
-        ),
-        PlotAxisEntry(
-            key="intens",
-            display_name="Model intensity",
-            label="Intensity",
-            kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=True,
-            resolve_array=_arr("intens"),
-            resolve_scalar=None,
-            group="Physics",
+            group="Line",
+            filter_kind="range",
+            filter_field="e_low",
         ),
         PlotAxisEntry(
             key="a_stein",
-            display_name="Einstein A coefficient (s\u207b\u00b9)",
+            display_name="Einstein A (s\u207b\u00b9)",
             label=r"$A_{u}$ (s$^{-1}$)",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
             suggest_log=True,
             resolve_array=_arr("a_stein"),
             resolve_scalar=_scalar("a_stein"),
-            group="Physics",
+            group="Line",
+            filter_kind="range",
+            filter_field="a_stein",
         ),
         PlotAxisEntry(
             key="g_up",
-            display_name="Upper-state degeneracy g_up",
+            display_name="g_up",
             label=r"$g_{u}$",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
             resolve_array=_arr("g_up"),
             resolve_scalar=_scalar("g_up"),
-            group="Physics",
+            group="Line",
+            filter_kind="range",
+            filter_field="g_up",
         ),
         PlotAxisEntry(
             key="g_low",
-            display_name="Lower-state degeneracy g_low",
+            display_name="g_low",
             label=r"$g_{low}$",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
             resolve_array=_arr("g_low"),
             resolve_scalar=_scalar("g_low"),
-            group="Physics",
+            group="Line",
+            filter_kind="range",
+            filter_field="g_low",
+        ),
+        PlotAxisEntry(
+            key="freq",
+            display_name="Frequency (Hz)",
+            label=r"$\nu$ (Hz)",
+            kind="continuous",
+            resolve_array=_freq_array,
+            resolve_scalar=_freq_scalar,
+            group="Line",
+            filter_kind="range",
+            filter_field="freq",
+        ),
+        # ---- Model quantities (follow the molecule's parameters) --------
+        PlotAxisEntry(
+            key="rd_yax",
+            display_name="Pop. diagram Y [ln(4\u03c0F/h\u03bdAg)]",
+            label=r"ln(4$\pi$F/(h$\nu$$A_{u}$$g_{u}$))",
+            kind="continuous",
+            resolve_array=_arr("rd_yax"),
+            resolve_scalar=None,  # requires beam_s — not derivable from bare MoleculeLine
+            group="Model",
+            filter_kind="derived",
+            filter_field="rd_yax",
+        ),
+        PlotAxisEntry(
+            key="intens",
+            display_name="Line intensity",
+            label="Intensity",
+            kind="continuous",
+            suggest_log=True,
+            resolve_array=_arr("intens"),
+            resolve_scalar=None,
+            group="Model",
+            filter_kind="derived",
+            filter_field="intens",
         ),
         PlotAxisEntry(
             key="tau",
-            display_name="Line-center opacity (tau)",
+            display_name="Optical depth (\u03c4)",
             label=r"Opacity ($\tau$)",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
             suggest_log=True,
             resolve_array=_arr("tau"),
             resolve_scalar=None,
-            group="Physics",
+            group="Model",
+            filter_kind="derived",
+            filter_field="tau",
         ),
         PlotAxisEntry(
             key="fwhm_instrumental_kms",
-            display_name="Line instrumental FWHM (km/s)",
+            display_name="Instrumental FWHM (km/s)",
             label="Instrumental FWHM (km/s)",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
             resolve_array=_arr("fwhm_instrumental_kms"),
             resolve_scalar=None,
-            group="Physics",
+            group="Model",
+            filter_kind="derived",
+            filter_field="fwhm_instrumental_kms",
         ),
         PlotAxisEntry(
             key="fwhm_convolved_kms",
-            display_name="Line convolved FWHM (km/s)",
+            display_name="Convolved FWHM (km/s)",
             label="Convolved FWHM (km/s)",
             kind="continuous",
-            available_as_axis=True,
-            available_as_color=True,
-            suggest_log=False,
             resolve_array=_arr("fwhm_convolved_kms"),
             resolve_scalar=None,
-            group="Physics",
+            group="Model",
+            filter_kind="derived",
+            filter_field="fwhm_convolved_kms",
         ),
-        # ---- Categorical entries (color-by only) --------------------
+        # ---- Derived from the line list ---------------------------------
+        PlotAxisEntry(
+            key="velocity_sep",
+            display_name="Velocity sep. (km/s)",
+            label=r"$\Delta v$ to nearest line (km/s)",
+            kind="continuous",
+            suggest_log=True,
+            resolve_array=_velocity_sep_array,
+            resolve_scalar=None,  # needs the neighbouring lines
+            group="Line",
+            filter_kind="velocity_sep",
+        ),
+        # ---- Labels (categorical) ---------------------------------------
         PlotAxisEntry(
             key="lev_up",
-            display_name="Upper level label",
-            label="Upper level label",
+            display_name="Upper level (lev_up)",
+            label="Upper level",
             kind="categorical",
-            available_as_axis=False,
-            available_as_color=True,
-            suggest_log=False,
-            resolve_array=lambda cdata: (
-                _np.asarray(cdata["lev_up"], dtype=object)
-                if cdata.get("lev_up") is not None else None
-            ),
+            resolve_array=_labels("lev_up"),
             resolve_scalar=lambda line, _mol_id: getattr(line, "lev_up", None),
             group="Labels",
+            filter_kind="quantum_label",
+            filter_state="upper",
         ),
         PlotAxisEntry(
             key="lev_low",
-            display_name="Lower level label",
-            label="Lower level label",
+            display_name="Lower level (lev_low)",
+            label="Lower level",
             kind="categorical",
-            available_as_axis=False,
-            available_as_color=True,
-            suggest_log=False,
-            resolve_array=lambda cdata: (
-                _np.asarray(cdata["lev_low"], dtype=object)
-                if cdata.get("lev_low") is not None else None
-            ),
+            resolve_array=_labels("lev_low"),
             resolve_scalar=lambda line, _mol_id: getattr(line, "lev_low", None),
             group="Labels",
+            filter_kind="quantum_label",
+            filter_state="lower",
         ),
         PlotAxisEntry(
-            key="component",
-            display_name="Molecule / component",
-            label="Component",
+            key="vib_band",
+            display_name="Vib. band",
+            label="Vibrational band",
             kind="categorical",
-            available_as_axis=False,
-            available_as_color=True,
-            suggest_log=False,
-            resolve_array=None,  # handled specially in _render_categorical_colormap
-            resolve_scalar=None,
+            resolve_array=_vib_band_array,
+            resolve_scalar=_vib_band_scalar,
             group="Labels",
+            filter_kind="vib_band",
         ),
         PlotAxisEntry(
             key="molecule",
-            display_name="Molecule / component",
-            label="Component",
+            display_name="Molecule (species)",
+            label="Molecule",
             kind="categorical",
-            available_as_axis=False,
-            available_as_color=True,
-            suggest_log=False,
-            resolve_array=None,
+            resolve_array=_molecule_array,
             resolve_scalar=None,
             group="Labels",
+            filter_kind="species",
         ),
     ]
     for entry in entries:

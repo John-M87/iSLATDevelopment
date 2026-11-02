@@ -1,7 +1,7 @@
 """
 PopulationDiagramContextMixin - shared right-click context menu for the population diagram panel.
 
-Both :class:`ThreePanelView` and :class:`PopulationDiagramView` inherit this mixin so that the *Color By* and *Axis Settings* dialogs, and the menu-building logic, live in exactly one place.
+Both :class:`ThreePanelView` and :class:`PopulationDiagramView` inherit this mixin so that the *Plot Settings* dialog (axes, color and marker settings in one tabbed window), and the menu-building logic, live in exactly one place.
 
 Usage::
 
@@ -13,7 +13,7 @@ Usage::
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional
 
 class PopulationDiagramContextMixin:
     """Mixin that supplies the population-diagram right-click menu and dialogs.
@@ -26,10 +26,9 @@ class PopulationDiagramContextMixin:
     def _plot_species(pdp: Any) -> Optional[list]:
         """Species ids of the molecules on *pdp*, or ``None`` to offer everything.
 
-        Passed to the :class:`PlotAxisRegistry` option lists so the axis,
-        color-by and marker-shape menus only offer quantum numbers that the
-        plotted molecules' schemas declare — the same scoping the line-list
-        filter window applies.
+        Passed to :meth:`PlotAxisRegistry.get_property_options` so the Plot
+        Settings menus only offer quantum numbers that the plotted molecules'
+        schemas declare — the same scoping the line-list filter window applies.
         """
         if pdp is None or not hasattr(pdp, "get_molecule_ids"):
             return None
@@ -67,8 +66,8 @@ class PopulationDiagramContextMixin:
         menu = tk.Menu(canvas_widget, tearoff=0)
 
         # ---- helpers --------------------------------------------------
-        def _color_by_dialog():
-            self._open_color_by_dialog(pdp, canvas_widget, draw_idle)
+        def _plot_settings_dialog():
+            self._open_plot_settings_dialog(pdp, canvas_widget, draw_idle)
 
         def _clear_color_mapping():
             if pdp is not None:
@@ -117,17 +116,12 @@ class PopulationDiagramContextMixin:
 
         # ---- menu items -----------------------------------------------
 
-        menu.add_command(label="Color By\u2026", command=_color_by_dialog)
+        menu.add_command(label="Plot Settings\u2026", command=_plot_settings_dialog)
         menu.add_command(label="Clear Color Mapping", command=_clear_color_mapping)
         menu.add_command(
             label=("\u2713 " if _log_scale else "  ") + "Log Scale Colorbar",
             command=_toggle_log_scale,
             state="normal" if _has_mapping else "disabled",
-        )
-        menu.add_separator()
-        menu.add_command(
-            label="Axis Settings\u2026",
-            command=lambda: self._open_axis_settings_dialog(pdp, canvas_widget, draw_idle),
         )
         menu.add_separator()
         menu.add_command(
@@ -315,16 +309,23 @@ class PopulationDiagramContextMixin:
             )
 
     # ------------------------------------------------------------------
-    # Color By dialog
+    # Plot Settings dialog (axes, color and markers in one window)
     # ------------------------------------------------------------------
 
-    def _open_color_by_dialog(
+    def _open_plot_settings_dialog(
         self,
         pdp: Any,
         parent_widget: Any,
         draw_idle: Callable[[], None],
+        initial_tab: str = "axes",
     ) -> None:
-        """Open the *Color By* dialog for *pdp*."""
+        """Open the *Plot Settings* dialog for *pdp*.
+
+        One window with *Axes*, *Color* and *Markers* tabs and a single
+        Apply.  Every property menu in it offers the same list
+        (:meth:`PlotAxisRegistry.get_property_options`), which is also the
+        list the line-list filter offers.
+        """
         try:
             import tkinter as tk
             import tkinter.ttk as ttk
@@ -333,418 +334,407 @@ class PopulationDiagramContextMixin:
 
         # Ensure quantum schemas for any currently-loaded molecule are
         # registered so their qn_upper/qn_lower entries appear in the list.
-        if pdp is not None:
-            try:
-                import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
-            except Exception:
-                pass
+        try:
+            import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
+        except Exception:
+            pass
 
         from iSLAT.Modules.DataTypes.PlotAxisRegistry import PlotAxisRegistry as _Reg
 
-        color_entries = _Reg.get_color_options(species=self._plot_species(pdp))
-        PROP_OPTIONS = [(e.display_name, e.key) for e in color_entries]
-        PROP_LABELS  = [p[0] for p in PROP_OPTIONS]
-        PROP_VALUES  = [p[1] for p in PROP_OPTIONS]
-
-        CMAP_OPTIONS = [
-            "viridis", "plasma", "inferno", "magma", "cividis",
-            "coolwarm", "RdYlBu", "Spectral", "tab10", "tab20",
-        ]
-
-        current_mapping = getattr(pdp, '_color_mapping', None) if pdp else None
-        initial_prop_idx = 0
-        initial_cmap = "viridis"
-        initial_vmin = initial_vmax = initial_pmin = initial_pmax = ""
-        initial_log_scale = False
-
-        if current_mapping:
-            prop_val = current_mapping.get("prop", "e_up")
-            if prop_val in PROP_VALUES:
-                initial_prop_idx = PROP_VALUES.index(prop_val)
-            initial_cmap = current_mapping.get("cmap", "viridis")
-            v = current_mapping.get("vmin")
-            initial_vmin = str(v) if v is not None else ""
-            v = current_mapping.get("vmax")
-            initial_vmax = str(v) if v is not None else ""
-            v = current_mapping.get("pmin")
-            initial_pmin = str(v) if v is not None else ""
-            v = current_mapping.get("pmax")
-            initial_pmax = str(v) if v is not None else ""
-            initial_log_scale = bool(current_mapping.get("log_scale", False))
-        else:
-            # No existing mapping: suggest log scale based on registry metadata.
-            initial_prop = PROP_VALUES[initial_prop_idx]
-            initial_log_scale = _Reg.suggests_log(initial_prop)
-
-        win = tk.Toplevel(parent_widget)
-        win.title("Population Diagram \u2014 Color By")
-        win.resizable(False, False)
-        win.grab_set()
-
-        pad = {"padx": 8, "pady": 4}
-
-        tk.Label(win, text="Color by property:").grid(row=0, column=0, sticky="w", **pad)
-        prop_var = tk.StringVar(value=PROP_LABELS[initial_prop_idx])
-        log_scale_var = tk.BooleanVar(value=initial_log_scale)
-
-        def _on_prop_changed(*_):
-            lbl = prop_var.get()
-            if lbl in PROP_LABELS:
-                pval = PROP_VALUES[PROP_LABELS.index(lbl)]
-                if _Reg.suggests_log(pval):
-                    log_scale_var.set(True)
-
-        prop_combo = ttk.Combobox(win, textvariable=prop_var, values=PROP_LABELS,
-                     state="readonly", width=32)
-        prop_combo.grid(row=0, column=1, sticky="ew", **pad)
-        prop_combo.bind("<<ComboboxSelected>>", _on_prop_changed)
-
-        tk.Label(win, text="Colormap:").grid(row=1, column=0, sticky="w", **pad)
-        cmap_var = tk.StringVar(value=initial_cmap)
-        ttk.Combobox(win, textvariable=cmap_var, values=CMAP_OPTIONS,
-                     state="normal", width=20).grid(row=1, column=1, sticky="ew", **pad)
-
-        tk.Label(win, text="vmin (optional):").grid(row=2, column=0, sticky="w", **pad)
-        vmin_var = tk.StringVar(value=initial_vmin)
-        tk.Entry(win, textvariable=vmin_var, width=12).grid(row=2, column=1, sticky="w", **pad)
-
-        tk.Label(win, text="vmax (optional):").grid(row=3, column=0, sticky="w", **pad)
-        vmax_var = tk.StringVar(value=initial_vmax)
-        tk.Entry(win, textvariable=vmax_var, width=12).grid(row=3, column=1, sticky="w", **pad)
-
-        ttk.Separator(win, orient="horizontal").grid(
-            row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=2)
-        tk.Label(win, text="\u2014 or clip by percentile (overrides vmin/vmax) \u2014",
-                 font=("TkDefaultFont", 8), foreground="gray"
-                 ).grid(row=5, column=0, columnspan=2, **pad)
-
-        tk.Label(win, text="Min percentile % (optional):").grid(row=6, column=0, sticky="w", **pad)
-        pmin_var = tk.StringVar(value=initial_pmin)
-        tk.Spinbox(win, from_=0, to=100, increment=1, textvariable=pmin_var,
-                   width=8).grid(row=6, column=1, sticky="w", **pad)
-
-        tk.Label(win, text="Max percentile % (optional):").grid(row=7, column=0, sticky="w", **pad)
-        pmax_var = tk.StringVar(value=initial_pmax)
-        tk.Spinbox(win, from_=0, to=100, increment=1, textvariable=pmax_var,
-                   width=8).grid(row=7, column=1, sticky="w", **pad)
-
-        tk.Checkbutton(win, text="Log scale colorbar",
-                       variable=log_scale_var).grid(row=8, column=0, columnspan=2,
-                                                    sticky="w", **pad)
-
-        btn_frame = tk.Frame(win)
-        btn_frame.grid(row=9, column=0, columnspan=2, pady=6)
-
-        def _apply():
-            prop_label = prop_var.get()
-            if prop_label not in PROP_LABELS:
-                return
-            prop = PROP_VALUES[PROP_LABELS.index(prop_label)]
-            cmap = cmap_var.get().strip() or "viridis"
-            try:
-                vmin = float(vmin_var.get()) if vmin_var.get().strip() else None
-            except ValueError:
-                vmin = None
-            try:
-                vmax = float(vmax_var.get()) if vmax_var.get().strip() else None
-            except ValueError:
-                vmax = None
-            try:
-                pmin = float(pmin_var.get()) if pmin_var.get().strip() else None
-                if pmin is not None:
-                    pmin = max(0.0, min(100.0, pmin))
-            except ValueError:
-                pmin = None
-            try:
-                pmax = float(pmax_var.get()) if pmax_var.get().strip() else None
-                if pmax is not None:
-                    pmax = max(0.0, min(100.0, pmax))
-            except ValueError:
-                pmax = None
-
-            if pdp is not None:
-                pdp.color_by(prop, cmap=cmap, vmin=vmin, vmax=vmax,
-                             pmin=pmin, pmax=pmax,
-                             log_scale=log_scale_var.get(), regenerate=True)
-                draw_idle()
-            win.destroy()
-
-        def _cancel():
-            win.destroy()
-
-        ttk.Button(btn_frame, text="Apply",  command=_apply).pack(side="left",  padx=4)
-        ttk.Button(btn_frame, text="Cancel", command=_cancel).pack(side="left", padx=4)
-
-        win.bind("<Return>", lambda _e: _apply())
-        win.bind("<Escape>", lambda _e: _cancel())
-
-    # ------------------------------------------------------------------
-    # Axis Settings dialog
-    # ------------------------------------------------------------------
-    def _open_axis_settings_dialog(
-        self,
-        pdp: Any,
-        parent_widget: Any,
-        draw_idle: Callable[[], None],
-    ) -> None:
-        """Open the *Axis Settings* dialog for *pdp*."""
-        try:
-            import tkinter as tk
-            import tkinter.ttk as ttk
-        except ImportError:
+        entries = _Reg.get_property_options(species=self._plot_species(pdp))
+        labels = [e.display_name for e in entries]
+        label_to_key = {e.display_name: e.key for e in entries}
+        key_to_label = {e.key: e.display_name for e in entries}
+        if not labels:
             return
 
-        # Ensure quantum schemas for any currently-loaded molecule are
-        # registered so their qn_upper/qn_lower entries appear in the list.
-        if pdp is not None:
-            try:
-                import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401
-            except Exception:
-                pass
+        current = capture_plot_settings(pdp)
 
-        from iSLAT.Modules.DataTypes.PlotAxisRegistry import PlotAxisRegistry as _Reg
+        def _label_for(key: Optional[str], fallback: str) -> str:
+            if not key:
+                return fallback
+            return key_to_label.get(_Reg.canonical_key(key), fallback)
 
-        axis_entries = _Reg.get_axis_options(species=self._plot_species(pdp))
-        AXIS_OPTIONS = [(e.display_name, e.key) for e in axis_entries]
-        AXIS_LABELS = [o[0] for o in AXIS_OPTIONS]
-        AXIS_VALUES = [o[1] for o in AXIS_OPTIONS]
+        def _kind(label: str) -> Optional[str]:
+            key = label_to_key.get(label)
+            return None if key is None else _Reg.get_kind(key)
 
-        cur_x     = getattr(pdp, '_x_prop', 'eu')     if pdp else 'eu'
-        cur_y     = getattr(pdp, '_y_prop', 'rd_yax') if pdp else 'rd_yax'
-        cur_x_log = getattr(pdp, '_x_log', False)     if pdp else False
-        cur_y_log = getattr(pdp, '_y_log', False)     if pdp else False
-        cur_x_lim = getattr(pdp, '_x_lim', None)      if pdp else None
-        cur_y_lim = getattr(pdp, '_y_lim', None)      if pdp else None
+        def _set_state(widgets, enabled: bool) -> None:
+            for w in widgets:
+                try:
+                    w.configure(state="normal" if enabled else "disabled")
+                except Exception:
+                    pass
 
-        init_x_idx = AXIS_VALUES.index(cur_x) if cur_x in AXIS_VALUES else 1
-        init_y_idx = AXIS_VALUES.index(cur_y) if cur_y in AXIS_VALUES else 0
+        def _fmt(value: Any) -> str:
+            return "" if value is None else f"{value:g}" if isinstance(value, float) else str(value)
 
         win = tk.Toplevel(parent_widget)
-        win.title("Population Diagram \u2014 Axis Settings")
+        win.title("Population Diagram \u2014 Plot Settings")
         win.resizable(False, False)
         win.grab_set()
 
         pad = {"padx": 8, "pady": 4}
         pad_tight = {"padx": 8, "pady": 1}
 
-        # ---- X axis --------------------------------------------------
-        tk.Label(win, text="X axis:").grid(row=0, column=0, sticky="w", **pad)
-        x_var = tk.StringVar(value=AXIS_LABELS[init_x_idx])
-        ttk.Combobox(win, textvariable=x_var, values=AXIS_LABELS,
-                     state="readonly", width=38).grid(row=0, column=1, columnspan=3, sticky="ew", **pad)
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        axes_tab = ttk.Frame(notebook, padding=6)
+        color_tab = ttk.Frame(notebook, padding=6)
+        markers_tab = ttk.Frame(notebook, padding=6)
+        notebook.add(axes_tab, text="Axes")
+        notebook.add(color_tab, text="Color")
+        notebook.add(markers_tab, text="Markers")
 
-        x_log_var = tk.BooleanVar(value=cur_x_log)
-        tk.Checkbutton(win, text="Log scale (X)",
-                       variable=x_log_var).grid(row=1, column=0, columnspan=4,
-                                                sticky="w", **pad)
+        form: Dict[str, Any] = {}
 
-        # X limit mode
-        _x_init_mode = cur_x_lim[0] if cur_x_lim else 'auto'
-        _x_init_lo   = str(cur_x_lim[1]) if cur_x_lim and cur_x_lim[1] is not None else ''
-        _x_init_hi   = str(cur_x_lim[2]) if cur_x_lim and cur_x_lim[2] is not None else ''
+        # ---- Axes tab ------------------------------------------------
+        row = 0
+        for axis, name in (("x", "X"), ("y", "Y")):
+            if axis == "y":
+                ttk.Separator(axes_tab, orient="horizontal").grid(
+                    row=row, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+                row += 1
+            prop_var = tk.StringVar(value=_label_for(current[f"{axis}_prop"], labels[0]))
+            ttk.Label(axes_tab, text=f"{name} axis:").grid(row=row, column=0, sticky="w", **pad)
+            ttk.Combobox(axes_tab, textvariable=prop_var, values=labels,
+                         state="readonly", width=38).grid(
+                row=row, column=1, columnspan=3, sticky="ew", **pad)
 
-        x_mode_var = tk.StringVar(value=_x_init_mode)
-        tk.Label(win, text="X limits:").grid(row=2, column=0, sticky="w", **pad_tight)
-        x_mode_frame = tk.Frame(win)
-        x_mode_frame.grid(row=2, column=1, columnspan=3, sticky="w", **pad_tight)
-        for _mode, _label in [('auto', 'Auto'), ('exact', 'Exact values'), ('percentile', 'Percentile')]:
-            tk.Radiobutton(x_mode_frame, text=_label, variable=x_mode_var,
-                           value=_mode).pack(side='left', padx=4)
+            log_var = tk.BooleanVar(value=bool(current[f"{axis}_log"]))
+            log_chk = ttk.Checkbutton(axes_tab, text=f"Log scale ({name})", variable=log_var)
+            log_chk.grid(row=row + 1, column=0, columnspan=4, sticky="w", **pad)
 
-        x_lo_var = tk.StringVar(value=_x_init_lo)
-        x_hi_var = tk.StringVar(value=_x_init_hi)
-        x_lim_frame = tk.Frame(win)
-        x_lim_frame.grid(row=3, column=0, columnspan=4, sticky="ew", padx=16, pady=1)
-        tk.Label(x_lim_frame, text="Min:").pack(side='left')
-        tk.Entry(x_lim_frame, textvariable=x_lo_var, width=10).pack(side='left', padx=4)
-        tk.Label(x_lim_frame, text="Max:").pack(side='left', padx=(8, 0))
-        tk.Entry(x_lim_frame, textvariable=x_hi_var, width=10).pack(side='left', padx=4)
-        tk.Label(x_lim_frame, text="(leave blank = auto for that bound)",
-                 fg='grey').pack(side='left', padx=8)
+            lim = current[f"{axis}_lim"]
+            mode_var = tk.StringVar(value=lim[0] if lim else "auto")
+            lo_var = tk.StringVar(value=_fmt(lim[1]) if lim else "")
+            hi_var = tk.StringVar(value=_fmt(lim[2]) if lim else "")
+            ttk.Label(axes_tab, text=f"{name} limits:").grid(
+                row=row + 2, column=0, sticky="w", **pad_tight)
+            mode_frame = ttk.Frame(axes_tab)
+            mode_frame.grid(row=row + 2, column=1, columnspan=3, sticky="w", **pad_tight)
+            for mode, text in (("auto", "Auto"), ("exact", "Exact values"),
+                               ("percentile", "Percentile")):
+                ttk.Radiobutton(mode_frame, text=text, variable=mode_var,
+                                value=mode).pack(side="left", padx=4)
 
-        def _toggle_x_lim_frame(*_):
-            if x_mode_var.get() == 'auto':
-                for w in x_lim_frame.winfo_children():
-                    w.configure(state='disabled') if hasattr(w, 'configure') else None
-            else:
-                for w in x_lim_frame.winfo_children():
-                    try:
-                        w.configure(state='normal')
-                    except Exception:
-                        pass
-        x_mode_var.trace_add('write', _toggle_x_lim_frame)
-        _toggle_x_lim_frame()
+            lim_frame = ttk.Frame(axes_tab)
+            lim_frame.grid(row=row + 3, column=0, columnspan=4, sticky="ew", padx=16, pady=1)
+            ttk.Label(lim_frame, text="Min:").pack(side="left")
+            lo_entry = ttk.Entry(lim_frame, textvariable=lo_var, width=10)
+            lo_entry.pack(side="left", padx=4)
+            ttk.Label(lim_frame, text="Max:").pack(side="left", padx=(8, 0))
+            hi_entry = ttk.Entry(lim_frame, textvariable=hi_var, width=10)
+            hi_entry.pack(side="left", padx=4)
+            ttk.Label(lim_frame, text="(leave blank = auto for that bound)",
+                      foreground="grey").pack(side="left", padx=8)
 
-        ttk.Separator(win, orient="horizontal").grid(
-            row=4, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+            def _sync_axis(*_, pv=prop_var, chk=log_chk, mv=mode_var,
+                           bounds=(lo_entry, hi_entry)):
+                # A category axis is always linear.
+                _set_state([chk], _kind(pv.get()) != "categorical")
+                _set_state(bounds, mv.get() != "auto")
 
-        # ---- Y axis --------------------------------------------------
-        tk.Label(win, text="Y axis:").grid(row=5, column=0, sticky="w", **pad)
-        y_var = tk.StringVar(value=AXIS_LABELS[init_y_idx])
-        ttk.Combobox(win, textvariable=y_var, values=AXIS_LABELS,
-                     state="readonly", width=38).grid(row=5, column=1, columnspan=3, sticky="ew", **pad)
+            prop_var.trace_add("write", _sync_axis)
+            mode_var.trace_add("write", _sync_axis)
+            _sync_axis()
 
-        y_log_var = tk.BooleanVar(value=cur_y_log)
-        tk.Checkbutton(win, text="Log scale (Y)",
-                       variable=y_log_var).grid(row=6, column=0, columnspan=4,
-                                                sticky="w", **pad)
+            form.update({
+                f"{axis}_prop": prop_var, f"{axis}_log": log_var,
+                f"{axis}_lim_mode": mode_var, f"{axis}_lim_lo": lo_var,
+                f"{axis}_lim_hi": hi_var,
+            })
+            row += 4
 
-        # Y limit mode
-        _y_init_mode = cur_y_lim[0] if cur_y_lim else 'auto'
-        _y_init_lo   = str(cur_y_lim[1]) if cur_y_lim and cur_y_lim[1] is not None else ''
-        _y_init_hi   = str(cur_y_lim[2]) if cur_y_lim and cur_y_lim[2] is not None else ''
+        ttk.Label(axes_tab, text="Categorical properties (labels, band, molecule) "
+                                 "are drawn as a category axis.",
+                  foreground="grey").grid(row=row, column=0, columnspan=4, sticky="w", **pad)
 
-        y_mode_var = tk.StringVar(value=_y_init_mode)
-        tk.Label(win, text="Y limits:").grid(row=7, column=0, sticky="w", **pad_tight)
-        y_mode_frame = tk.Frame(win)
-        y_mode_frame.grid(row=7, column=1, columnspan=3, sticky="w", **pad_tight)
-        for _mode, _label in [('auto', 'Auto'), ('exact', 'Exact values'), ('percentile', 'Percentile')]:
-            tk.Radiobutton(y_mode_frame, text=_label, variable=y_mode_var,
-                           value=_mode).pack(side='left', padx=4)
+        # ---- Color tab -----------------------------------------------
+        color = current.get("color") or {}
+        color_var = tk.StringVar(value=_label_for(color.get("prop"), NONE_LABEL))
+        ttk.Label(color_tab, text="Color by:").grid(row=0, column=0, sticky="w", **pad)
+        color_combo = ttk.Combobox(color_tab, textvariable=color_var,
+                                   values=[NONE_LABEL] + labels, state="readonly", width=38)
+        color_combo.grid(row=0, column=1, sticky="ew", **pad)
 
-        y_lo_var = tk.StringVar(value=_y_init_lo)
-        y_hi_var = tk.StringVar(value=_y_init_hi)
-        y_lim_frame = tk.Frame(win)
-        y_lim_frame.grid(row=8, column=0, columnspan=4, sticky="ew", padx=16, pady=1)
-        tk.Label(y_lim_frame, text="Min:").pack(side='left')
-        tk.Entry(y_lim_frame, textvariable=y_lo_var, width=10).pack(side='left', padx=4)
-        tk.Label(y_lim_frame, text="Max:").pack(side='left', padx=(8, 0))
-        tk.Entry(y_lim_frame, textvariable=y_hi_var, width=10).pack(side='left', padx=4)
-        tk.Label(y_lim_frame, text="(leave blank = auto for that bound)",
-                 fg='grey').pack(side='left', padx=8)
+        cmap_var = tk.StringVar(value=color.get("cmap") or "viridis")
+        ttk.Label(color_tab, text="Colormap:").grid(row=1, column=0, sticky="w", **pad)
+        cmap_combo = ttk.Combobox(color_tab, textvariable=cmap_var, values=CMAP_OPTIONS,
+                                  state="normal", width=20)
+        cmap_combo.grid(row=1, column=1, sticky="w", **pad)
 
-        def _toggle_y_lim_frame(*_):
-            if y_mode_var.get() == 'auto':
-                for w in y_lim_frame.winfo_children():
-                    try:
-                        w.configure(state='disabled')
-                    except Exception:
-                        pass
-            else:
-                for w in y_lim_frame.winfo_children():
-                    try:
-                        w.configure(state='normal')
-                    except Exception:
-                        pass
-        y_mode_var.trace_add('write', _toggle_y_lim_frame)
-        _toggle_y_lim_frame()
+        vmin_var = tk.StringVar(value=_fmt(color.get("vmin")))
+        vmax_var = tk.StringVar(value=_fmt(color.get("vmax")))
+        ttk.Label(color_tab, text="vmin (optional):").grid(row=2, column=0, sticky="w", **pad)
+        vmin_entry = ttk.Entry(color_tab, textvariable=vmin_var, width=12)
+        vmin_entry.grid(row=2, column=1, sticky="w", **pad)
+        ttk.Label(color_tab, text="vmax (optional):").grid(row=3, column=0, sticky="w", **pad)
+        vmax_entry = ttk.Entry(color_tab, textvariable=vmax_var, width=12)
+        vmax_entry.grid(row=3, column=1, sticky="w", **pad)
 
-        # ---- Marker shape by ----------------------------------------
-        ttk.Separator(win, orient="horizontal").grid(
-            row=9, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        ttk.Separator(color_tab, orient="horizontal").grid(
+            row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=2)
+        ttk.Label(color_tab, text="\u2014 or clip by percentile (overrides vmin/vmax) \u2014",
+                  foreground="gray").grid(row=5, column=0, columnspan=2, **pad)
 
-        cur_shape_mapping = getattr(pdp, '_shape_mapping', None) if pdp else None
-        cur_shape_prop = cur_shape_mapping["prop"] if cur_shape_mapping else None
-        cur_shape_bins = int(cur_shape_mapping.get("n_bins", 5)) if cur_shape_mapping else 5
+        pmin_var = tk.StringVar(value=_fmt(color.get("pmin")))
+        pmax_var = tk.StringVar(value=_fmt(color.get("pmax")))
+        ttk.Label(color_tab, text="Min percentile % (optional):").grid(
+            row=6, column=0, sticky="w", **pad)
+        pmin_spin = ttk.Spinbox(color_tab, from_=0, to=100, increment=1,
+                                textvariable=pmin_var, width=8)
+        pmin_spin.grid(row=6, column=1, sticky="w", **pad)
+        ttk.Label(color_tab, text="Max percentile % (optional):").grid(
+            row=7, column=0, sticky="w", **pad)
+        pmax_spin = ttk.Spinbox(color_tab, from_=0, to=100, increment=1,
+                                textvariable=pmax_var, width=8)
+        pmax_spin.grid(row=7, column=1, sticky="w", **pad)
 
-        shape_labels = ["None"] + AXIS_LABELS
-        shape_values = [None] + AXIS_VALUES
-        init_shape_label = "None"
-        if cur_shape_prop is not None and cur_shape_prop in AXIS_VALUES:
-            init_shape_label = AXIS_LABELS[AXIS_VALUES.index(cur_shape_prop)]
+        color_log_var = tk.BooleanVar(value=bool(color.get("log_scale", False)))
+        color_log_chk = ttk.Checkbutton(color_tab, text="Log scale colorbar",
+                                        variable=color_log_var)
+        color_log_chk.grid(row=8, column=0, columnspan=2, sticky="w", **pad)
 
-        tk.Label(win, text="Marker shape by:").grid(row=10, column=0, sticky="w", **pad)
-        shape_var = tk.StringVar(value=init_shape_label)
-        shape_combo = ttk.Combobox(win, textvariable=shape_var, values=shape_labels,
-                                   state="readonly", width=38)
-        shape_combo.grid(row=10, column=1, columnspan=3, sticky="ew", **pad)
+        def _sync_color(*_):
+            kind = _kind(color_var.get())
+            _set_state([cmap_combo], kind is not None)
+            # Value limits and log scaling only apply to a continuous colormap.
+            _set_state([vmin_entry, vmax_entry, pmin_spin, pmax_spin, color_log_chk],
+                       kind == "continuous")
 
-        bins_frame = tk.Frame(win)
-        bins_frame.grid(row=11, column=0, columnspan=4, sticky="w", **pad_tight)
-        tk.Label(bins_frame, text="Bins (continuous properties):").pack(side="left")
-        shape_bins_var = tk.IntVar(value=cur_shape_bins)
-        bins_spin = tk.Spinbox(bins_frame, from_=2, to=10, increment=1,
-                               textvariable=shape_bins_var, width=5)
-        bins_spin.pack(side="left", padx=4)
+        def _on_color_selected(*_):
+            key = label_to_key.get(color_var.get())
+            if key is not None:
+                color_log_var.set(_Reg.suggests_log(key))
+            _sync_color()
 
-        def _toggle_bins(*_):
-            sel = shape_var.get()
-            if sel == "None":
-                bins_spin.configure(state="disabled")
-            else:
-                prop_key = shape_values[shape_labels.index(sel)]
-                from iSLAT.Modules.DataTypes.PlotAxisRegistry import PlotAxisRegistry as _R2
-                kind = _R2.get_kind(prop_key) if prop_key else "continuous"
-                bins_spin.configure(state="disabled" if kind == "categorical" else "normal")
+        color_combo.bind("<<ComboboxSelected>>", _on_color_selected)
+        _sync_color()
 
-        shape_var.trace_add('write', _toggle_bins)
-        _toggle_bins()
+        form.update({
+            "color_prop": color_var, "cmap": cmap_var, "vmin": vmin_var,
+            "vmax": vmax_var, "pmin": pmin_var, "pmax": pmax_var,
+            "color_log": color_log_var,
+        })
 
-        # ---- Marker size override -----------------------------------
-        ttk.Separator(win, orient="horizontal").grid(
-            row=12, column=0, columnspan=4, sticky="ew", padx=8, pady=4)
+        # ---- Markers tab ---------------------------------------------
+        shape = current.get("shape") or {}
+        shape_var = tk.StringVar(value=_label_for(shape.get("prop"), NONE_LABEL))
+        ttk.Label(markers_tab, text="Marker shape by:").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Combobox(markers_tab, textvariable=shape_var, values=[NONE_LABEL] + labels,
+                     state="readonly", width=38).grid(row=0, column=1, sticky="ew", **pad)
 
-        cur_marker_size = getattr(pdp, '_marker_size', None) if pdp else None
-        init_size_str = str(int(cur_marker_size)) if cur_marker_size is not None else ""
+        shape_bins_var = tk.StringVar(value=str(int(shape.get("n_bins", 5))))
+        ttk.Label(markers_tab, text="Bins (continuous properties):").grid(
+            row=1, column=0, sticky="w", **pad)
+        bins_spin = ttk.Spinbox(markers_tab, from_=2, to=10, increment=1,
+                                textvariable=shape_bins_var, width=5)
+        bins_spin.grid(row=1, column=1, sticky="w", **pad)
 
-        size_frame = tk.Frame(win)
-        size_frame.grid(row=13, column=0, columnspan=4, sticky="w", **pad_tight)
-        tk.Label(size_frame, text="Marker size (pt\u00b2, blank = auto):").pack(side="left")
-        marker_size_var = tk.StringVar(value=init_size_str)
-        tk.Entry(size_frame, textvariable=marker_size_var, width=7).pack(side="left", padx=4)
+        def _sync_shape(*_):
+            _set_state([bins_spin], _kind(shape_var.get()) == "continuous")
 
-        btn_frame = tk.Frame(win)
-        btn_frame.grid(row=14, column=0, columnspan=4, pady=8)
+        shape_var.trace_add("write", _sync_shape)
+        _sync_shape()
 
-        def _parse_lim(mode_var, lo_var, hi_var):
-            """Return None (auto) or a (mode, lo, hi) tuple."""
-            mode = mode_var.get()
-            if mode == 'auto':
-                return None
-            def _val(s):
-                s = s.strip()
-                return float(s) if s else None
-            return (mode, _val(lo_var.get()), _val(hi_var.get()))
+        ttk.Separator(markers_tab, orient="horizontal").grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
+        size_var = tk.StringVar(value=_fmt(current.get("marker_size")))
+        ttk.Label(markers_tab, text="Marker size (pt\u00b2, blank = auto):").grid(
+            row=3, column=0, sticky="w", **pad)
+        ttk.Entry(markers_tab, textvariable=size_var, width=7).grid(
+            row=3, column=1, sticky="w", **pad)
 
-        def _apply():
-            x_label = x_var.get()
-            y_label = y_var.get()
-            if x_label not in AXIS_LABELS or y_label not in AXIS_LABELS:
+        form.update({"shape_prop": shape_var, "shape_bins": shape_bins_var,
+                     "marker_size": size_var})
+
+        # ---- Buttons -------------------------------------------------
+        status = ttk.Label(win, text="", foreground="red")
+        status.pack(fill="x", padx=12)
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(pady=(2, 8))
+
+        def _apply(*_):
+            values = {name: var.get() for name, var in form.items()}
+            try:
+                settings = parse_plot_settings(values, label_to_key)
+            except ValueError as exc:
+                status.configure(text=str(exc))
                 return
-            x_prop = AXIS_VALUES[AXIS_LABELS.index(x_label)]
-            y_prop = AXIS_VALUES[AXIS_LABELS.index(y_label)]
             if pdp is not None:
-                pdp.set_axes(
-                    x_prop=x_prop, y_prop=y_prop,
-                    x_log=x_log_var.get(), y_log=y_log_var.get(),
-                    x_lim=_parse_lim(x_mode_var, x_lo_var, x_hi_var),
-                    y_lim=_parse_lim(y_mode_var, y_lo_var, y_hi_var),
-                    regenerate=False,
-                )
-                # Apply shape mapping before triggering regeneration
-                shape_sel = shape_var.get()
-                if shape_sel == "None":
-                    pdp.clear_shape_mapping(regenerate=False)
-                else:
-                    shape_prop = shape_values[shape_labels.index(shape_sel)]
-                    pdp.shape_by(shape_prop, n_bins=shape_bins_var.get(), regenerate=False)
-                # Apply marker size override
-                _sz_str = marker_size_var.get().strip()
-                if _sz_str:
-                    try:
-                        pdp.set_marker_size(float(_sz_str), regenerate=False)
-                    except ValueError:
-                        pass
-                else:
-                    pdp.clear_marker_size(regenerate=False)
-                pdp.generate_plot()
+                apply_plot_settings(pdp, settings)
                 draw_idle()
             win.destroy()
 
         def _reset():
             if pdp is not None:
-                pdp.clear_shape_mapping(regenerate=False)
-                pdp.clear_marker_size(regenerate=False)
-                pdp.set_axes(regenerate=True)
+                apply_plot_settings(pdp, DEFAULT_PLOT_SETTINGS)
                 draw_idle()
             win.destroy()
 
-        def _cancel():
-            win.destroy()
+        ttk.Button(btn_frame, text="Apply", command=_apply).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Reset Defaults", command=_reset).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=4)
 
-        ttk.Button(btn_frame, text="Apply",          command=_apply).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Reset Defaults",  command=_reset).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Cancel",          command=_cancel).pack(side="left", padx=4)
+        tabs = {"axes": axes_tab, "color": color_tab, "markers": markers_tab}
+        notebook.select(tabs.get(initial_tab, axes_tab))
 
-        win.bind("<Return>", lambda _e: _apply())
-        win.bind("<Escape>", lambda _e: _cancel())
+        win.bind("<Return>", _apply)
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+
+# ======================================================================
+# Plot settings: the state the Plot Settings dialog edits
+# ======================================================================
+#: Label of the "no mapping" choice in the Color / Marker shape menus.
+NONE_LABEL = "None"
+
+#: Colormaps offered in the Color tab (any matplotlib name may be typed).
+CMAP_OPTIONS = [
+    "viridis", "plasma", "inferno", "magma", "cividis",
+    "coolwarm", "RdYlBu", "Spectral", "tab10", "tab20",
+]
+
+#: The diagram's settings when nothing has been changed.
+DEFAULT_PLOT_SETTINGS: Dict[str, Any] = {
+    "x_prop": "eu", "y_prop": "rd_yax",
+    "x_log": False, "y_log": False,
+    "x_lim": None, "y_lim": None,
+    "color": None, "shape": None, "marker_size": None,
+}
+
+
+def capture_plot_settings(pdp: Any) -> Dict[str, Any]:
+    """Return *pdp*'s user-adjustable settings (defaults when *pdp* is ``None``).
+
+    ``color`` / ``shape`` are copies of the plot's color / shape mapping
+    dicts, or ``None`` when that mapping is off.
+    """
+    if pdp is None:
+        return dict(DEFAULT_PLOT_SETTINGS)
+    color = getattr(pdp, "_color_mapping", None)
+    shape = getattr(pdp, "_shape_mapping", None)
+    return {
+        "x_prop": getattr(pdp, "_x_prop", "eu"),
+        "y_prop": getattr(pdp, "_y_prop", "rd_yax"),
+        "x_log": bool(getattr(pdp, "_x_log", False)),
+        "y_log": bool(getattr(pdp, "_y_log", False)),
+        "x_lim": getattr(pdp, "_x_lim", None),
+        "y_lim": getattr(pdp, "_y_lim", None),
+        "color": dict(color) if color else None,
+        "shape": dict(shape) if shape else None,
+        "marker_size": getattr(pdp, "_marker_size", None),
+    }
+
+
+def parse_plot_settings(values: Mapping[str, Any],
+                        label_to_key: Mapping[str, str]) -> Dict[str, Any]:
+    """Turn the Plot Settings form *values* into a settings dict.
+
+    *values* maps the form field names to their widget values (property
+    menus hold display labels); *label_to_key* maps those labels to
+    property keys.  Raises :class:`ValueError` with a user-facing message
+    when a field is invalid.
+    """
+    def _number(field: str, what: str) -> Optional[float]:
+        text = str(values.get(field, "") or "").strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            raise ValueError(f"{what} must be a number (got {text!r}).") from None
+
+    def _prop(field: str, what: str, allow_none: bool) -> Optional[str]:
+        label = str(values.get(field, "") or "")
+        if allow_none and label in ("", NONE_LABEL):
+            return None
+        if label not in label_to_key:
+            raise ValueError(f"Choose a property for {what}.")
+        return label_to_key[label]
+
+    settings: Dict[str, Any] = {}
+    for axis, name in (("x", "X"), ("y", "Y")):
+        settings[f"{axis}_prop"] = _prop(f"{axis}_prop", f"the {name} axis", False)
+        settings[f"{axis}_log"] = bool(values.get(f"{axis}_log", False))
+        mode = str(values.get(f"{axis}_lim_mode", "auto") or "auto")
+        if mode == "auto":
+            settings[f"{axis}_lim"] = None
+        else:
+            lo = _number(f"{axis}_lim_lo", f"{name} min")
+            hi = _number(f"{axis}_lim_hi", f"{name} max")
+            if mode == "percentile" and any(b is not None and not 0 <= b <= 100
+                                            for b in (lo, hi)):
+                raise ValueError(f"{name} percentile limits must be between 0 and 100.")
+            if lo is not None and hi is not None and lo >= hi:
+                raise ValueError(f"{name} min must be less than {name} max.")
+            settings[f"{axis}_lim"] = (mode, lo, hi)
+
+    color_prop = _prop("color_prop", "Color by", True)
+    if color_prop is None:
+        settings["color"] = None
+    else:
+        pmin = _number("pmin", "Min percentile")
+        pmax = _number("pmax", "Max percentile")
+        settings["color"] = {
+            "prop": color_prop,
+            "cmap": str(values.get("cmap", "") or "").strip() or "viridis",
+            "vmin": _number("vmin", "vmin"),
+            "vmax": _number("vmax", "vmax"),
+            "pmin": None if pmin is None else max(0.0, min(100.0, pmin)),
+            "pmax": None if pmax is None else max(0.0, min(100.0, pmax)),
+            "log_scale": bool(values.get("color_log", False)),
+        }
+
+    shape_prop = _prop("shape_prop", "Marker shape", True)
+    if shape_prop is None:
+        settings["shape"] = None
+    else:
+        bins = _number("shape_bins", "Bins")
+        settings["shape"] = {"prop": shape_prop,
+                             "n_bins": int(bins) if bins is not None else 5}
+
+    size = _number("marker_size", "Marker size")
+    if size is not None and size <= 0:
+        raise ValueError("Marker size must be greater than 0.")
+    settings["marker_size"] = size
+    return settings
+
+
+def apply_plot_settings(pdp: Any, settings: Mapping[str, Any], *,
+                        regenerate: bool = True) -> None:
+    """Apply a settings dict (see :func:`capture_plot_settings`) to *pdp* in one redraw."""
+    pdp.set_axes(
+        x_prop=settings.get("x_prop") or "eu",
+        y_prop=settings.get("y_prop") or "rd_yax",
+        x_log=bool(settings.get("x_log", False)),
+        y_log=bool(settings.get("y_log", False)),
+        x_lim=settings.get("x_lim"),
+        y_lim=settings.get("y_lim"),
+        regenerate=False,
+    )
+    color = settings.get("color")
+    if color:
+        pdp.color_by(
+            color["prop"],
+            cmap=color.get("cmap") or "viridis",
+            vmin=color.get("vmin"), vmax=color.get("vmax"),
+            pmin=color.get("pmin"), pmax=color.get("pmax"),
+            log_scale=bool(color.get("log_scale", False)),
+            regenerate=False,
+        )
+    else:
+        pdp.clear_color_mapping(regenerate=False)
+    shape = settings.get("shape")
+    if shape:
+        pdp.shape_by(shape["prop"], n_bins=int(shape.get("n_bins", 5)), regenerate=False)
+    else:
+        pdp.clear_shape_mapping(regenerate=False)
+    size = settings.get("marker_size")
+    if size is None:
+        pdp.clear_marker_size(regenerate=False)
+    else:
+        pdp.set_marker_size(float(size), regenerate=False)
+    if regenerate:
+        pdp.generate_plot()

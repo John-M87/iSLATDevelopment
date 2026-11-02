@@ -65,9 +65,9 @@ def test_catalog_offers_only_properties_that_are_not_already_columns():
     assert {s.kind for s in catalog} <= ADDABLE_KINDS
     keys = [s.key for s in catalog]
     assert 'velocity_sep' in keys and 'vib_band' in keys
-    assert 'qn:upper:J' in keys and 'qn:lower:Ka' in keys
+    assert 'qn_upper:J' in keys and 'qn_lower:Ka' in keys
     # Already columns of the table, so never offered again.
-    for key in ('lam', 'e_up', 'a_stein', 'label:upper', 'species'):
+    for key in ('wavelength', 'eu', 'a_stein', 'lev_up', 'molecule'):
         assert key not in keys
 
 
@@ -82,7 +82,7 @@ def test_catalog_offers_model_quantities_only_with_a_derived_source():
 def test_catalog_without_species_has_no_quantum_fields():
     df = _h2o_frame().drop(columns=['species'])
     keys = [s.key for s in LineListColumnSource().catalog(df)]
-    assert not [k for k in keys if k.startswith('qn:')]
+    assert not [k for k in keys if k.startswith('qn_')]
     assert 'vib_band' in keys
 
 
@@ -99,7 +99,7 @@ def test_explicit_species_overrides_the_species_column():
     df = _h2o_frame()
     src = LineListColumnSource(species='CO')
     assert src.species_for(df) == 'CO'
-    assert 'qn:upper:Ka' not in [s.key for s in src.catalog(df)]
+    assert 'qn_upper:Ka' not in [s.key for s in src.catalog(df)]
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +109,11 @@ def test_explicit_species_overrides_the_species_column():
 def test_quantum_field_column_matches_filter_semantics():
     df = _h2o_frame()
     src = LineListColumnSource()
-    values, errors = src.compute(df, _specs(src, df, 'qn:upper:J'))
+    values, errors = src.compute(df, _specs(src, df, 'qn_upper:J'))
     assert errors == {}
-    assert values['qn:upper:J'] == ['9', '7', '10', '']   # unparsed -> blank
+    assert values['qn_upper:J'] == ['9', '7', '10', '']   # unparsed -> blank
     ctx = MaskContext(species='H2O')
-    for row, shown in enumerate(values['qn:upper:J']):
+    for row, shown in enumerate(values['qn_upper:J']):
         if not shown:
             continue
         mask = condition_mask(df, Condition('quantum_field', field='J',
@@ -169,10 +169,10 @@ def test_reindexed_subset_is_refused_rather_than_misread():
     subset = base.iloc[[2, 3]].reset_index(drop=True)   # labels 0,1 exist in base
     src = LineListColumnSource(baseline_source=lambda: base)
     values, errors = src.compute(subset, _specs(src, subset, 'velocity_sep',
-                                                'qn:upper:J'))
+                                                'qn_upper:J'))
     assert 'velocity_sep' in errors and 'velocity_sep' not in values
     # Row-local properties need no baseline and still work.
-    assert values['qn:upper:J'] == ['10', '']
+    assert values['qn_upper:J'] == ['10', '']
 
 
 def test_model_quantities_are_read_back_for_the_displayed_rows():
@@ -210,8 +210,8 @@ def test_model_quantity_failure_is_reported_per_column():
 def test_compute_on_an_empty_frame():
     df = _h2o_frame().iloc[0:0]
     src = LineListColumnSource(species='H2O')   # nothing to infer it from
-    values, errors = src.compute(df, _specs(src, df, 'qn:upper:J', 'vib_band'))
-    assert values == {'qn:upper:J': [], 'vib_band': []} and errors == {}
+    values, errors = src.compute(df, _specs(src, df, 'qn_upper:J', 'vib_band'))
+    assert values == {'qn_upper:J': [], 'vib_band': []} and errors == {}
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def _cells(view, title):
 def test_add_and_remove_a_column(tk_root):
     view, _ = _open(tk_root, _h2o_frame())
     base = list(view._columns)
-    assert view.add_column('qn:upper:J')
+    assert view.add_column('qn_upper:J')
     assert view._columns == base + ['J (upper)']
     assert [str(c) for c in _cells(view, 'J (upper)')] == ['9', '7', '10', '']
     assert all(len(r) == len(view._columns) for r in view._all_rows)
@@ -338,7 +338,7 @@ def test_added_columns_survive_a_live_refresh_with_search_and_sort(tk_root):
 def test_remove_all_added_columns(tk_root):
     view, _ = _open(tk_root, _h2o_frame())
     base = list(view._columns)
-    for key in ('vib_band', 'velocity_sep', 'qn:lower:J'):
+    for key in ('vib_band', 'velocity_sep', 'qn_lower:J'):
         assert view.add_column(key)
     view._remove_all_columns()
     assert view._columns == base and not view._added
@@ -444,7 +444,7 @@ def test_molecule_view_adds_model_quantities(tk_root, co_molecule):
     from iSLAT.Modules.GUI.Widgets.LineListViewWindow import LineListViewWindow
     view = LineListViewWindow(tk_root, co_molecule)
     view.withdraw()
-    assert view.add_column('intens') and view.add_column('qn:lower:J')
+    assert view.add_column('intens') and view.add_column('qn_lower:J')
     data = co_molecule.intensity.get_population_diagram_data(
         co_molecule.radius, co_molecule.distance, molecule=co_molecule,
         full_range=False)

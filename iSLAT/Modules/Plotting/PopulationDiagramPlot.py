@@ -10,6 +10,7 @@ Can be used standalone (notebook / script) or embedded in a GUI layout.
 """
 from __future__ import annotations
 
+import re
 import weakref
 from typing import (
     Optional, Tuple, List, Dict, Any, Sequence, Union, TYPE_CHECKING,
@@ -40,6 +41,36 @@ _DEFAULT_COLORS: List[str] = [
 
 # Marker cycle for shape-by encoding
 _DEFAULT_MARKERS: List[str] = ["o", "s", "^", "D", "v", "<", ">", "p", "h", "*"]
+
+#: Label shown for a categorical value that is missing / unparsed.
+_MISSING_LABEL = "(none)"
+
+#: Most tick labels drawn on a category axis; denser axes label every n-th.
+_MAX_CATEGORY_TICKS = 40
+
+
+def _is_missing_label(value: Any) -> bool:
+    """True for a categorical value that carries no label."""
+    if value is None:
+        return True
+    if isinstance(value, float) and np.isnan(value):
+        return True
+    text = str(value).strip()
+    return text == "" or text.lower() in ("nan", "none")
+
+
+def _natural_key(label: str) -> List[Tuple[int, Any]]:
+    """Sort key ordering embedded numbers numerically ("v2-1" < "v10-0")."""
+    return [(1, float(tok)) if tok[0].isdigit() else (0, tok.lower())
+            for tok in re.split(r"(\d+(?:\.\d+)?)", str(label)) if tok]
+
+
+def _label_strings(values: Any) -> np.ndarray:
+    """Categorical *values* as display strings, missing ones as ``"(none)"``."""
+    return np.asarray(
+        [_MISSING_LABEL if _is_missing_label(v) else str(v) for v in values],
+        dtype=object,
+    )
 
 class PopulationDiagramPlot(BasePlot):
     """
@@ -161,6 +192,10 @@ class PopulationDiagramPlot(BasePlot):
         self._shape_mapping: Optional[Dict[str, Any]] = None
         # Fixed marker size override (None = use per-mode default)
         self._marker_size: Optional[float] = None
+        # Category order of each categorical X / Y property (set per render)
+        self._axis_categories: Dict[str, List[str]] = {}
+        self._axis_category_index: Dict[str, Dict[str, int]] = {}
+        self._encoded_axis_cache: Dict[Tuple[int, str], np.ndarray] = {}
 
     # ------------------------------------------------------------------
     # Public properties
@@ -309,18 +344,9 @@ class PopulationDiagramPlot(BasePlot):
                 "fwhm_instrumental_kms": info.get("fwhm_instrumental_kms"),
                 "fwhm_convolved_kms":    info.get("fwhm_convolved_kms"),
             }
-            xv = _LINE_MAP.get(self._x_prop)
-            if xv is None:
-                xv = _AxisReg.resolve_scalar(self._x_prop, line, _mol_id)
-            yv = _LINE_MAP.get(self._y_prop)
-            if yv is None:
-                yv = _AxisReg.resolve_scalar(self._y_prop, line, _mol_id)
-            try:
-                xv = float(xv) if xv is not None else None
-                yv = float(yv) if yv is not None else None
-            except (TypeError, ValueError):
-                xv = yv = None
-            if xv is None or yv is None or np.isnan(xv) or np.isnan(yv):
+            xv = self._scalar_axis_value(self._x_prop, line, _mol_id, mol_name, _LINE_MAP)
+            yv = self._scalar_axis_value(self._y_prop, line, _mol_id, mol_name, _LINE_MAP)
+            if xv is None or yv is None:
                 continue  # no scatter point for this line
 
             x_vals.append(xv)
@@ -415,19 +441,25 @@ class PopulationDiagramPlot(BasePlot):
 
         # ---- Compute population-diagram values for each component ----
         self._component_data = []
-        all_valid_x: List[np.ndarray] = []
-        all_valid_y: List[np.ndarray] = []
-
+        self._encoded_axis_cache = {}
         for comp in components:
             cdata = self._compute_component(comp)
             if cdata is not None:
                 self._component_data.append(cdata)
-                mask = cdata["valid_mask"]
-                x_arr = self._get_axis_array(cdata, self._x_prop)
-                y_arr = self._get_axis_array(cdata, self._y_prop)
-                if np.any(mask) and x_arr is not None and y_arr is not None:
-                    all_valid_x.append(x_arr[mask])
-                    all_valid_y.append(y_arr[mask])
+
+        # Categorical X / Y properties become category axes; their order
+        # must be known before any point position is computed.
+        self._update_axis_categories()
+
+        all_valid_x: List[np.ndarray] = []
+        all_valid_y: List[np.ndarray] = []
+        for cdata in self._component_data:
+            mask = cdata["valid_mask"]
+            x_arr = self._get_axis_array(cdata, self._x_prop)
+            y_arr = self._get_axis_array(cdata, self._y_prop)
+            if np.any(mask) and x_arr is not None and y_arr is not None:
+                all_valid_x.append(x_arr[mask])
+                all_valid_y.append(y_arr[mask])
 
         if not self._component_data:
             title = components[0]["name"] if components else "Unknown"
@@ -461,10 +493,16 @@ class PopulationDiagramPlot(BasePlot):
         all_x_data = np.concatenate([a for a in _all_x_arrs if a is not None]) if any(a is not None for a in _all_x_arrs) else cat_valid_x
         all_y_data = np.concatenate([a for a in _all_y_arrs if a is not None]) if any(a is not None for a in _all_y_arrs) else cat_valid_y
 
+        # A category axis is always linear: its positions are category indices.
+        x_categories = self._categories_for(self._x_prop)
+        y_categories = self._categories_for(self._y_prop)
+        x_log = self._x_log and x_categories is None
+        y_log = self._y_log and y_categories is None
+
         # Set scale BEFORE computing limits so matplotlib never receives
         # non-positive limits on a log axis (which causes the squish bug).
-        ax.set_xscale("log" if self._x_log else "linear")
-        ax.set_yscale("log" if self._y_log else "linear")
+        ax.set_xscale("log" if x_log else "linear")
+        ax.set_yscale("log" if y_log else "linear")
 
         def _finite(arr: np.ndarray) -> np.ndarray:
             """Return only finite (non-NaN, non-Inf) values."""
@@ -472,7 +510,7 @@ class PopulationDiagramPlot(BasePlot):
 
         # For log axes restrict the data used for limit computation to
         # strictly positive values; fall back to auto-limits if none exist.
-        if self._x_log:
+        if x_log:
             pos_x = _finite(cat_valid_x[cat_valid_x > 0])
             pos_all_x = _finite(all_x_data[all_x_data > 0])
             if len(pos_x) == 0 or len(pos_all_x) == 0:
@@ -495,7 +533,7 @@ class PopulationDiagramPlot(BasePlot):
                 _xpad = _xr * 0.05 if _xr > 0 else max(abs(np.nanmin(_fx_all)) * 0.05, 1)
                 ax.set_xlim(np.nanmin(_fx_all) - _xpad, np.nanmax(_fx_valid) + _xpad)
 
-        if self._y_log:
+        if y_log:
             pos_y = _finite(cat_valid_y[cat_valid_y > 0])
             pos_all_y = _finite(all_y_data[all_y_data > 0])
             if len(pos_y) == 0 or len(pos_all_y) == 0:
@@ -520,6 +558,10 @@ class PopulationDiagramPlot(BasePlot):
 
         ax.set_ylabel(self._get_axis_label(self._y_prop), color=fg, labelpad=-1)
         ax.set_xlabel(self._get_axis_label(self._x_prop), color=fg)
+        if x_categories is not None:
+            self._apply_category_axis(ax, "x", x_categories)
+        if y_categories is not None:
+            self._apply_category_axis(ax, "y", y_categories)
 
         # ---- User-specified axis limit overrides ---------------------
         def _apply_lim_override(ax_obj, axis: str, lim_spec, data_arr: np.ndarray) -> None:
@@ -626,7 +668,7 @@ class PopulationDiagramPlot(BasePlot):
         """Return the distinct species ids of the molecules on this diagram.
 
         GUI dialogs pass this to
-        :meth:`~iSLAT.Modules.DataTypes.PlotAxisRegistry.PlotAxisRegistry.get_axis_options`
+        :meth:`~iSLAT.Modules.DataTypes.PlotAxisRegistry.PlotAxisRegistry.get_property_options`
         so only quantum numbers these species actually define are offered.
         Molecules with no resolvable id are skipped.
         """
@@ -806,8 +848,7 @@ class PopulationDiagramPlot(BasePlot):
             wav = cdata.get("wavelength")
 
             if self._shape_mapping is not None:
-                _SA = {"lam": "wavelength", "e_up": "eu"}
-                shape_key = _SA.get(self._shape_mapping["prop"], self._shape_mapping["prop"])
+                shape_key = _AxisReg.canonical_key(self._shape_mapping["prop"])
                 shape_vals = _AxisReg.resolve_array(shape_key, cdata)
                 if shape_vals is not None and len(shape_vals) == len(x_arr):
                     results = self._scatter_with_shape_groups(
@@ -879,28 +920,15 @@ class PopulationDiagramPlot(BasePlot):
         Parameters
         ----------
         prop : str
-            The property name to color by.  Supported values:
-
-            * ``'e_up'``   - upper-level energy (K)
-            * ``'e_low'``  - lower-level energy (K)
-            * ``'a_stein'``- Einstein A coefficient
-            * ``'g_up'``   - upper-state degeneracy
-            * ``'g_low'``  - lower-state degeneracy
-            * ``'wavelength'`` / ``'lam'``  - line wavelength
-            * ``'intens'`` - model intensity
-            * ``'lev_up'`` - upper quantum-state label (categorical)
-            * ``'lev_low'``- lower quantum-state label (categorical)
-            * ``'tau'``     - line-center opacity
-            * ``'component'`` - which molecule / component the point
-              belongs to (categorical)
-            * ``'molecule'`` - alias for ``'component'``; colors each
-              point by which molecule it belongs to (categorical)
-            * Any quantum-field name defined in the molecule's schema,
-              e.g. ``"J"``, ``"v"``, ``"Ka"``, ``"Kc"``, ``"v1"``,
-              ``"v2"`` - colors by upper-state quantum number value.
-              Use ``"qn_upper:FIELD"`` / ``"qn_lower:FIELD"`` prefixes
-              to explicitly target the upper or lower state (bare names
-              default to the upper state).
+            The property key to color by: any key of the shared property
+            list (:meth:`~iSLAT.Modules.DataTypes.PlotAxisRegistry.PlotAxisRegistry.get_property_options`),
+            the same list the axes, marker shape and line-list filter use.
+            For example ``'eu'``, ``'e_low'``, ``'a_stein'``, ``'freq'``,
+            ``'wavelength'``, ``'intens'``, ``'tau'``, ``'velocity_sep'``,
+            the categorical ``'lev_up'``, ``'lev_low'``, ``'vib_band'`` and
+            ``'molecule'``, or a quantum number as ``"qn_upper:FIELD"`` /
+            ``"qn_lower:FIELD"``.  The legacy keys ``'lam'``, ``'e_up'``
+            and ``'component'`` are still accepted.
 
         cmap : str
             Matplotlib colormap name (default ``'viridis'``).
@@ -1031,15 +1059,14 @@ class PopulationDiagramPlot(BasePlot):
         *idx_arr* has the same length as *shape_vals*; each element is an
         integer index into *group_labels* / *markers*.
         """
-        _ALIASES: Dict[str, str] = {"lam": "wavelength", "e_up": "eu"}
         prop: str = self._shape_mapping["prop"]  # type: ignore[index]
         n_bins: int = int(self._shape_mapping.get("n_bins", 5))  # type: ignore[union-attr]
-        internal_key = _ALIASES.get(prop, prop)
+        internal_key = _AxisReg.canonical_key(prop)
         kind = _AxisReg.get_kind(internal_key)
 
         if kind == "categorical":
-            str_vals = np.asarray(shape_vals, dtype=str)
-            unique_labels: List[str] = list(np.unique(str_vals))
+            str_vals = _label_strings(shape_vals)
+            unique_labels: List[str] = sorted(set(str_vals), key=_natural_key)
             label_to_idx = {lbl: i for i, lbl in enumerate(unique_labels)}
             idx_arr = np.array(
                 [label_to_idx[str(v)] for v in str_vals], dtype=int
@@ -1063,7 +1090,14 @@ class PopulationDiagramPlot(BasePlot):
         edges = np.unique(
             np.nanpercentile(float_vals[finite_mask], quantiles)
         )
-        n_actual = max(len(edges) - 1, 1)
+        if len(edges) < 2:
+            # Every value is the same: one group, labelled with that value.
+            return (
+                np.zeros(len(float_vals), dtype=int),
+                [f"{edges[0]:.3g}"],
+                [_DEFAULT_MARKERS[0]],
+            )
+        n_actual = len(edges) - 1
         idx_arr = np.zeros(len(float_vals), dtype=int)
         for _i, _v in enumerate(float_vals):
             if np.isfinite(_v):
@@ -1168,19 +1202,16 @@ class PopulationDiagramPlot(BasePlot):
         pmax = mapping.get("pmax")
         log_scale = mapping.get("log_scale", False)
 
-        # Resolve legacy aliases so old callers (e.g. passing "lam" or "e_up")
-        # still work; the registry uses the canonical forms "wavelength" / "eu".
-        _ALIASES = {"lam": "wavelength", "e_up": "eu"}
-        internal_key: str = _ALIASES.get(prop, prop)
+        # Resolve legacy aliases so old callers (e.g. passing "lam", "e_up" or
+        # "component") still work.
+        internal_key: str = _AxisReg.canonical_key(prop)
         display_prop = prop
 
         # ---- Dispatch by kind (categorical vs continuous) -----------
         kind = _AxisReg.get_kind(internal_key)
 
         if kind == "categorical":
-            # 'molecule' is a convenience alias for 'component'
-            render_prop = "component" if internal_key in ("molecule", "component") else internal_key
-            self._render_categorical_colormap(ax, render_prop, cmap_name)
+            self._render_categorical_colormap(ax, internal_key, cmap_name)
             return
 
         # ---- Continuous (includes quantum fields via resolve_array) --
@@ -1189,7 +1220,6 @@ class PopulationDiagramPlot(BasePlot):
         all_vals: List[np.ndarray] = []
         all_wav: List[np.ndarray] = []
         all_shape_vals: List[np.ndarray] = []
-        _SHAPE_ALIASES: Dict[str, str] = {"lam": "wavelength", "e_up": "eu"}
 
         for cdata in self._component_data:
             vals_arr = _AxisReg.resolve_array(internal_key, cdata)
@@ -1222,9 +1252,7 @@ class PopulationDiagramPlot(BasePlot):
 
             # Shape-by: collect shape property values with same masking
             if self._shape_mapping is not None:
-                _sp_key = _SHAPE_ALIASES.get(
-                    self._shape_mapping["prop"], self._shape_mapping["prop"]
-                )
+                _sp_key = _AxisReg.canonical_key(self._shape_mapping["prop"])
                 sv = _AxisReg.resolve_array(_sp_key, cdata)
                 if sv is not None:
                     sv = np.asarray(sv)
@@ -1302,12 +1330,17 @@ class PopulationDiagramPlot(BasePlot):
     def _render_categorical_colormap(
         self, ax: Axes, prop: str, cmap_name: str
     ) -> None:
-        """Render scatter with categorical color mapping."""
+        """Render scatter with categorical color mapping.
+
+        *prop* is a canonical registry key; its per-line labels come from the
+        registry, so every categorical property in the shared list (level
+        labels, vibrational band, molecule, text quantum numbers) works.
+        """
+        prop = _AxisReg.canonical_key(prop)
         all_x: List[np.ndarray] = []
         all_y: List[np.ndarray] = []
         all_labels: List[np.ndarray] = []
         all_shape_vals: List[np.ndarray] = []
-        _SHAPE_ALIASES: Dict[str, str] = {"lam": "wavelength", "e_up": "eu"}
 
         for cdata in self._component_data:
             x_arr = self._get_axis_array(cdata, self._x_prop)
@@ -1322,26 +1355,20 @@ class PopulationDiagramPlot(BasePlot):
             n = len(x_arr)
             if n == 0:
                 continue
-            if prop == "component":
-                labels = np.full(n, cdata["name"], dtype=object)
+            vals = _AxisReg.resolve_array(prop, cdata)
+            if vals is None:
+                labels = np.full(n, "unknown", dtype=object)
             else:
-                vals = cdata.get(prop)
-                if vals is None:
-                    labels = np.full(n, "unknown", dtype=object)
-                else:
-                    vals_arr = np.asarray(vals, dtype=str)
-                    if mask is not None:
-                        vals_arr = vals_arr[mask]
-                    labels = vals_arr
+                labels = _label_strings(vals)
+                if mask is not None:
+                    labels = labels[mask]
             all_x.append(x_arr)
             all_y.append(y_arr)
             all_labels.append(labels)
 
             # Shape-by: collect with same masking
             if self._shape_mapping is not None:
-                _sp_key = _SHAPE_ALIASES.get(
-                    self._shape_mapping["prop"], self._shape_mapping["prop"]
-                )
+                _sp_key = _AxisReg.canonical_key(self._shape_mapping["prop"])
                 sv = _AxisReg.resolve_array(_sp_key, cdata)
                 if sv is not None:
                     sv = np.asarray(sv)
@@ -1357,11 +1384,11 @@ class PopulationDiagramPlot(BasePlot):
         rd_cat = np.concatenate(all_y)
         label_cat = np.concatenate(all_labels)
 
-        unique_labels = np.unique(label_cat)
+        unique_labels = np.asarray(sorted(set(label_cat), key=_natural_key), dtype=object)
 
         # In all-molecules mode, use each molecule's own .color attribute
         # so the population diagram matches the control-panel colors.
-        if self._all_molecules_mode and prop == "component":
+        if self._all_molecules_mode and prop == "molecule":
             label_to_color = {
                 cdata["name"]: cdata["color"]
                 for cdata in self._component_data
@@ -1451,12 +1478,143 @@ class PopulationDiagramPlot(BasePlot):
         """
         return _AxisReg.get_axis_label(prop)
 
-    @staticmethod
     def _get_axis_array(
-        cdata: Dict[str, Any], prop: str
+        self, cdata: Dict[str, Any], prop: str
     ) -> Optional[np.ndarray]:
-        """Extract a property array from a component data dict via the registry."""
-        return _AxisReg.resolve_array(prop, cdata)
+        """Return the X / Y positions of *cdata*'s points for *prop*.
+
+        Continuous properties come straight from the registry.  Categorical
+        ones are mapped to their index in the axis' category order (NaN for
+        a missing label), so they plot on a category axis.
+        """
+        key = _AxisReg.canonical_key(prop)
+        index = self._axis_category_index.get(key)
+        if index is None:
+            return _AxisReg.resolve_array(key, cdata)
+        cache_key = (id(cdata), key)
+        cached = self._encoded_axis_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        labels = _AxisReg.resolve_array(key, cdata)
+        if labels is None:
+            return None
+        codes = np.array(
+            [np.nan if _is_missing_label(v) else index.get(str(v), np.nan)
+             for v in labels],
+            dtype=float,
+        )
+        self._encoded_axis_cache[cache_key] = codes
+        return codes
+
+    # ------------------------------------------------------------------
+    # Category axes
+    # ------------------------------------------------------------------
+    def _categories_for(self, prop: str) -> Optional[List[str]]:
+        """Category order of *prop* when it is drawn as a category axis, else ``None``."""
+        return self._axis_categories.get(_AxisReg.canonical_key(prop))
+
+    def _update_axis_categories(self) -> None:
+        """Collect the labels of every categorical X / Y property, in natural order."""
+        self._axis_categories = {}
+        self._axis_category_index = {}
+        for prop in (self._x_prop, self._y_prop):
+            key = _AxisReg.canonical_key(prop)
+            if key in self._axis_categories or _AxisReg.get_kind(key) != "categorical":
+                continue
+            labels: set = set()
+            for cdata in self._component_data:
+                arr = _AxisReg.resolve_array(key, cdata)
+                if arr is not None:
+                    labels.update(str(v) for v in arr if not _is_missing_label(v))
+            ordered = sorted(labels, key=_natural_key)
+            self._axis_categories[key] = ordered
+            self._axis_category_index[key] = {lbl: i for i, lbl in enumerate(ordered)}
+
+    def _category_code(self, prop: str, label: Any) -> Optional[float]:
+        """Position of *label* on *prop*'s category axis, or ``None``."""
+        index = self._axis_category_index.get(_AxisReg.canonical_key(prop))
+        if index is None or _is_missing_label(label):
+            return None
+        code = index.get(str(label))
+        return None if code is None else float(code)
+
+    @staticmethod
+    def _apply_category_axis(ax: Axes, axis: str, categories: List[str]) -> None:
+        """Put one tick per category (every n-th when crowded) on *axis*."""
+        n = len(categories)
+        step = max(1, int(np.ceil(n / _MAX_CATEGORY_TICKS)))
+        positions = list(range(0, n, step))
+        labels = [categories[i] for i in positions]
+        text_kw: Dict[str, Any] = {"fontsize": "x-small"} if n > 12 else {}
+        longest = max((len(lbl) for lbl in labels), default=0)
+        if axis == "x":
+            ax.set_xlim(-0.5, max(n, 1) - 0.5)
+            ax.set_xticks(positions)
+            ax.set_xticklabels(labels, rotation=90 if (n > 6 or longest > 6) else 0,
+                               **text_kw)
+        else:
+            ax.set_ylim(-0.5, max(n, 1) - 0.5)
+            ax.set_yticks(positions)
+            ax.set_yticklabels(labels, **text_kw)
+
+    def _rendered_axis_value(
+        self, prop: str, lam: Optional[float], mol_name: Optional[str],
+    ) -> Optional[float]:
+        """Axis position of the plotted point for the line at wavelength *lam*.
+
+        Used for properties a single line cannot provide on its own (e.g. the
+        velocity separation, which depends on its neighbours).  The point of
+        the molecule named *mol_name* is preferred.
+        """
+        if lam is None:
+            return None
+        comps = sorted(self._component_data, key=lambda cd: cd.get("name") != mol_name)
+        for cdata in comps:
+            wav = cdata.get("wavelength")
+            if wav is None:
+                continue
+            hits = np.flatnonzero(np.isclose(np.asarray(wav, dtype=float), float(lam),
+                                             rtol=1e-10, atol=0.0))
+            if hits.size == 0:
+                continue
+            arr = self._get_axis_array(cdata, prop)
+            if arr is None:
+                return None
+            val = float(arr[hits[0]])
+            return val if np.isfinite(val) else None
+        return None
+
+    def _scalar_axis_value(
+        self,
+        prop: str,
+        line: Any,
+        mol_id: Optional[str],
+        mol_name: Optional[str],
+        line_map: Dict[str, Any],
+    ) -> Optional[float]:
+        """Axis position of a single *line* (active / highlighted lines).
+
+        *line_map* holds values already computed for this line.  Categorical
+        properties map their label onto the category axis; properties with no
+        single-line value fall back to the plotted point of the same line.
+        """
+        key = _AxisReg.canonical_key(prop)
+        if key in self._axis_category_index:
+            label = mol_name if key == "molecule" else _AxisReg.resolve_scalar(key, line, mol_id)
+            code = self._category_code(key, label)
+            if code is None:
+                code = self._rendered_axis_value(key, getattr(line, "lam", None), mol_name)
+            return code
+        val = line_map.get(key)
+        if val is None:
+            val = _AxisReg.resolve_scalar(key, line, mol_id)
+        if val is None:
+            return self._rendered_axis_value(key, getattr(line, "lam", None), mol_name)
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return None
+        return val if np.isfinite(val) else None
 
     def set_axes(
         self,
@@ -1549,33 +1707,23 @@ class PopulationDiagramPlot(BasePlot):
 
             # Resolve molecule_id for quantum-field axis lookups.
             _hl_mol_id: Optional[str] = self._molecule_id_of(_hl_mol)
+            _hl_mol_name = getattr(_hl_mol, "name", None)
 
-            def _resolve(prop: str) -> Optional[float]:
-                """Map a property key to a scalar value for this line."""
-                _LINE_MAP = {
-                    "eu":                    line_obj.e_up,
-                    "e_low":                 line_obj.e_low,
-                    "rd_yax":                rd,
-                    "wavelength":            line_obj.lam,
-                    "intens":                intensity,
-                    "a_stein":               line_obj.a_stein,
-                    "g_up":                  line_obj.g_up,
-                    "g_low":                 line_obj.g_low,
-                    "tau":                   tau,
-                    "fwhm_instrumental_kms": _hl_info.get("fwhm_instrumental_kms"),
-                    "fwhm_convolved_kms":    _hl_info.get("fwhm_convolved_kms"),
-                }
-                val = _LINE_MAP.get(prop)
-                if val is not None:
-                    try:
-                        return float(val)
-                    except (TypeError, ValueError):
-                        return None
-                # Fall back to registry scalar resolver for quantum/extended props
-                return _AxisReg.resolve_scalar(prop, line_obj, _hl_mol_id)
-
-            xv = _resolve(self._x_prop)
-            yv = _resolve(self._y_prop)
+            _LINE_MAP = {
+                "eu":                    line_obj.e_up,
+                "e_low":                 line_obj.e_low,
+                "rd_yax":                rd,
+                "wavelength":            line_obj.lam,
+                "intens":                intensity,
+                "a_stein":               line_obj.a_stein,
+                "g_up":                  line_obj.g_up,
+                "g_low":                 line_obj.g_low,
+                "tau":                   tau,
+                "fwhm_instrumental_kms": _hl_info.get("fwhm_instrumental_kms"),
+                "fwhm_convolved_kms":    _hl_info.get("fwhm_convolved_kms"),
+            }
+            xv = self._scalar_axis_value(self._x_prop, line_obj, _hl_mol_id, _hl_mol_name, _LINE_MAP)
+            yv = self._scalar_axis_value(self._y_prop, line_obj, _hl_mol_id, _hl_mol_name, _LINE_MAP)
             if xv is None or yv is None or np.isnan(xv) or np.isnan(yv):
                 continue
             x_vals.append(xv)

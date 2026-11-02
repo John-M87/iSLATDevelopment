@@ -252,7 +252,7 @@ def test_catalog_includes_numeric_extras():
 
 def test_catalog_includes_quantum_labels():
     labels = [s.label for s in _catalog()]
-    assert 'Quantum lev_up' in labels and 'Quantum lev_low' in labels
+    assert 'Upper level (lev_up)' in labels and 'Lower level (lev_low)' in labels
 
 
 def test_catalog_quantum_fields_for_h2o():
@@ -268,10 +268,10 @@ def test_catalog_no_quantum_fields_for_unknown_species():
 
 
 def test_catalog_species_only_when_column_present():
-    assert 'Species' not in [s.label for s in _catalog()]
+    assert 'Molecule (species)' not in [s.label for s in _catalog()]
     df = _frame()
     df['species'] = 'H2O'
-    assert 'Species' in [s.label for s in build_property_catalog(df, 'H2O')]
+    assert 'Molecule (species)' in [s.label for s in build_property_catalog(df, 'H2O')]
 
 
 def test_catalog_vib_band_present():
@@ -351,13 +351,13 @@ def test_row_state_garbage_bound_returns_error():
 
 def test_row_state_quantum_label_carries_regex_flag():
     cond, _ = row_state_to_condition(
-        _row('Quantum lev_up', 'contains', '0|1', regex=True), _catalog())
+        _row('Upper level (lev_up)', 'contains', '0|1', regex=True), _catalog())
     assert cond.kind == 'quantum_label' and cond.regex is True
 
 
 def test_row_state_matches_regex_forces_regex():
     cond, _ = row_state_to_condition(
-        _row('Quantum lev_up', 'matches regex', '0.1'), _catalog())
+        _row('Upper level (lev_up)', 'matches regex', '0.1'), _catalog())
     assert cond.op == 'matches' and cond.regex is True
 
 
@@ -671,11 +671,11 @@ def test_window_format_override_offers_quantum_fields(tk_root, renamed_co_molecu
     win.withdraw()
     try:
         keys = {s.key for s in win._catalog}
-        assert 'qn:upper:J' not in keys
+        assert 'qn_upper:J' not in keys
         assert win._schema_note.winfo_manager() == 'pack'
 
         _choose_format(win, 'CO')
-        assert 'qn:upper:J' in {s.key for s in win._catalog}
+        assert 'qn_upper:J' in {s.key for s in win._catalog}
         assert win._schema_note.winfo_manager() == ''
         assert win._mask_context().species == 'CO'
         assert win._maker.species == 'CO_v1-0'

@@ -9,6 +9,8 @@
 - Added new options to the Center View function (center on a wavelength, display an exact wavelength range, or display a fixed number of data points) and added a `Center View… (C)` entry to the Spectral Functions menu
 - Added the ability to bold a molecule's model line in the plot via a new `Bold on Plot` / `Unbold on Plot` option in the molecule right-click menu
 - Updated the population diagram plot to make better use of the quantum state schema module
+- Merged the population diagram's `Color By…` and `Axis Settings…` dialogs into a single `Plot Settings…` dialog with `Axes`, `Color` and `Markers` tabs and one Apply (also used by the filtered population diagram window)
+- The population diagram's X / Y axes, color-by and marker shape, and the line list filter, now offer one shared list of line properties with the same names in the same order (`PlotAxisRegistry.get_property_options`). The population diagram gains `Frequency`, `Velocity sep.` and `Vib. band`; the filter gains `Pop. diagram Y`, `Instrumental FWHM`, `Convolved FWHM` and `Molecule`. Categorical properties (level labels, vibrational band, molecule, text quantum numbers) can now be used as a category axis
 
 #### Line List Filtering
 - Added a new `LineFilterExpression` module for filtering line lists with composable condition groups (value ranges, derived quantities, velocity separation, quantum fields/labels, species) that can be saved to and loaded from JSON
@@ -29,6 +31,9 @@
 ### Bug Fixes
 - Fixed the full spectrum output (`Output Full Spectrum`, the Full Spectrum view's `Save Figure…`, and the `Display Full Spectrum` window) ignoring the `Show Observed Data` and Y-axis settings: exports now hide the observed data when it is hidden in the GUI and follow `Auto-scale Y Axis`, `Auto-scale Y to Model Flux`, and `Set Y Limits…` (annotations are placed against the final Y range)
 - Fixed a bug with the model range extension in the spectrum plotting modules: models are now drawn over the full global wavelength range even when `Match Pix. Sampling` resamples them onto a narrower observed grid
+- Fixed the per-line FWHM arrays of the population diagram data collapsing to a single value with the constant instrumental profile, which broke plotting on the FWHM properties
+- Fixed marker shape-by in the population diagram failing when every plotted line has the same value
+- Fixed population diagram quantum numbers being parsed with the schema of whichever molecule registered the field last instead of the plotted molecule's own schema (as the filter does); text-valued quantum numbers can now be used for color and marker shape
 - Fixed issues with the dedicated Line Inspection plot view
 - Fixed incorrect line picking when multiple molecules are plotted in the line inspection plot
 - Fixed a memory leak in the `PopulationDiagramView`
@@ -40,6 +45,7 @@
 - The `Intensity` line info output now reports line center flux, line center opacity, and model opacity in range
 - Updated the population diagram examples notebook to use the new method of setting the active molecule in the grid
 - Added tests for the filtered population diagram window, line filter expression module, center view, and model range extension
+- The line list filter's property labels and keys now come from the shared property list (e.g. `Quantum lev_up` is now `Upper level (lev_up)`, `Species` is now `Molecule (species)`, and the table view's added-column keys use the shared keys such as `qn_upper:J`); `vib_band_label` moved to `LineFilterExpression`
 - Bumped version to `v5.03.04`
 
 ---

@@ -26,6 +26,8 @@ direction is strictly ``LineListMaker -> LineFilterExpression``.
 
 from __future__ import annotations
 
+import functools
+import re
 from dataclasses import dataclass, field as _dc_field
 from typing import (
     Any,
@@ -60,6 +62,7 @@ __all__ = [
     "ops_for_kind",
     "validate",
     "velocity_separation_kms",
+    "vib_band_label",
 ]
 
 SCHEMA_VERSION = 1
@@ -123,6 +126,34 @@ def _vib_part(level_str: str) -> str:
     Falls back to the full string when no ``'|'`` is present.
     """
     return level_str.split("|")[0] if "|" in level_str else level_str
+
+
+#: A vibrational label the band filter can match: integers joined by
+#: underscores, e.g. ``"0_1_0"`` or ``"4"``.
+_VIB_LABEL_RE = re.compile(r"\d+(?:_\d+)*")
+
+
+@functools.lru_cache(maxsize=4096)
+def _vib_level(vib_label: str) -> Optional[int]:
+    """Vibrational level of a vib label: its largest mode quantum number."""
+    if not _VIB_LABEL_RE.fullmatch(vib_label):
+        return None
+    return max(int(q) for q in vib_label.split("_"))
+
+
+def vib_band_label(lev_up: Any, lev_low: Any) -> str:
+    """The band a line belongs to, as the ``"vN-M"`` the band filter accepts.
+
+    This is the per-line value of the *Vib. band* property everywhere it is
+    shown (population-diagram axes / color / shape, table column), so the
+    label a point carries is exactly a band spec that selects it.  Returns
+    ``""`` when either level carries no parseable vibrational label.
+    """
+    up = _vib_level(_vib_part(str(lev_up)))
+    low = _vib_level(_vib_part(str(lev_low)))
+    if up is None or low is None:
+        return ""
+    return f"v{up}-{low}"
 
 
 def _vib_perms(n: int, n_modes: int = 3) -> set:
