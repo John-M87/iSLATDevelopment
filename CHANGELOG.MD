@@ -18,6 +18,8 @@
 #### Line List Filtering
 - Added a new `LineFilterExpression` module for filtering line lists with composable condition groups (value ranges, derived quantities, velocity separation, quantum fields/labels, species) that can be saved to and loaded from JSON
 - Added a new `FilteredPopulationDiagramWindow` for displaying population diagrams of filtered line lists
+- Added a `Population Diagram` option to the molecule right-click menu in the control panel. It opens a popout population diagram of all of that molecule's lines (one window per molecule) with the same right-click `Plot Settings…` and `Sync Settings` as the filtered population diagram window, and redraws live when the molecule's parameters or the global parameters change
+- Added a right-click `Save Figure…` option to the popout population diagram windows (per-molecule and filtered line list); the format follows the chosen file extension (PDF, PNG, SVG, …)
 - Updated `LineListMaker` to support filtering based on expressions (`filter_expression`, `filter_any`, `filter_all`, `filter_quantum_field`, `filter_vib_band`)
 - Added a velocity separation filter and percentile-based filtering to the line list filter window
 - Added the ability to filter by either percentile rank or percentage of the largest value

@@ -297,7 +297,7 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
         self._sticky_message: Optional[str] = None
 
         mol_name = getattr(mol_obj, "name", "Molecule")
-        self.title(f"Population Diagram (filtered): {mol_name}")
+        self.title(self._window_title(mol_name))
         self.resizable(True, True)
 
         self._status_var = tk.StringVar(value="No data yet.")
@@ -308,6 +308,29 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
+    def _window_title(self, mol_name: str) -> str:
+        return f"Population Diagram (filtered): {mol_name}"
+
+    def _create_population_plot(self, color: Optional[str]) -> Any:
+        """Build the :class:`PopulationDiagramPlot` drawn into this window's figure.
+
+        Served from the frozen source so filter changes only re-index arrays.
+        Pass BOTH fig= and ax=: without fig= the renderer skips
+        apply_theme_to_figure() and the popout would not match the GUI.
+        """
+        from iSLAT.Modules.Plotting.PopulationDiagramPlot import PopulationDiagramPlot
+        mol = self.mol_obj
+        return PopulationDiagramPlot(
+            intensity=self._source,
+            name=f"{getattr(mol, 'name', 'Molecule')} (filtered)",
+            color=color,
+            radius=getattr(mol, "radius", 1.0),
+            distance=getattr(mol, "distance", 160.0),
+            ax=self._ax,
+            fig=self._fig,
+            theme=self._theme() or None,
+        )
+
     def _constrain_to_screen(self) -> None:
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         w = min(900, int(sw * 0.55))
@@ -328,7 +351,6 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
         from matplotlib.backends.backend_tkagg import (
             FigureCanvasTkAgg, NavigationToolbar2Tk,
         )
-        from iSLAT.Modules.Plotting.PopulationDiagramPlot import PopulationDiagramPlot
         from iSLAT.Modules.Plotting.BasePlot import BasePlot
 
         outer = ttk.Frame(self)
@@ -343,18 +365,7 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
         except Exception:
             color = None
 
-        # Pass BOTH fig= and ax=: without fig= the renderer skips
-        # apply_theme_to_figure() and the popout would not match the GUI.
-        self._pdp = PopulationDiagramPlot(
-            intensity=self._source,
-            name=f"{getattr(mol, 'name', 'Molecule')} (filtered)",
-            color=color,
-            radius=getattr(mol, "radius", 1.0),
-            distance=getattr(mol, "distance", 160.0),
-            ax=self._ax,
-            fig=self._fig,
-            theme=self._theme() or None,
-        )
+        self._pdp = self._create_population_plot(color)
         # Inherit whatever the user has configured on the main diagram, so the
         # two windows agree on axes, colour mapping, shapes and marker size.
         apply_pdp_style(self._pdp, capture_pdp_style(
@@ -437,7 +448,55 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
         menu.add_separator()
         menu.add_command(label="Sync Settings from Main Diagram",
                          command=self._sync_from_main)
+        menu.add_separator()
+        menu.add_command(label="Save Figure\u2026", command=self.save_figure)
         return menu
+
+    # ------------------------------------------------------------------
+    # Saving
+    # ------------------------------------------------------------------
+    _SAVE_FILETYPES = (
+        ("PDF files", "*.pdf"), ("PNG files", "*.png"), ("SVG files", "*.svg"),
+        ("All files", "*.*"),
+    )
+
+    def _default_figure_name(self) -> str:
+        """Suggested file name (without extension) for :meth:`save_figure`."""
+        return f"{getattr(self.mol_obj, 'name', 'molecule')}_population_diagram_filtered"
+
+    def save_figure(self, save_path: Optional[str] = None, dpi: int = 300) -> Optional[str]:
+        """Save the diagram as shown; the format follows the file extension (PDF, PNG, SVG, ...).
+
+        Opens a file dialog when *save_path* is ``None``.  Returns the saved
+        path, or ``None`` if cancelled or the save failed (the reason is shown
+        in the status bar).
+        """
+        import re
+        if self._fig is None:
+            return None
+        if save_path is None:
+            from tkinter import filedialog
+            stem = re.sub(r"[^\w.-]+", "_", self._default_figure_name())
+            save_path = filedialog.asksaveasfilename(
+                parent=self, title="Save Figure", defaultextension=".pdf",
+                initialfile=f"{stem}.pdf", filetypes=self._SAVE_FILETYPES,
+            )
+        if not save_path:
+            return None
+        try:
+            self._fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
+        except Exception as exc:
+            self._status_var.set(f"Could not save figure: {exc}")
+            return None
+        message = f"Figure saved to: {save_path}"
+        self._status_var.set(message)
+        data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
+        if data_field is not None:
+            try:
+                data_field.insert_text(message)
+            except Exception:
+                pass
+        return str(save_path)
 
     def _clear_color_mapping(self) -> None:
         if self._pdp is not None:

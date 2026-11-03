@@ -1480,6 +1480,10 @@ class ControlPanel(ttk.Frame):
             command=lambda: self._view_line_list_action(mol_name),
         )
         menu.add_command(
+            label="Population Diagram",
+            command=lambda: self._population_diagram_action(mol_name),
+        )
+        menu.add_command(
             label="Change Line List…",
             command=lambda: self._change_line_list_action(mol_name),
         )
@@ -1601,6 +1605,16 @@ class ControlPanel(ttk.Frame):
             return
         from iSLAT.Modules.GUI.Widgets.LineListViewWindow import LineListViewWindow
         LineListViewWindow(self, mol_obj, self.data_field)
+
+    def _population_diagram_action(self, mol_name: str) -> None:
+        """Open (or raise) a live popout population diagram for the named molecule."""
+        mol_obj = self.islat.molecules_dict.get(mol_name)
+        if mol_obj is None:
+            return
+        from iSLAT.Modules.GUI.Widgets.MoleculePopulationDiagramWindow import (
+            MoleculePopulationDiagramWindow,
+        )
+        MoleculePopulationDiagramWindow.open(self, mol_obj, islat=self.islat)
 
     def _filter_line_list_action(self, mol_name: str) -> None:
         """Open the LineListFilterWindow for the named molecule."""
