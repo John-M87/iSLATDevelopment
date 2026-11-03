@@ -209,7 +209,7 @@ class TopBar(ResizableFrame):
             "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth and per-panel height.\nRemembered for this session.",
             "Display Full Spectrum (Ctrl+F)":   "Open the full combined model spectrum\nin a separate window.",
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
-            "Center View\u2026 (C)":           "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nKeybind: C",
+            "Center View\u2026 (C)":           "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: C",
             "Mark Wavelengths\u2026 (Shift+M)": "Mark a wavelength (line) or a range\n(shaded band) on the spectrum plots,\nwith an optional label (left / center /\nright of the mark), line and label\ncolors (color pickers) and line style.\nMarks are included in full-spectrum output.\nKeybind: Shift+M",
         })
 

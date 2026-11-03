@@ -96,3 +96,129 @@ class TestApplyPlotRange:
     def test_public_and_private_dialog_names_match(self):
         from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
         assert InteractionHandler._open_center_view_dialog is InteractionHandler.open_center_view_dialog
+
+
+# ---------------------------------------------------------------------------
+# "Mark center wavelength" toggle
+# ---------------------------------------------------------------------------
+
+class _MarkerStore:
+    """Plot-manager stand-in with the real Shift+M marker API."""
+
+    def __init__(self):
+        from iSLAT.Modules.Plotting.PlotView import WavelengthMarkerStoreMixin
+
+        class _Store(WavelengthMarkerStoreMixin):
+            def __init__(self):
+                self.toggle_state = {}
+                self.refreshes = 0
+
+            def refresh_wavelength_markers(self):
+                self.refreshes += 1
+
+        self.store = _Store()
+
+
+def _marking_handler():
+    h, cp = _handler()
+    store = _MarkerStore().store
+    store.active_view = SimpleNamespace()
+    h.plot_manager = store
+    return h, cp, store
+
+
+class TestMarkCenterWavelength:
+    def test_adds_one_mark_and_skips_duplicates(self):
+        h, _, store = _marking_handler()
+        assert h._mark_center_wavelength(14.5) is True
+        assert h._mark_center_wavelength(14.5) is False
+        assert [(m["start"], m["end"]) for m in store.wavelength_markers] == [(14.5, 14.5)]
+        assert store.refreshes == 1
+
+    def test_ranges_at_same_center_are_not_duplicates(self):
+        h, _, store = _marking_handler()
+        store.add_wavelength_marker(14.0, 15.0)
+        assert h._mark_center_wavelength(14.0) is True
+
+    def test_without_marker_store_is_a_no_op(self):
+        h, _ = _handler()
+        assert h._mark_center_wavelength(14.5) is False
+
+
+@pytest.fixture
+def tk_root():
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display not available (headless environment)")
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+def _walk(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _walk(child)
+
+
+def _open_dialog(tk_root, h):
+    before = set(tk_root.winfo_children())
+    h._tk_root = tk_root
+    h.open_center_view_dialog()
+    (win,) = [w for w in tk_root.winfo_children() if w not in before]
+    return win
+
+
+def _widget(win, cls, text):
+    return next(w for w in _walk(win) if w.winfo_class() == cls and w.cget("text") == text)
+
+
+class TestCenterDialogMarkToggle:
+    def test_off_by_default_applies_range_only(self, tk_root):
+        h, cp, store = _marking_handler()
+        win = _open_dialog(tk_root, h)
+        assert "selected" not in _widget(win, "TCheckbutton", "Mark center wavelength").state()
+        _widget(win, "TButton", "Apply").invoke()
+        cp._update_display_range.assert_called_once()
+        assert store.wavelength_markers == []
+
+    def test_marks_entered_center_and_is_remembered(self, tk_root):
+        h, cp, store = _marking_handler()
+        win = _open_dialog(tk_root, h)
+        _widget(win, "TCheckbutton", "Mark center wavelength").invoke()
+        center_entry = next(w for w in _walk(win) if w.winfo_class() == "TEntry")
+        center_entry.delete(0, "end")
+        center_entry.insert(0, "14.25")
+        _widget(win, "TButton", "Apply").invoke()
+        cp._format_value.assert_any_call(14.25 - 0.5, "display_range_start")
+        assert [(m["start"], m["end"]) for m in store.wavelength_markers] == [(14.25, 14.25)]
+
+        win = _open_dialog(tk_root, h)
+        assert "selected" in _widget(win, "TCheckbutton", "Mark center wavelength").state()
+        _widget(win, "TButton", "Cancel").invoke()
+
+    def test_exact_range_marks_midpoint(self, tk_root):
+        h, _, store = _marking_handler()
+        win = _open_dialog(tk_root, h)
+        _widget(win, "TCheckbutton", "Mark center wavelength").invoke()
+        _widget(win, "TRadiobutton", "Exact range (\u03bcm):").invoke()
+        start, end = [w for w in _walk(win) if w.winfo_class() == "TEntry"][-2:]
+        start.delete(0, "end"); start.insert(0, "12")
+        end.delete(0, "end"); end.insert(0, "13")
+        _widget(win, "TButton", "Apply").invoke()
+        assert [(m["start"], m["end"]) for m in store.wavelength_markers] == [(12.5, 12.5)]
+
+    def test_invalid_input_adds_no_mark(self, tk_root):
+        h, cp, store = _marking_handler()
+        win = _open_dialog(tk_root, h)
+        _widget(win, "TCheckbutton", "Mark center wavelength").invoke()
+        center_entry = next(w for w in _walk(win) if w.winfo_class() == "TEntry")
+        center_entry.delete(0, "end")
+        center_entry.insert(0, "abc")
+        _widget(win, "TButton", "Apply").invoke()
+        assert win.winfo_exists()
+        assert store.wavelength_markers == []
+        cp._update_display_range.assert_not_called()
+        win.destroy()

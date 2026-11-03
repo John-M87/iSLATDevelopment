@@ -802,7 +802,9 @@ class InteractionHandler:
           points the window should span.
         * **Exact range** - explicit start and end wavelengths.
 
-        Defaults come from the active view's current window.
+        Defaults come from the active view's current window.  The optional
+        "Mark center wavelength" toggle (remembered for the session) also
+        adds a wavelength mark at the center - see :meth:`_mark_center_wavelength`.
         """
         import tkinter as tk
         from tkinter import ttk
@@ -824,12 +826,12 @@ class InteractionHandler:
         content = ttk.Frame(win)
         content.pack(fill="both", expand=True, padx=12, pady=12)
 
-        mode_var = tk.StringVar(value="range")
-        center_var = tk.StringVar(value=f"{current_center:.4f}")
-        range_var = tk.StringVar(value=f"{current_range:.4f}")
-        points_var = tk.StringVar(value=str(max(current_points, 2)))
-        start_var = tk.StringVar(value=f"{xmin:.4f}")
-        end_var = tk.StringVar(value=f"{xmax:.4f}")
+        mode_var = tk.StringVar(master=win, value="range")
+        center_var = tk.StringVar(master=win, value=f"{current_center:.4f}")
+        range_var = tk.StringVar(master=win, value=f"{current_range:.4f}")
+        points_var = tk.StringVar(master=win, value=str(max(current_points, 2)))
+        start_var = tk.StringVar(master=win, value=f"{xmin:.4f}")
+        end_var = tk.StringVar(master=win, value=f"{xmax:.4f}")
 
         row = 0
         ttk.Label(content, text="Center wavelength (\u03bcm):").grid(
@@ -867,7 +869,13 @@ class InteractionHandler:
         end_entry.pack(side="left")
 
         row += 1
-        error_var = tk.StringVar(value="")
+        mark_center_var = tk.BooleanVar(master=win, value=bool(getattr(self, "_mark_center_default", False)))
+        ttk.Checkbutton(content, text="Mark center wavelength", variable=mark_center_var).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 6)
+        )
+
+        row += 1
+        error_var = tk.StringVar(master=win, value="")
         ttk.Label(content, textvariable=error_var, foreground="red").grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(0, 6)
         )
@@ -937,11 +945,22 @@ class InteractionHandler:
                 return None
             return (center - plot_range / 2.0, center + plot_range / 2.0)
 
+        def _center_of(window: Tuple[float, float]) -> float:
+            """The entered center, or the middle of an exact range."""
+            if mode_var.get() == "exact":
+                return (window[0] + window[1]) / 2.0
+            return float(center_var.get())
+
         def _apply(event=None):
             window = _resolve_window()
             if window is None:
                 return
+            mark = bool(mark_center_var.get())
+            self._mark_center_default = mark
+            center = _center_of(window)
             self._apply_plot_range(*window)
+            if mark:
+                self._mark_center_wavelength(center)
             win.destroy()
 
         def _cancel(event=None):
@@ -973,6 +992,27 @@ class InteractionHandler:
             pass
 
     # Backward-compatible private name (used by the 'c' key handler).
+    def _mark_center_wavelength(self, center: float) -> bool:
+        """Add a wavelength mark at *center* unless one is already there.
+
+        Uses the Shift+M marker store, so the mark appears on every
+        wavelength plot and can be removed in the Mark Wavelengths dialog.
+        Returns ``True`` when a mark was added.
+        """
+        pm = self.plot_manager
+        if not hasattr(pm, "add_wavelength_marker"):
+            return False
+        center = float(center)
+        for marker in getattr(pm, "wavelength_markers", None) or []:
+            try:
+                start, end = float(marker["start"]), float(marker["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start == end and abs(start - center) <= 1e-9 * max(1.0, abs(center)):
+                return False
+        pm.add_wavelength_marker(center)
+        return True
+
     _open_center_view_dialog = open_center_view_dialog
 
     def _resolve_dialog_root(self):
