@@ -27,7 +27,7 @@ from matplotlib.figure import Figure as MplFigure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.widgets import SpanSelector
 
-from .PlotView import PlotView
+from .PlotView import PlotView, draw_wavelength_markers
 from .StackedSpectralPanel import StackedSpectralPanel
 from .FullSpectrumPlot import FullSpectrumPlot
 from .ResidualSpectrumPlot import ResidualSpectrumPlot
@@ -218,6 +218,10 @@ class FullSpectrumView(ToggleMixin, PlotView):
         return self._initialised
 
     def _iter_toggle_axes(self):
+        return self._iter_all_axes()
+
+    def _iter_marker_axes(self):
+        """Wavelength markers span every panel, including residual sub-panels."""
         return self._iter_all_axes()
 
     def _iter_observed_axes(self):
@@ -1347,6 +1351,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         )
         apply_export_size(standalone, get_export_settings(self._pm))
         standalone.generate_plot()
+        draw_toggle_state_markers(standalone.fig, ts)
 
         # Safety net for factory overrides whose plot ignores display_options:
         # hide toggled-off artists on every axes (idempotent for FullSpectrumPlot).
@@ -1462,6 +1467,17 @@ def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
             # Auto-scale off without stored limits leaves the layout's own limits in the GUI.
             kw["y_autoscale_source"] = "data"
     return kw
+
+
+def draw_toggle_state_markers(fig: Any, toggle_state: Optional[dict]) -> None:
+    """Draw the GUI's user wavelength markers on every axes of *fig* (exports / standalone plots)."""
+    if fig is None or not isinstance(toggle_state, dict):
+        return
+    markers = toggle_state.get("wavelength_markers") or []
+    if not markers:
+        return
+    for ax in fig.axes:
+        draw_wavelength_markers(ax, markers)
 
 
 def _validate_export_dim(name: str, value: Any, maximum: float) -> Optional[float]:
@@ -1636,6 +1652,7 @@ def output_full_spectrum(
     standalone = FullSpectrumPlot(**standalone_kwargs)
     apply_export_size(standalone, export_settings)
     standalone.generate_plot()
+    draw_toggle_state_markers(standalone.fig, ts)
 
     from tkinter import filedialog
     default_name = Path(islat_ref.loaded_spectrum_file).stem + "_full_output.pdf"

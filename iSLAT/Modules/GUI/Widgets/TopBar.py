@@ -192,6 +192,7 @@ class TopBar(ResizableFrame):
         spec_functions_menu.add_command(label="Display Full Spectrum (Ctrl+F)", command=lambda: FullSpectrumWindow(self.master, self.islat))
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Center View\u2026 (C)", command=self.open_center_view_dialog)
+        spec_functions_menu.add_command(label="Mark Wavelengths\u2026 (Shift+M)", command=self.open_wavelength_marker_dialog)
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Manage Sample\u2026", command=self.manage_sample)
         
@@ -209,6 +210,7 @@ class TopBar(ResizableFrame):
             "Display Full Spectrum (Ctrl+F)":   "Open the full combined model spectrum\nin a separate window.",
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
             "Center View\u2026 (C)":           "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nKeybind: C",
+            "Mark Wavelengths\u2026 (Shift+M)": "Mark a wavelength (line) or a range\n(shaded band) on the spectrum plots,\nwith an optional label (left / center /\nright of the mark), line and label\ncolors (color pickers) and line style.\nMarks are included in full-spectrum output.\nKeybind: Shift+M",
         })
 
         # ── Views dropdown ─────────────────────────────────────────────
@@ -1470,6 +1472,12 @@ class TopBar(ResizableFrame):
         handler = getattr(self.main_plot, 'interaction_handler', None)
         if handler is not None and hasattr(handler, 'open_center_view_dialog'):
             handler.open_center_view_dialog()
+
+    def open_wavelength_marker_dialog(self) -> None:
+        """Open the Mark Wavelengths dialog (same as the 'Shift+M' keybind)."""
+        handler = getattr(self.main_plot, 'interaction_handler', None)
+        if handler is not None and hasattr(handler, 'open_wavelength_marker_dialog'):
+            handler.open_wavelength_marker_dialog()
 
     # ------------------------------------------------------------------
     # Main-plot options (Views dropdown)

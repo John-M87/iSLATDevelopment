@@ -423,6 +423,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
                 )
             self.clear_active_lines()
             self._render_population_diagram_base()
+            self._apply_wavelength_markers(self._pm.toggle_state)
             self._canvas.draw_idle()
             return
 
@@ -445,6 +446,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             self._canvas.mpl_connect('pick_event', self._on_pick_line)
             self._pick_event_connected = True
 
+        self._apply_wavelength_markers(self._pm.toggle_state)
         self._canvas.draw_idle()
         debug_config.verbose("line_inspection", "on_selection completed")
 
@@ -455,6 +457,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         self.clear_active_lines()
         self.ax2.clear()
         self._render_population_diagram_base()
+        self._apply_wavelength_markers(self._pm.toggle_state)
         self._canvas.draw_idle()
 
     def clear_active_lines(self) -> None:
@@ -1155,6 +1158,11 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         yield self.ax1
         yield self.ax2
         yield self.ax3
+
+    def _iter_marker_axes(self):
+        """Wavelength markers go on the spectrum and line-inspection panels (ax3 is E_up)."""
+        yield self.ax1
+        yield self.ax2
 
     def _add_atomic_line_artists(self) -> None:
         """Render atomic lines on ax1 using BasePlot helpers."""

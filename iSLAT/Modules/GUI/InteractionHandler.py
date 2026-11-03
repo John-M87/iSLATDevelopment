@@ -511,9 +511,12 @@ class InteractionHandler:
             self._toggle_atomic_lines()
             return 'break'
         
-        # Handle 'm' key for toggling summed spectrum
+        # Handle 'm' key: Shift+M = mark wavelengths dialog, plain m = toggle summed spectrum
         elif keysym == 'm':
-            self._toggle_summed_spectrum()
+            if event.state & 0x1:
+                self._open_wavelength_marker_dialog()
+            else:
+                self._toggle_summed_spectrum()
             return 'break'
 
         # Handle 'v' key for toggling molecule visibility
@@ -804,16 +807,7 @@ class InteractionHandler:
         import tkinter as tk
         from tkinter import ttk
 
-        # Resolve the parent window
-        root = getattr(self, '_tk_root', None)
-        if root is None:
-            if hasattr(self.plot_manager, 'parent_frame') and self.plot_manager.parent_frame:
-                try:
-                    root = self.plot_manager.parent_frame.winfo_toplevel()
-                except Exception:
-                    root = None
-        if root is None and hasattr(self.islat, 'GUI') and getattr(self.islat.GUI, 'master', None):
-            root = self.islat.GUI.master
+        root = self._resolve_dialog_root()
         if root is None:
             return
 
@@ -980,6 +974,331 @@ class InteractionHandler:
 
     # Backward-compatible private name (used by the 'c' key handler).
     _open_center_view_dialog = open_center_view_dialog
+
+    def _resolve_dialog_root(self):
+        """Return the Tk window that dialogs should be parented to, or ``None``."""
+        root = getattr(self, '_tk_root', None)
+        if root is None:
+            if hasattr(self.plot_manager, 'parent_frame') and self.plot_manager.parent_frame:
+                try:
+                    root = self.plot_manager.parent_frame.winfo_toplevel()
+                except Exception:
+                    root = None
+        if root is None and hasattr(self.islat, 'GUI') and getattr(self.islat.GUI, 'master', None):
+            root = self.islat.GUI.master
+        return root
+
+    # ------------------------------------------------------------------
+    # Wavelength markers (Shift+M)
+    # ------------------------------------------------------------------
+    #: (value, display name) pairs for the dialog's label-position and line-style choices.
+    WAVELENGTH_MARKER_LABEL_SIDE_CHOICES = (("left", "Left"), ("center", "Center"), ("right", "Right"))
+    WAVELENGTH_MARKER_LINESTYLE_CHOICES = (
+        ("dashed", "Dashed"), ("solid", "Solid"), ("dotted", "Dotted"), ("dashdot", "Dash-dot"),
+    )
+
+    def _current_selection(self) -> Optional[Tuple[float, float]]:
+        """Return the controller's current span selection as ``(lo, hi)``, or ``None``."""
+        state = getattr(self.plot_manager, 'toggle_state', None)
+        sel = state.get("current_selection") if isinstance(state, dict) else None
+        if not sel:
+            return None
+        try:
+            lo, hi = float(sel[0]), float(sel[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        return (lo, hi) if lo <= hi else (hi, lo)
+
+    def _default_marker_window(self) -> Tuple[str, float, float]:
+        """Initial dialog values: the span selection as a range, else the view center as a single mark."""
+        sel = self._current_selection()
+        if sel is not None and sel[1] > sel[0]:
+            return ("range", sel[0], sel[1])
+        xmin, xmax = self._get_active_plot_range()
+        center = (xmin + xmax) / 2.0
+        return ("single", center, center)
+
+    @staticmethod
+    def _describe_wavelength_marker(marker: Dict[str, Any]) -> str:
+        """One-line summary of a marker for the dialog list."""
+        start, end = marker["start"], marker["end"]
+        where = f"{start:.5f} \u03bcm" if end == start else f"{start:.5f} \u2013 {end:.5f} \u03bcm"
+        color = marker.get('color', '')
+        label = marker.get("label")
+        text = where
+        if label:
+            details = [label, marker.get('label_side', 'center')]
+            label_color = marker.get('label_color')
+            if label_color and label_color != color:
+                details.append(label_color)
+            text = f"{where}   [{', '.join(details)}]"
+        return f"{text}   ({color}, {marker.get('linestyle', 'dashed')})"
+
+    @staticmethod
+    def _ask_marker_color(parent: Any, title: str, initial: str) -> Optional[str]:
+        """Open the system color picker (as for molecule colors); return a hex color or ``None``."""
+        from tkinter import colorchooser
+        return colorchooser.askcolor(title=title, color=initial, parent=parent)[1]
+
+    def open_wavelength_marker_dialog(self) -> None:
+        """Open the non-modal Mark Wavelengths dialog.
+
+        Adds a vertical line (single wavelength) or a shaded band (range),
+        with an optional label, label position (left / center / right of the
+        marker), line color, independent label color (color pickers, as for
+        molecule colors) and line style, to every wavelength plot.  Lists
+        existing marks so they can be removed.  Defaults to the current span
+        selection (as a range) or the view center (as a single wavelength).
+        """
+        import tkinter as tk
+        from tkinter import ttk
+        from matplotlib.colors import to_hex
+        from iSLAT.Modules.Plotting.PlotView import DEFAULT_WAVELENGTH_MARKER_COLOR
+        from .GUIFunctions import ColorButton
+
+        existing = getattr(self, '_marker_dialog', None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    existing.focus_set()
+                    return
+            except Exception:
+                pass
+            self._marker_dialog = None
+
+        root = self._resolve_dialog_root()
+        if root is None:
+            return
+        pm = self.plot_manager
+        if not hasattr(pm, 'add_wavelength_marker'):
+            return
+
+        mode, lo, hi = self._default_marker_window()
+
+        win = tk.Toplevel(root)
+        win.title("Mark Wavelengths")
+        win.resizable(False, False)
+        win.transient(root)
+        self._marker_dialog = win
+
+        content = ttk.Frame(win)
+        content.pack(fill="both", expand=True, padx=12, pady=12)
+
+        mode_var = tk.StringVar(master=win, value=mode)
+        wave_var = tk.StringVar(master=win, value=f"{(lo + hi) / 2.0:.5f}")
+        start_var = tk.StringVar(master=win, value=f"{lo:.5f}")
+        end_var = tk.StringVar(master=win, value=f"{hi:.5f}")
+        label_var = tk.StringVar(master=win, value="")
+        line_color_var = tk.StringVar(master=win, value=to_hex(DEFAULT_WAVELENGTH_MARKER_COLOR))
+        label_color_var = tk.StringVar(master=win, value=line_color_var.get())
+        label_same_var = tk.BooleanVar(master=win, value=True)
+        label_side_var = tk.StringVar(master=win, value="center")
+        linestyle_names = {value: name for value, name in self.WAVELENGTH_MARKER_LINESTYLE_CHOICES}
+        linestyle_values = {name: value for value, name in self.WAVELENGTH_MARKER_LINESTYLE_CHOICES}
+        linestyle_var = tk.StringVar(master=win, value=linestyle_names["dashed"])
+        error_var = tk.StringVar(master=win, value="")
+
+        row = 0
+        ttk.Radiobutton(content, text="Wavelength (\u03bcm):", variable=mode_var,
+                        value="single").grid(row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
+        wave_entry = ttk.Entry(content, textvariable=wave_var, width=12)
+        wave_entry.grid(row=row, column=1, sticky="w", pady=(0, 6))
+
+        row += 1
+        ttk.Radiobutton(content, text="Range (\u03bcm):", variable=mode_var,
+                        value="range").grid(row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
+        range_frame = ttk.Frame(content)
+        range_frame.grid(row=row, column=1, sticky="w", pady=(0, 6))
+        start_entry = ttk.Entry(range_frame, textvariable=start_var, width=10)
+        start_entry.pack(side="left")
+        ttk.Label(range_frame, text=" to ").pack(side="left")
+        end_entry = ttk.Entry(range_frame, textvariable=end_var, width=10)
+        end_entry.pack(side="left")
+
+        def _use_selection():
+            sel = self._current_selection()
+            if sel is None or sel[1] <= sel[0]:
+                error_var.set("No span selection on the plot.")
+                return
+            start_var.set(f"{sel[0]:.5f}")
+            end_var.set(f"{sel[1]:.5f}")
+            mode_var.set("range")
+            error_var.set("")
+
+        ttk.Button(range_frame, text="Use Selection", command=_use_selection).pack(
+            side="left", padx=(6, 0)
+        )
+
+        row += 1
+        ttk.Label(content, text="Label (optional):").grid(
+            row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
+        )
+        label_entry = ttk.Entry(content, textvariable=label_var, width=24)
+        label_entry.grid(row=row, column=1, sticky="ew", pady=(0, 6))
+
+        row += 1
+        ttk.Label(content, text="Label position:").grid(
+            row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
+        )
+        side_frame = ttk.Frame(content)
+        side_frame.grid(row=row, column=1, sticky="w", pady=(0, 6))
+        for value, name in self.WAVELENGTH_MARKER_LABEL_SIDE_CHOICES:
+            ttk.Radiobutton(side_frame, text=name, variable=label_side_var,
+                            value=value).pack(side="left", padx=(0, 6))
+
+        row += 1
+        ttk.Label(content, text="Line color:").grid(
+            row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
+        )
+        line_swatch = ColorButton(content, color=line_color_var.get())
+        line_swatch.grid(row=row, column=1, sticky="w", pady=(0, 6))
+
+        row += 1
+        ttk.Label(content, text="Label color:").grid(
+            row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
+        )
+        label_color_frame = ttk.Frame(content)
+        label_color_frame.grid(row=row, column=1, sticky="w", pady=(0, 6))
+        label_swatch = ColorButton(label_color_frame, color=label_color_var.get())
+        label_swatch.pack(side="left")
+
+        def _set_swatch(swatch, var, color):
+            var.set(color)
+            swatch.change_color(color)
+            swatch.config(bg=swatch.color)
+
+        def _pick_line_color():
+            chosen = self._ask_marker_color(win, "Pick marker line color", line_color_var.get())
+            if chosen:
+                _set_swatch(line_swatch, line_color_var, chosen)
+                if label_same_var.get():
+                    _set_swatch(label_swatch, label_color_var, chosen)
+
+        def _pick_label_color():
+            chosen = self._ask_marker_color(win, "Pick marker label color", label_color_var.get())
+            if chosen:
+                label_same_var.set(False)
+                _set_swatch(label_swatch, label_color_var, chosen)
+
+        def _on_label_same_toggled():
+            if label_same_var.get():
+                _set_swatch(label_swatch, label_color_var, line_color_var.get())
+
+        line_swatch.add_command(_pick_line_color)
+        label_swatch.add_command(_pick_label_color)
+        ttk.Checkbutton(label_color_frame, text="Same as line", variable=label_same_var,
+                        command=_on_label_same_toggled).pack(side="left", padx=(8, 0))
+
+        row += 1
+        ttk.Label(content, text="Line style:").grid(
+            row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
+        )
+        ttk.Combobox(content, textvariable=linestyle_var, state="readonly", width=12,
+                     values=[name for _value, name in self.WAVELENGTH_MARKER_LINESTYLE_CHOICES],
+                     ).grid(row=row, column=1, sticky="w", pady=(0, 6))
+
+        row += 1
+        ttk.Label(content, textvariable=error_var, foreground="red").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(0, 6)
+        )
+
+        def _sync_entry_states(*_):
+            single = mode_var.get() == "single"
+            wave_entry.configure(state="normal" if single else "disabled")
+            for entry in (start_entry, end_entry):
+                entry.configure(state="disabled" if single else "normal")
+
+        mode_var.trace_add("write", _sync_entry_states)
+        _sync_entry_states()
+
+        row += 1
+        ttk.Separator(content, orient="horizontal").grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=(2, 8)
+        )
+
+        row += 1
+        ttk.Label(content, text="Current marks:").grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        list_frame = ttk.Frame(content)
+        list_frame.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(2, 6))
+        listbox = tk.Listbox(list_frame, height=6, width=48, selectmode="extended",
+                             exportselection=False)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _refresh_list():
+            listbox.delete(0, "end")
+            for marker in pm.wavelength_markers:
+                listbox.insert("end", self._describe_wavelength_marker(marker))
+
+        def _add(event=None):
+            try:
+                if mode_var.get() == "single":
+                    start = end = float(wave_var.get())
+                else:
+                    start, end = float(start_var.get()), float(end_var.get())
+                    if start == end:
+                        error_var.set("Range start and end must differ.")
+                        return
+            except ValueError:
+                error_var.set("Invalid wavelength.")
+                return
+            try:
+                pm.add_wavelength_marker(
+                    start, end, label=label_var.get(), color=line_color_var.get(),
+                    label_color=label_color_var.get(),
+                    label_side=label_side_var.get(),
+                    linestyle=linestyle_values.get(linestyle_var.get(), linestyle_var.get()),
+                )
+            except ValueError as exc:
+                error_var.set(str(exc))
+                return
+            error_var.set("")
+            label_var.set("")
+            _refresh_list()
+
+        def _remove_selected():
+            for index in sorted(listbox.curselection(), reverse=True):
+                pm.remove_wavelength_marker(index)
+            _refresh_list()
+
+        def _clear_all():
+            pm.clear_wavelength_markers()
+            _refresh_list()
+
+        def _close(event=None):
+            self._marker_dialog = None
+            win.destroy()
+
+        row += 1
+        btn_frame = ttk.Frame(content)
+        btn_frame.grid(row=row, column=0, columnspan=2, sticky="ew")
+        ttk.Button(btn_frame, text="Add Mark", command=_add).pack(side="left")
+        ttk.Button(btn_frame, text="Remove Selected", command=_remove_selected).pack(
+            side="left", padx=(4, 0)
+        )
+        ttk.Button(btn_frame, text="Clear All", command=_clear_all).pack(side="left", padx=(4, 0))
+        ttk.Button(btn_frame, text="Close", command=_close).pack(side="right")
+
+        win.bind("<Return>", _add)
+        win.bind("<Escape>", _close)
+        win.protocol("WM_DELETE_WINDOW", _close)
+        _refresh_list()
+
+        win.update_idletasks()
+        x = win.winfo_screenwidth() // 2 - win.winfo_width() // 2
+        y = win.winfo_screenheight() // 2 - win.winfo_height() // 2
+        win.geometry(f"+{x}+{y}")
+        focus_entry = wave_entry if mode_var.get() == "single" else start_entry
+        focus_entry.focus_set()
+        focus_entry.select_range(0, "end")
+
+    # Private alias used by the Shift+M key handler.
+    _open_wavelength_marker_dialog = open_wavelength_marker_dialog
 
     def _advance_plot_start(self, extra_amount: Optional[float] = None):
         """Advance the plot start by the current plot range value."""

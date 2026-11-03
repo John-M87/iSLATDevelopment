@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 
 from iSLAT.Modules.Plotting.FullSpectrumPlot import FullSpectrumPlot
-from iSLAT.Modules.Plotting.FullSpectrumView import toggle_state_display_kwargs
+from iSLAT.Modules.Plotting.FullSpectrumView import toggle_state_display_kwargs, draw_toggle_state_markers
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 
 from typing import Optional, Any, TYPE_CHECKING
@@ -44,7 +44,7 @@ class FullSpectrumWindow(tk.Toplevel):
         self.canvas_frame = ttk.Frame(self.main_frame)
         self.canvas_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.spectrum_plot.generate_plot()
+        self._generate_plot()
         self.canvas = FigureCanvasTkAgg(self.spectrum_plot.fig, master=self.canvas_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
@@ -57,6 +57,14 @@ class FullSpectrumWindow(tk.Toplevel):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _generate_plot(self):
+        """Render the plot and overlay the GUI's user wavelength markers."""
+        self.spectrum_plot.generate_plot()
+        ts = {}
+        if hasattr(self.islat_ref, "GUI") and hasattr(self.islat_ref.GUI, "plot"):
+            ts = getattr(self.islat_ref.GUI.plot, "toggle_state", {})
+        draw_toggle_state_markers(self.spectrum_plot.fig, ts)
+
     def _constrain_to_screen(self):
         """Set initial window geometry so it fits comfortably on screen."""
         screen_w = self.winfo_screenwidth()
@@ -192,7 +200,7 @@ class FullSpectrumWindow(tk.Toplevel):
                 kw["figsize"] = tuple(figsize)
             self.spectrum_plot.close()
             self.spectrum_plot = self._create_plot(**kw)
-            self.spectrum_plot.generate_plot()
+            self._generate_plot()
             self.canvas.figure = self.spectrum_plot.fig
             self.canvas.draw_idle()
             self.nav_toolbar.update()

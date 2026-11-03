@@ -16,6 +16,140 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.Molecule import Molecule
 
+# ----------------------------------------------------------------------
+# User wavelength markers (Shift+M)
+# ----------------------------------------------------------------------
+WAVELENGTH_MARKER_TAG = "_islat_wavelength_marker"
+DEFAULT_WAVELENGTH_MARKER_COLOR = "magenta"
+#: Label placement relative to the marker: just left of it, centered on it, or just right of it.
+WAVELENGTH_MARKER_LABEL_SIDES = ("left", "center", "right")
+DEFAULT_WAVELENGTH_MARKER_LABEL_SIDE = "center"
+#: Matplotlib line-style names accepted for marker lines (single marks and range edges).
+WAVELENGTH_MARKER_LINESTYLES = ("solid", "dashed", "dotted", "dashdot")
+DEFAULT_WAVELENGTH_MARKER_LINESTYLE = "dashed"
+_LINESTYLE_ALIASES = {"-": "solid", "--": "dashed", ":": "dotted", "-.": "dashdot", "dash-dot": "dashdot"}
+#: Gap (points) between a side-placed label and its marker.
+_LABEL_OFFSET_PTS = 3.0
+
+
+def make_wavelength_marker(
+    start: float,
+    end: Optional[float] = None,
+    label: str = "",
+    color: Optional[str] = None,
+    label_side: Optional[str] = None,
+    linestyle: Optional[str] = None,
+    label_color: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return a validated marker dict.
+
+    Keys: ``start``, ``end``, ``label``, ``color`` (line / band),
+    ``label_color`` (defaults to ``color``), ``label_side`` (one of
+    :data:`WAVELENGTH_MARKER_LABEL_SIDES`) and ``linestyle`` (one of
+    :data:`WAVELENGTH_MARKER_LINESTYLES`; ``"-"``, ``"--"``, ``":"`` and
+    ``"-."`` are accepted too).  A single wavelength has ``start == end``;
+    reversed ranges are swapped.
+
+    Raises
+    ------
+    ValueError
+        If a bound is not a finite number, or a color, the label side or the
+        line style is not recognised.
+    """
+    import numpy as np
+    from matplotlib.colors import is_color_like
+
+    start = float(start)
+    end = start if end is None else float(end)
+    if not (np.isfinite(start) and np.isfinite(end)):
+        raise ValueError("Wavelengths must be finite numbers.")
+    if end < start:
+        start, end = end, start
+    color = (color or "").strip() or DEFAULT_WAVELENGTH_MARKER_COLOR
+    if not is_color_like(color):
+        raise ValueError(f"'{color}' is not a valid color.")
+    label_color = (label_color or "").strip() or color
+    if not is_color_like(label_color):
+        raise ValueError(f"'{label_color}' is not a valid label color.")
+    label_side = (label_side or "").strip().lower() or DEFAULT_WAVELENGTH_MARKER_LABEL_SIDE
+    if label_side not in WAVELENGTH_MARKER_LABEL_SIDES:
+        raise ValueError(f"Label position must be one of: {', '.join(WAVELENGTH_MARKER_LABEL_SIDES)}.")
+    linestyle = (linestyle or "").strip().lower() or DEFAULT_WAVELENGTH_MARKER_LINESTYLE
+    linestyle = _LINESTYLE_ALIASES.get(linestyle, linestyle)
+    if linestyle not in WAVELENGTH_MARKER_LINESTYLES:
+        raise ValueError(f"Line style must be one of: {', '.join(WAVELENGTH_MARKER_LINESTYLES)}.")
+    return {
+        "start": start, "end": end, "label": str(label or "").strip(), "color": color,
+        "label_color": label_color, "label_side": label_side, "linestyle": linestyle,
+    }
+
+
+def clear_wavelength_markers(ax: Any) -> None:
+    """Remove every wavelength-marker artist from *ax*."""
+    for artist in list(ax.get_children()):
+        if hasattr(artist, WAVELENGTH_MARKER_TAG):
+            artist.remove()
+
+
+def draw_wavelength_markers(ax: Any, markers: Any) -> None:
+    """Draw *markers* on *ax* as vertical lines (single) or shaded bands (ranges).
+
+    Ranges get a translucent fill plus edge lines in the marker's line
+    style.  Artists are collections in x-data / y-axes coordinates added
+    with ``autolim=False``, so they span the full height and never change
+    the axes' limits (``relim`` ignores collections).
+    """
+    from matplotlib.collections import LineCollection, PolyCollection
+
+    trans = ax.get_xaxis_transform()
+    for marker in markers or ():
+        try:
+            start, end = float(marker["start"]), float(marker["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        color = marker.get("color") or DEFAULT_WAVELENGTH_MARKER_COLOR
+        linestyle = marker.get("linestyle") or DEFAULT_WAVELENGTH_MARKER_LINESTYLE
+        linestyle = _LINESTYLE_ALIASES.get(linestyle, linestyle)
+        if linestyle not in WAVELENGTH_MARKER_LINESTYLES:
+            linestyle = DEFAULT_WAVELENGTH_MARKER_LINESTYLE
+
+        artists = []
+        if end > start:
+            artists.append(PolyCollection(
+                [[(start, 0.0), (end, 0.0), (end, 1.0), (start, 1.0)]], transform=trans,
+                facecolors=color, edgecolors="none", alpha=0.2, zorder=0.5,
+            ))
+            artists.append(LineCollection(
+                [[(start, 0.0), (start, 1.0)], [(end, 0.0), (end, 1.0)]], transform=trans,
+                colors=color, linestyles=linestyle, linewidths=1.0, alpha=0.8, zorder=2.5,
+            ))
+        else:
+            artists.append(LineCollection(
+                [[(start, 0.0), (start, 1.0)]], transform=trans,
+                colors=color, linestyles=linestyle, linewidths=1.2, zorder=2.5,
+            ))
+        for artist in artists:
+            setattr(artist, WAVELENGTH_MARKER_TAG, True)
+            ax.add_collection(artist, autolim=False)
+
+        label = marker.get("label")
+        if label:
+            side = marker.get("label_side") or DEFAULT_WAVELENGTH_MARKER_LABEL_SIDE
+            if side == "left":
+                x, ha, dx = start, "right", -_LABEL_OFFSET_PTS
+            elif side == "right":
+                x, ha, dx = end, "left", _LABEL_OFFSET_PTS
+            else:
+                x, ha, dx = (start + end) / 2.0, "center", 0.0
+            text = ax.annotate(
+                label, xy=(x, 0.98), xycoords=trans,
+                xytext=(dx, 0.0), textcoords="offset points",
+                ha=ha, va="top", fontsize=8, color=marker.get("label_color") or color,
+                clip_on=True, zorder=3,
+            )
+            setattr(text, WAVELENGTH_MARKER_TAG, True)
+
+
 def fit_y_limits_to_data(ax: Any, wave: Any, flux: Any) -> Optional[Tuple[float, float]]:
     """Return ``(ymin, ymax)`` fitting *flux* inside *ax*'s current x-range.
 
@@ -366,6 +500,29 @@ class PlotView(ABC):
             return
         self._set_observed_visibility(toggle_state.get("observed", True))
         self.apply_y_limits(toggle_state, autoscale_now=False)
+        self._apply_wavelength_markers(toggle_state)
+
+    # ------------------------------------------------------------------
+    # User wavelength markers
+    # ------------------------------------------------------------------
+    def _iter_marker_axes(self):
+        """Yield wavelength axes that show user markers (defaults to the observed axes)."""
+        return self._iter_observed_axes()
+
+    def _apply_wavelength_markers(self, toggle_state: Optional[dict]) -> None:
+        """Redraw ``toggle_state['wavelength_markers']`` on every marker axis."""
+        markers = []
+        if isinstance(toggle_state, dict):
+            markers = toggle_state.get("wavelength_markers") or []
+        for ax in self._iter_marker_axes():
+            clear_wavelength_markers(ax)
+            draw_wavelength_markers(ax, markers)
+
+    def refresh_wavelength_markers(self) -> None:
+        """Redraw the controller's wavelength markers on this view and flush the canvas."""
+        state = getattr(getattr(self, "_pm", None), "toggle_state", None)
+        self._apply_wavelength_markers(state)
+        self.draw()
 
     # ------------------------------------------------------------------
     # File output
