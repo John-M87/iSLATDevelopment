@@ -160,6 +160,10 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
 
         self.lines = None
         #self._lines_filepath = absolute_data_files_path / self.filepath
+
+        # Saves made before sub-folder paths were kept can point at a missing file.
+        from iSLAT.Modules.FileHandling.line_list_paths import repair_line_list_path
+        self.filepath = repair_line_list_path(self.filepath)
         
         # Calculate derived parameters
         self.n_mol_init = float(self.scale_number * (10 ** self.scale_exponent))

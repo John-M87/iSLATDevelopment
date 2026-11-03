@@ -13,6 +13,7 @@ from .Modules.Debug.PerformanceLogger import (
 from .Modules.FileHandling.iSLATFileHandling import load_user_settings, save_user_settings, read_default_molecule_parameters, read_initial_molecule_parameters, read_full_molecule_parameters, read_HITRAN_data, read_from_user_csv, read_default_csv, read_spectral_data
 from .Modules.FileHandling.iSLATFileHandling import load_sample_config, save_sample_config, load_control_panel_fields_config
 from .Modules.FileHandling.iSLATFileHandling import molsave_file_name, save_folder_path, hitran_data_folder_path, hitran_data_folder_name, example_data_folder_path
+from .Modules.FileHandling.line_list_paths import to_portable_line_list_path
 
 from . import Constants as c
 from .Modules.DataTypes.Molecule import Molecule
@@ -278,7 +279,8 @@ class iSLAT:
         for i, hitran_file in enumerate(hitran_files):
             # Get molecule name for this file
             molecule_file_name = os.path.basename(hitran_file)
-            molecule_file_path = hitran_data_folder_name / molecule_file_name
+            # Keep sub-folders (e.g. HITRANdata/Custom/...) so the path still resolves after a save / reload.
+            molecule_file_path = to_portable_line_list_path(hitran_file)
             if molecule_names is not None and i < len(molecule_names):
                 molecule_label = molecule_names[i]
                 
