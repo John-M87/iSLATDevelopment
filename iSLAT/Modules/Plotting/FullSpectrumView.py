@@ -321,8 +321,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         # (e.g. 12 x 16 in) which are far too tall for an embedded
         # canvas -- especially on Windows where the oversized figure
         # causes rendering/layout problems.
-        # Cap the height to a screen-proportional value, matching the
-        # approach used by FullSpectrumWindow._create_plot().
+        # Cap the height to a screen-proportional value.
         figsize = self._compute_interactive_figsize(wave)
 
         show_residuals = self._pm.toggle_state.get("show_residuals", False)

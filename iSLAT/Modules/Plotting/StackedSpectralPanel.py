@@ -30,6 +30,7 @@ from typing import (
     List,
     Dict,
     Any,
+    Sequence,
     TYPE_CHECKING,
 )
 
@@ -109,6 +110,7 @@ class StackedSpectralPanel(CompositePlot):
         gap_mode: GapMode | str = GapMode.CONNECT,
         gap_threshold: Optional[float] = None,
         x_scaling: XScaling | str = XScaling.WAVELENGTH,
+        panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
         **kwargs,
     ):
         super().__init__(figsize=figsize, **kwargs)
@@ -149,6 +151,11 @@ class StackedSpectralPanel(CompositePlot):
             self._xlim_start = float(np.nanmin(self.wave_data))
             self._xlim_end = float(np.nanmax(self.wave_data))
 
+        # Explicit per-panel ranges override the automatic split (see set_panel_ranges).
+        self.panel_ranges: Optional[List[Tuple[float, float]]] = (
+            self._validate_panel_ranges(panel_ranges) if panel_ranges else None
+        )
+
         # Compute panel edges and ends
         self._compute_panel_layout(step=step)
 
@@ -182,8 +189,23 @@ class StackedSpectralPanel(CompositePlot):
         * ``_panel_edges[i]`` - left boundary of panel *i*
         * ``_panel_ends[i]``  - right boundary of panel *i*
         * ``_step``           - uniform step width (``WAVELENGTH`` mode)
-          **or** ``None`` (``DATA_DENSITY`` mode).
+          **or** ``None`` (``DATA_DENSITY`` mode or explicit ranges).
+
+        When :attr:`panel_ranges` is set, each panel shows exactly its
+        ``(start, end)`` pair, in the given order; the ranges may overlap
+        or leave gaps, and ``n_panels`` / the x-range / ``x_scaling`` are
+        derived from them instead.
         """
+        if getattr(self, "panel_ranges", None):
+            ranges = np.asarray(self.panel_ranges, dtype=float)
+            self._panel_edges = ranges[:, 0].copy()
+            self._panel_ends = ranges[:, 1].copy()
+            self.n_panels = len(ranges)
+            self._step = None
+            self._xlim_start = float(ranges[:, 0].min())
+            self._xlim_end = float(ranges[:, 1].max())
+            return
+
         start = self._xlim_start
         end = self._xlim_end
 
@@ -244,6 +266,42 @@ class StackedSpectralPanel(CompositePlot):
         edges = boundaries[:-1]
         ends = boundaries[1:]
         return edges, ends
+
+    @staticmethod
+    def _validate_panel_ranges(
+        ranges: Sequence[Tuple[float, float]],
+    ) -> List[Tuple[float, float]]:
+        """Return *ranges* as a list of float pairs, raising ``ValueError`` if any is invalid."""
+        result: List[Tuple[float, float]] = []
+        for i, pair in enumerate(ranges, start=1):
+            try:
+                lo, hi = (float(v) for v in pair)
+            except (TypeError, ValueError):
+                raise ValueError(f"Range {i} must be a (start, end) pair of numbers.") from None
+            if not (np.isfinite(lo) and np.isfinite(hi)) or lo >= hi:
+                raise ValueError(f"Range {i}: start must be less than end.")
+            result.append((lo, hi))
+        if not result:
+            raise ValueError("Give at least one panel range.")
+        return result
+
+    def set_panel_ranges(
+        self,
+        ranges: Optional[Sequence[Tuple[float, float]]],
+    ) -> None:
+        """Show one panel per ``(start, end)`` in *ranges*, or ``None`` to restore the automatic split.
+
+        Ranges need not be contiguous or sorted.  Clearing them restores the
+        automatic split over their overall span.  Call :meth:`generate_plot`
+        afterwards to re-render.
+
+        Raises
+        ------
+        ValueError
+            If a range is not a finite pair with start < end, or *ranges* is empty.
+        """
+        self.panel_ranges = self._validate_panel_ranges(ranges) if ranges is not None else None
+        self._compute_panel_layout()
 
     def get_panel_end(self, idx: int) -> float:
         """Return the right wavelength boundary for panel *idx*.

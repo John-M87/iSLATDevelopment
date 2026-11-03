@@ -12,7 +12,7 @@ import iSLAT.Constants as c
 
 from .BasePlot import BasePlot
 from .MainPlotGrid import MainPlotGrid
-from .PlotView import PlotView, fit_y_limits_to_data, make_wavelength_marker
+from .PlotView import PlotView, fit_y_limits_to_data, WavelengthMarkerStoreMixin
 from .ThreePanelView import ThreePanelView
 from .FullSpectrumView import FullSpectrumView
 from .PopulationDiagramView import PopulationDiagramView
@@ -48,7 +48,7 @@ except ImportError:
     debug_config = FallbackDebugConfig()
 from iSLAT.Modules.DataProcessing.LineAnalyzer import LineAnalyzer
 
-class iSLATPlot:
+class iSLATPlot(WavelengthMarkerStoreMixin):
     """
     Main plotting class for iSLAT spectroscopy tool.
     
@@ -580,47 +580,8 @@ class iSLATPlot:
         self.active_view.toggle_observed_data(self.observed_toggle)
 
     # ------------------------------------------------------------------
-    # User wavelength markers (Shift+M)
+    # User wavelength markers (Shift+M) - API from WavelengthMarkerStoreMixin
     # ------------------------------------------------------------------
-    @property
-    def wavelength_markers(self) -> list:
-        """The user's wavelength markers (``{"start", "end", "label", "color"}`` dicts)."""
-        return self.toggle_state.setdefault("wavelength_markers", [])
-
-    def add_wavelength_marker(
-        self,
-        start: float,
-        end: Optional[float] = None,
-        label: str = "",
-        color: Optional[str] = None,
-        label_side: Optional[str] = None,
-        linestyle: Optional[str] = None,
-        label_color: Optional[str] = None,
-    ) -> dict:
-        """Mark a wavelength (*end* omitted / equal) or a range on every wavelength plot.
-
-        *label_side* is ``"left"``, ``"center"`` or ``"right"`` of the marker;
-        *linestyle* is ``"solid"``, ``"dashed"``, ``"dotted"`` or ``"dashdot"``;
-        *label_color* defaults to *color*.
-        Raises ``ValueError`` for non-finite bounds or an invalid option.
-        """
-        marker = make_wavelength_marker(start, end, label, color, label_side, linestyle, label_color)
-        self.wavelength_markers.append(marker)
-        self.refresh_wavelength_markers()
-        return marker
-
-    def remove_wavelength_marker(self, index: int) -> None:
-        """Remove the marker at *index* (ignored when out of range)."""
-        markers = self.wavelength_markers
-        if 0 <= index < len(markers):
-            del markers[index]
-            self.refresh_wavelength_markers()
-
-    def clear_wavelength_markers(self) -> None:
-        """Remove every wavelength marker."""
-        self.toggle_state["wavelength_markers"] = []
-        self.refresh_wavelength_markers()
-
     def refresh_wavelength_markers(self) -> None:
         """Redraw markers on the active view; inactive views resync when activated."""
         view = getattr(self, "active_view", None)

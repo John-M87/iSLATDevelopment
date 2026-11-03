@@ -150,6 +150,58 @@ def draw_wavelength_markers(ax: Any, markers: Any) -> None:
             setattr(text, WAVELENGTH_MARKER_TAG, True)
 
 
+class WavelengthMarkerStoreMixin:
+    """Wavelength-marker API for an object holding them in ``self.toggle_state``.
+
+    The host provides ``toggle_state`` (a dict) and
+    ``refresh_wavelength_markers()`` (redraw wherever the markers are shown).
+    Used by the main plot controller and the Display Full Spectrum window, and
+    by the Mark Wavelengths dialog as its *marker store*.
+    """
+
+    @property
+    def wavelength_markers(self) -> list:
+        """The user's wavelength markers (``{"start", "end", "label", "color"}`` dicts)."""
+        return self.toggle_state.setdefault("wavelength_markers", [])
+
+    def add_wavelength_marker(
+        self,
+        start: float,
+        end: Optional[float] = None,
+        label: str = "",
+        color: Optional[str] = None,
+        label_side: Optional[str] = None,
+        linestyle: Optional[str] = None,
+        label_color: Optional[str] = None,
+    ) -> dict:
+        """Mark a wavelength (*end* omitted / equal) or a range on every wavelength plot.
+
+        *label_side* is ``"left"``, ``"center"`` or ``"right"`` of the marker;
+        *linestyle* is ``"solid"``, ``"dashed"``, ``"dotted"`` or ``"dashdot"``;
+        *label_color* defaults to *color*.
+        Raises ``ValueError`` for non-finite bounds or an invalid option.
+        """
+        marker = make_wavelength_marker(start, end, label, color, label_side, linestyle, label_color)
+        self.wavelength_markers.append(marker)
+        self.refresh_wavelength_markers()
+        return marker
+
+    def remove_wavelength_marker(self, index: int) -> None:
+        """Remove the marker at *index* (ignored when out of range)."""
+        markers = self.wavelength_markers
+        if 0 <= index < len(markers):
+            del markers[index]
+            self.refresh_wavelength_markers()
+
+    def clear_wavelength_markers(self) -> None:
+        """Remove every wavelength marker."""
+        self.toggle_state["wavelength_markers"] = []
+        self.refresh_wavelength_markers()
+
+    def refresh_wavelength_markers(self) -> None:  # pragma: no cover - hosts override
+        """Redraw the markers wherever they are shown."""
+
+
 def fit_y_limits_to_data(ax: Any, wave: Any, flux: Any) -> Optional[Tuple[float, float]]:
     """Return ``(ymin, ymax)`` fitting *flux* inside *ax*'s current x-range.
 
