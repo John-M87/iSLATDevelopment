@@ -637,36 +637,45 @@ class BasePlot(ABC):
         xr: Tuple[float, float],
         ymin: float,
         ymax: float,
-        offset_label: float = 0.003,
+        offset_label: float = 0.0, #0.003,
         tag: Optional[str] = None,
+        show_labels: bool = True,
     ) -> None:
         """
         Draw vertical dotted lines + labels for a line list DataFrame.
 
-        The DataFrame must contain at least ``wave`` (or ``lam``) and ``species`` columns.
+        The DataFrame must contain at least ``wave`` (or ``lam``); labels
+        follow the app-wide saved-line label setting (see
+        :mod:`~iSLAT.Modules.Plotting.SavedLineLabels`, default ``species line``).
 
         Parameters
         ----------
         tag : str, optional
             When provided every created artist is stamped with
             ``setattr(artist, tag, True)`` so callers can later remove them with :meth:`_clear_tagged_artists`.
+        show_labels : bool
+            ``False`` draws only the dotted lines (per-view label toggle).
         """
         if line_data is None or len(line_data) == 0:
             return
         col = "wave" if "wave" in line_data.columns else ("lam" if "lam" in line_data.columns else None)
         if col is None:
             return
+        from .SavedLineLabels import saved_line_labels
         lam_arr = line_data[col].values
-        species_arr = line_data["species"].values if "species" in line_data.columns else [""] * len(lam_arr)
-        line_id_arr = line_data["line"].values if "line" in line_data.columns else [""] * len(lam_arr)
+        labels = saved_line_labels(line_data) if show_labels else None
 
         for i, lam in enumerate(lam_arr):
             if xr[0] < lam < xr[1]:
                 vl = ax.vlines(lam, ymin, ymax, linestyles="dotted", color="grey", linewidth=0.7)
+                if tag is not None:
+                    setattr(vl, tag, True)
+                if not labels or not labels[i]:
+                    continue
                 txt = ax.text(
                     lam + offset_label,
                     ymax,
-                    f"{species_arr[i]} {line_id_arr[i]}",
+                    labels[i],
                     fontsize=6,
                     rotation=90,
                     va="top",
@@ -674,7 +683,6 @@ class BasePlot(ABC):
                     color="grey",
                 )
                 if tag is not None:
-                    setattr(vl, tag, True)
                     setattr(txt, tag, True)
 
     @staticmethod
@@ -723,6 +731,7 @@ class BasePlot(ABC):
         lam_color: str = "red",
         range_color: str = "orange",
         alpha: float = 0.7,
+        show_labels: bool = False,
     ) -> None:
         """Plot saved-line markers on *ax* with artist tagging.
 
@@ -742,10 +751,18 @@ class BasePlot(ABC):
             colors for the center-wavelength and range-boundary markers.
         alpha : float
             Transparency of the markers.
+        show_labels : bool
+            Also write each line's label (the app-wide saved-line label
+            setting) at the top of the axes, beside the ``lam`` marker (or
+            the ``xmin`` marker when there is no ``lam``).
         """
         if loaded_lines is None or loaded_lines.empty:
             return
-        for _, line in loaded_lines.iterrows():
+        labels = None
+        if show_labels:
+            from .SavedLineLabels import saved_line_labels
+            labels = saved_line_labels(loaded_lines)
+        for i, (_, line) in enumerate(loaded_lines.iterrows()):
             if "lam" in line:
                 art = ax.axvline(
                     line["lam"], color=lam_color, alpha=alpha,
@@ -756,6 +773,21 @@ class BasePlot(ABC):
                 for val in (line["xmin"], line["xmax"]):
                     art = ax.axvline(val, color=range_color, alpha=alpha)
                     setattr(art, tag, True)
+            if labels and labels[i]:
+                x = line["lam"] if "lam" in line else line.get("xmin")
+                try:
+                    x = float(x)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(x):
+                    continue
+                txt = ax.annotate(
+                    labels[i], xy=(x, 0.98), xycoords=ax.get_xaxis_transform(),
+                    xytext=(2, 0), textcoords="offset points",
+                    rotation=90, va="top", ha="left", fontsize=6,
+                    color=lam_color, clip_on=True,
+                )
+                setattr(txt, tag, True)
 
     # ------------------------------------------------------------------
     # Active-lines API

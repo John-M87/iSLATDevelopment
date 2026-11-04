@@ -1209,7 +1209,12 @@ class FullSpectrumView(ToggleMixin, PlotView):
         if "line" not in self.line_data.columns:
             self.line_data["line"] = [""] * len(self.line_data)
 
-        self._plot.plot_saved_lines(self.line_data)
+        self._plot.plot_saved_lines(self.line_data, show_labels=self._saved_line_labels_visible())
+
+    def _saved_line_labels_visible(self) -> bool:
+        """Whether this view labels its saved lines (the "Full Spectrum" toggle)."""
+        from .SavedLineLabels import labels_visible
+        return labels_visible("Full Spectrum")
 
     def _remove_saved_line_artists(self) -> None:
         """Remove all ``_islat_saved_line`` artists."""

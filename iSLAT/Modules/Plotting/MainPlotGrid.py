@@ -396,7 +396,9 @@ class MainPlotGrid(CompositePlot):
         ymax = float(ax.get_ylim()[1])
 
         if self.line_list is not None:
-            self._plot_line_annotations(ax, self.line_list, xr, ymin, ymax)
+            from .SavedLineLabels import labels_visible
+            self._plot_line_annotations(ax, self.line_list, xr, ymin, ymax,
+                                        show_labels=labels_visible("Three Panel"))
         if self.atomic_lines is not None:
             self._plot_atomic_lines(ax, self.atomic_lines, xr=xr)
 

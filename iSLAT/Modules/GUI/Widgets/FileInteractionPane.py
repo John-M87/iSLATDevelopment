@@ -377,6 +377,7 @@ class FileInteractionPane(ttk.Frame):
             state="normal" if path else "disabled",
         )
         menu.add_command(label="Load Line List\u2026", command=self._load_input_line_list)
+        menu.add_command(label="Saved Line Labels\u2026", command=self._open_saved_line_labels)
         menu.add_separator()
         menu.add_command(
             label="Remove Line List",
@@ -388,6 +389,11 @@ class FileInteractionPane(ttk.Frame):
         finally:
             menu.grab_release()
         return "break"
+
+    def _open_saved_line_labels(self):
+        """Choose the column / prefix / suffix used to label saved lines on the plots."""
+        from iSLAT.Modules.GUI.Widgets.SavedLineLabelDialog import open_saved_line_label_dialog
+        open_saved_line_label_dialog(self.winfo_toplevel(), self.islat_class)
 
     def _read_input_line_list(self):
         """Return the loaded input line list as a DataFrame (empty if none)."""

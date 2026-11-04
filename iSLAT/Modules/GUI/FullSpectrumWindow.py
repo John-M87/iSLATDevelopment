@@ -40,6 +40,7 @@ DEFAULT_WINDOW_TOGGLE_STATE: Dict[str, Any] = {
     "y_limits": None,
     "observed": True,
     "wavelength_markers": [],
+    "saved_line_labels": True,
 }
 
 
@@ -166,6 +167,10 @@ class WindowFullSpectrumView(FullSpectrumView):
     def _register_control_fields(self) -> None:
         """The window provides its own controls; nothing goes on the main ControlBus."""
 
+    def _saved_line_labels_visible(self) -> bool:
+        """The window's own saved-line label toggle."""
+        return bool(self._pm.toggle_state.get("saved_line_labels", True))
+
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Any:
         menu = tk.Menu(canvas_widget, tearoff=0)
         menu.add_command(label="Save Figure\u2026", command=self.save_figure)
@@ -231,6 +236,8 @@ class FullSpectrumWindow(tk.Toplevel):
         gui_state = getattr(gui_plot, "toggle_state", None)
         if isinstance(gui_state, dict):
             self.toggle_state.update(copy.deepcopy(gui_state))
+        from iSLAT.Modules.Plotting.SavedLineLabels import labels_visible
+        self.toggle_state["saved_line_labels"] = labels_visible("Full Spectrum")
         self.controller = _WindowPlotController(islat_ref, self.toggle_state, getattr(gui_plot, "theme", None))
         self.view = WindowFullSpectrumView(self.controller, self._initial_layout(gui_plot, kwargs))
         self.controller.view = self.view
@@ -397,6 +404,7 @@ class FullSpectrumWindow(tk.Toplevel):
             None,
             ("atomic_lines", "Atomic Lines", self.set_atomic_lines),
             ("saved_lines", "Saved Lines", self.set_saved_lines),
+            ("saved_line_labels", "Saved Line Labels", self.set_saved_line_labels),
             ("summed", "Summed Spectrum", self.set_summed),
             ("observed", "Show Observed Data", self.set_observed),
             ("legend", "Legend", self.set_legend),
@@ -471,6 +479,15 @@ class FullSpectrumWindow(tk.Toplevel):
     def set_saved_lines(self, show: bool) -> None:
         self.toggle_state["saved_lines"] = bool(show)
         self.view.toggle_saved_lines(bool(show))
+        self._after_change()
+
+    def set_saved_line_labels(self, show: bool) -> None:
+        """Show or hide the saved-line labels in this window only."""
+        self.toggle_state["saved_line_labels"] = bool(show)
+        self.view._remove_saved_line_artists()
+        if self.toggle_state.get("saved_lines", False):
+            self.view._add_saved_line_artists()
+        self.view.draw()
         self._after_change()
 
     def set_summed(self, visible: bool) -> None:

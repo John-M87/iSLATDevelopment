@@ -151,6 +151,9 @@ class StackedSpectralPanel(CompositePlot):
             self._xlim_start = float(np.nanmin(self.wave_data))
             self._xlim_end = float(np.nanmax(self.wave_data))
 
+        #: Saved-line labels on/off; ``None`` follows the "Full Spectrum" view toggle.
+        self.show_saved_line_labels: Optional[bool] = None
+
         # Explicit per-panel ranges override the automatic split (see set_panel_ranges).
         self.panel_ranges: Optional[List[Tuple[float, float]]] = (
             self._validate_panel_ranges(panel_ranges) if panel_ranges else None
@@ -544,18 +547,31 @@ class StackedSpectralPanel(CompositePlot):
                 if hasattr(panel, "remove_atomic_lines"):
                     panel.remove_atomic_lines(tag=tag)
 
+    def _saved_line_labels_shown(self) -> bool:
+        """:attr:`show_saved_line_labels` when set, else the "Full Spectrum" view's label toggle."""
+        if self.show_saved_line_labels is not None:
+            return bool(self.show_saved_line_labels)
+        from .SavedLineLabels import labels_visible
+        return labels_visible("Full Spectrum")
+
     def plot_saved_lines(
         self,
         line_data: Any,
         tag: str = "_islat_saved_line",
+        show_labels: Optional[bool] = None,
     ) -> None:
-        """Draw saved-line annotations on every panel that supports it."""
+        """Draw saved-line annotations on every panel that supports it.
+
+        *show_labels* ``None`` uses :meth:`_saved_line_labels_shown`.
+        """
         if line_data is None or (hasattr(line_data, "__len__") and len(line_data) == 0):
             return
+        if show_labels is None:
+            show_labels = self._saved_line_labels_shown()
         for cell_panels in self.panels.values():
             for panel in cell_panels:
                 if hasattr(panel, "plot_saved_lines"):
-                    panel.plot_saved_lines(line_data, tag=tag)
+                    panel.plot_saved_lines(line_data, tag=tag, show_labels=show_labels)
 
     def remove_saved_lines(
         self,

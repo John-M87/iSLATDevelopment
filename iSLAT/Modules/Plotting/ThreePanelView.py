@@ -18,6 +18,7 @@ import numpy as np
 
 from .PlotView import PlotView
 from .BasePlot import BasePlot
+from .SavedLineLabels import labels_visible
 from .ToggleMixin import ToggleMixin
 from .MainPlotGrid import MainPlotGrid
 from .LineInspectionPlot import LineInspectionPlot
@@ -1191,12 +1192,13 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             tag="_islat_saved_line",
             lam_color=theme.get("saved_line_color", theme.get("saved_line_color_one", "red")),
             range_color=theme.get("saved_line_color_two", "orange"),
+            show_labels=labels_visible("Three Panel"),
         )
 
     def _remove_saved_line_artists(self) -> None:
-        """Remove previously plotted saved line artists from ax1."""
+        """Remove previously plotted saved line artists (markers and labels) from ax1."""
         BasePlot._clear_tagged_artists(
-            self.ax1, "_islat_saved_line", lines=True, collections=False, texts=False,
+            self.ax1, "_islat_saved_line", lines=True, collections=False, texts=True,
         )
 
     def _load_saved_line_data(self):

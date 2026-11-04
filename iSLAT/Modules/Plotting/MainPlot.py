@@ -784,6 +784,31 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             self.line_toggle = show
         self.active_view.toggle_saved_lines(self.line_toggle, loaded_lines=loaded_lines)
 
+    def refresh_saved_line_labels(self) -> None:
+        """Redraw saved lines after the label setting changed (see :mod:`SavedLineLabels`).
+
+        The active view is redrawn now; inactive views drop their saved-line
+        artists so they are rebuilt with the new labels when activated.
+        """
+        for view in self._views.values():
+            if view is self.active_view:
+                continue
+            remover = getattr(view, "_remove_saved_line_artists", None)
+            if callable(remover):
+                try:
+                    remover()
+                except Exception:
+                    pass
+            elif hasattr(view, "_needs_refresh"):
+                view._needs_refresh = True
+        if not self.line_toggle:
+            return
+        loaded_lines = ifh.read_line_saves(file_name=getattr(self.islat, "input_line_list", None))
+        if loaded_lines is None or loaded_lines.empty:
+            return
+        self.active_view.toggle_saved_lines(False)
+        self.active_view.toggle_saved_lines(True, loaded_lines=loaded_lines)
+
     def toggle_legend(self):
         self.legend_toggle = not self.legend_toggle
         self.active_view.toggle_legend(self.legend_toggle)

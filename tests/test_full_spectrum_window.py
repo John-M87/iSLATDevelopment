@@ -360,7 +360,7 @@ class TestCompactBar:
                   for i in range(win.display_menu.index("end") + 1)
                   if win.display_menu.type(i) == "checkbutton"]
         assert labels == ["Residuals", "Data Density X-Scale", "Atomic Lines", "Saved Lines",
-                          "Summed Spectrum", "Show Observed Data", "Legend"]
+                          "Saved Line Labels", "Summed Spectrum", "Show Observed Data", "Legend"]
         win.display_menu.invoke(labels.index("Show Observed Data") + 1)  # +1 for the separator
         assert win.toggle_state["observed"] is False
         assert not any(a.get_visible() for a in _tagged(win, "_islat_observed"))
@@ -457,3 +457,33 @@ class TestStackedPanelRanges:
         with pytest.raises(ValueError):
             plot.set_panel_ranges([])
         plot.close()
+
+
+class TestWindowSavedLineLabels:
+    def test_window_only_label_toggle(self, make_window):
+        import iSLAT.Modules.Plotting.SavedLineLabels as sll
+        sll.reset_saved_line_label_settings()
+        try:
+            win, _ = make_window()
+            assert win.toggle_state["saved_line_labels"] is True
+            win.set_saved_lines(True)
+            texts = lambda: [t for ax in win.view.fig.axes for t in ax.texts if hasattr(t, "_islat_saved_line")]
+            assert texts()
+            win.set_saved_line_labels(False)
+            assert not texts()
+            assert _tagged(win, "_islat_saved_line")  # the lines stay
+            assert sll.labels_visible("Full Spectrum")  # main GUI setting untouched
+            win.set_saved_line_labels(True)
+            assert texts()
+        finally:
+            sll.reset_saved_line_label_settings()
+
+    def test_starts_from_main_full_spectrum_setting(self, make_window):
+        import iSLAT.Modules.Plotting.SavedLineLabels as sll
+        sll.set_labels_visible("Full Spectrum", False)
+        try:
+            win, _ = make_window()
+            assert win.toggle_state["saved_line_labels"] is False
+            assert win.option_vars["saved_line_labels"].get() is False
+        finally:
+            sll.reset_saved_line_label_settings()

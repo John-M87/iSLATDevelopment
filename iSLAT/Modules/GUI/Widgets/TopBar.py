@@ -251,6 +251,15 @@ class TopBar(ResizableFrame):
             variable=self._observed_var,
             command=lambda: self.main_plot.toggle_observed_data(self._observed_var.get()),
         )
+        views_menu.add_separator()
+        self._saved_labels_var = tk.BooleanVar(value=True)
+        views_menu.add_checkbutton(
+            label="Show Saved Line Labels",
+            variable=self._saved_labels_var,
+            command=lambda: self.set_saved_line_labels_visible(self._saved_labels_var.get()),
+        )
+        views_menu.add_command(label="Saved Line Labels\u2026", command=self.open_saved_line_label_dialog)
+        self._views_menu = views_menu
         views_menu.configure(postcommand=self._sync_plot_option_vars)
 
         views_drpwn.config(menu=views_menu)
@@ -263,6 +272,8 @@ class TopBar(ResizableFrame):
             "Auto-scale Y to Model Flux": "When auto-scaling, fit the Y axis to the\nplotted model (molecule lines and sum)\ninstead of the observed data.",
             "Set Y Limits\u2026":  "Pin the main plot's Y axis to\nspecific values (turns auto-scale off).",
             "Show Observed Data": "Show / hide the observed spectrum\non the main plot.",
+            "Show Saved Line Labels": "Show / hide the saved-line labels\nin the current view (each view\nremembers its own setting).",
+            "Saved Line Labels\u2026": "Choose which column of the input\nline list labels the saved lines,\nwith an optional prefix / suffix,\nand the views that show labels.",
         })
         # ──────────────────────────────────────────────────────────────
 
@@ -1473,6 +1484,11 @@ class TopBar(ResizableFrame):
         if handler is not None and hasattr(handler, 'open_center_view_dialog'):
             handler.open_center_view_dialog()
 
+    def open_saved_line_label_dialog(self) -> None:
+        """Choose the column / prefix / suffix used to label saved lines on the plots."""
+        from iSLAT.Modules.GUI.Widgets.SavedLineLabelDialog import open_saved_line_label_dialog
+        open_saved_line_label_dialog(self.master, self.islat)
+
     def open_wavelength_marker_dialog(self) -> None:
         """Open the Mark Wavelengths dialog (same as the 'Shift+M' keybind)."""
         handler = getattr(self.main_plot, 'interaction_handler', None)
@@ -1490,6 +1506,27 @@ class TopBar(ResizableFrame):
             self._observed_var.set(bool(getattr(self.main_plot, 'observed_toggle', True)))
         except Exception:
             pass
+        self._sync_saved_labels_var()
+
+    def _sync_saved_labels_var(self) -> None:
+        """Mirror the active view's saved-line label toggle (disabled for views without saved lines)."""
+        from iSLAT.Modules.Plotting.SavedLineLabels import LABEL_VIEWS, labels_visible
+        view = getattr(self.main_plot, 'active_view_name', None)
+        has_labels = view in LABEL_VIEWS
+        try:
+            self._saved_labels_var.set(labels_visible(view) if has_labels else False)
+            self._views_menu.entryconfigure(
+                "Show Saved Line Labels", state="normal" if has_labels else "disabled")
+        except Exception:
+            pass
+
+    def set_saved_line_labels_visible(self, visible: bool) -> None:
+        """Show or hide the saved-line labels in the active view."""
+        from iSLAT.Modules.Plotting.SavedLineLabels import LABEL_VIEWS
+        from iSLAT.Modules.GUI.Widgets.SavedLineLabelDialog import set_saved_line_label_view_visible
+        view = getattr(self.main_plot, 'active_view_name', None)
+        if view in LABEL_VIEWS:
+            set_saved_line_label_view_visible(self.islat, view, bool(visible))
 
     def open_y_limits_dialog(self) -> None:
         """Open a small dialog to pin the main plot's Y axis to specific values."""

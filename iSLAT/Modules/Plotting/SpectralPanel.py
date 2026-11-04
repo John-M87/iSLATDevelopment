@@ -556,12 +556,14 @@ class SpectralPanel(BasePlot):
         self,
         line_data: "pd.DataFrame",
         tag: str = "_islat_saved_line",
+        show_labels: bool = True,
     ) -> None:
         """Draw saved-line annotations on the panel's axes.
 
         Uses the current *visible* x-range (which may have been
         tightened by :meth:`draw_gap_indicators`) so that markers
-        are not placed in cropped gap regions.
+        are not placed in cropped gap regions.  *show_labels* ``False``
+        draws the lines without their text labels.
         """
         ax = self.ax
         if ax is None:
@@ -569,7 +571,7 @@ class SpectralPanel(BasePlot):
         xr = tuple(ax.get_xlim())
         ymin, ymax = ax.get_ylim()
         self._plot_line_annotations(
-            ax, line_data, xr, ymin, ymax, tag=tag,
+            ax, line_data, xr, ymin, ymax, tag=tag, show_labels=show_labels,
         )
 
     def remove_saved_lines(

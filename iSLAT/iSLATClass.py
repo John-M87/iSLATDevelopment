@@ -1230,6 +1230,8 @@ class iSLAT:
         """Lazy load user settings only when needed."""
         if self._user_settings is None:
             self._user_settings = load_user_settings()
+            from .Modules.Plotting.SavedLineLabels import settings_from_user_settings
+            settings_from_user_settings(self._user_settings)
         return self._user_settings
 
     @property

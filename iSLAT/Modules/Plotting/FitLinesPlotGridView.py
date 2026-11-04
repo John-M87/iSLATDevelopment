@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 
 from .PlotView import PlotView
 from .BasePlot import BasePlot
+from .SavedLineLabels import labels_visible
 from .FitLinesPlotGrid import FitLinesPlotGrid
 
 if TYPE_CHECKING:
@@ -1092,7 +1093,8 @@ class FitLinesPlotGridView(PlotView):
                 if not hasattr(panel, 'plot_saved_lines'):
                     continue
                 if show and loaded_lines is not None:
-                    panel.plot_saved_lines(loaded_lines)
+                    panel.remove_saved_lines()
+                    panel.plot_saved_lines(loaded_lines, show_labels=labels_visible("Line Grid"))
                 else:
                     panel.remove_saved_lines()
         self.draw()

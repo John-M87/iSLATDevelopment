@@ -625,7 +625,7 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
             if hasattr(panel, "atomic_lines") and panel.atomic_lines is not None and len(panel.atomic_lines) > 0:
                 panel.plot_atomic_lines(panel.atomic_lines)
             if hasattr(panel, "line_list") and panel.line_list is not None and len(panel.line_list) > 0:
-                panel.plot_saved_lines(panel.line_list)
+                panel.plot_saved_lines(panel.line_list, show_labels=self._saved_line_labels_shown())
 
         # --- Explicit model components on spectrum panel ---------------
         model_components = getattr(spectrum_panel, "_model_components", None)
