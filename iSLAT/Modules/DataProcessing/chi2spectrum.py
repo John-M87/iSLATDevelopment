@@ -97,10 +97,16 @@ class Chi2Spectrum:
         #lam_min, lam_max, flux, flux_error = np.loadtxt(fname, unpack=True, usecols = (3,4,5,6))
         print(f"Loading flux measurements from {fname}")
         measur = pd.read_csv(fname, sep=',', usecols=['xmin','xmax', flux_col_name, error_col_name])
+        # Replace missing values with zeros in the flux and error columns
+        #print(f"Initial measur:\n{measur}")
+        #measur[flux_col_name].fillna(value=0, inplace=False)
+        #measur[error_col_name].fillna(value=0, inplace=False)
+        #print(f"Measur after filling missing values:\n{measur}")
         lam_min = measur['xmin']
         lam_max = measur['xmax']
-        flux = measur[flux_col_name]
-        flux_error = measur[error_col_name]
+        flux = measur[flux_col_name].fillna(value=0, inplace=False)
+        flux_error = measur[error_col_name].fillna(value=0, inplace=False)
+        #print(f"Measur after filling missing values:\n{flux, flux_error}")
         
         for d in zip(lam_min, lam_max, flux, flux_error):
             self.add_measurement(FluxMeasurement(*d))
@@ -136,7 +142,11 @@ class Chi2Spectrum:
             flux_model = np.trapezoid(flux[integral_range], x=lam[integral_range])
 
             # calculate the chi2 statistics
-            chi2 = (d.flux - flux_model) ** 2 / d.flux_error ** 2
+            # if data flux error is zero at certain points, avoid division by zero
+            if d.flux_error == 0:
+                chi2 = 0
+            else:
+                chi2 = (d.flux - flux_model) ** 2 / d.flux_error ** 2
 
             # add one chi2 comparison to the list
             self._chi2.append(self._Chi2Comparison(*d, flux_model, chi2))
