@@ -869,6 +869,47 @@ class MoleculeLineList(WavelengthRangeMixin):
         """Access to partition function"""
         self._ensure_data_loaded()
         return self.partition_function
+
+    def set_partition_function(self, t, q) -> None:
+        """Replace the partition function with the table ``(t, q)``.
+
+        The table is sorted by temperature.  The line data is loaded first so
+        a later lazy load cannot overwrite the new partition function.
+
+        Raises
+        ------
+        ValueError
+            If *t* and *q* are empty, differ in length or are not finite.
+        """
+        t = np.asarray(t, dtype=np.float64).ravel()
+        q = np.asarray(q, dtype=np.float64).ravel()
+        if t.size == 0 or t.shape != q.shape:
+            raise ValueError("Partition function needs matching, non-empty T and Q arrays.")
+        if not (np.all(np.isfinite(t)) and np.all(np.isfinite(q))):
+            raise ValueError("Partition function contains non-finite values.")
+        order = np.argsort(t, kind="stable")
+        self._ensure_data_loaded()
+        self.partition_function = self._partition_type(t[order], q[order])
+
+    def copy(self) -> "MoleculeLineList":
+        """Return a new line list sharing this one's (read-only) line data.
+
+        The copy keeps the wavelength range, partition function, molar mass,
+        format and extra fields, so replacing the copy's partition function
+        leaves this list untouched.
+        """
+        self._ensure_data_loaded()
+        new = MoleculeLineList(molecule_id=self.molecule_id,
+                               wavelength_range=self._wavelength_range,
+                               format=self._source_format,
+                               extra_fields=dict(self._extra_fields))
+        new._filename = self._filename
+        new._raw_lines_data = self._raw_lines_data
+        new.partition_function = self.partition_function
+        new._molar_mass = self._molar_mass
+        new.lines = None  # Created on demand
+        new._data_loaded = True
+        return new
     
     def __len__(self) -> int:
         """Return the number of lines in the list."""

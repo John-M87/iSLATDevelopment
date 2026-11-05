@@ -1598,7 +1598,7 @@ class MoleculeDict(ObservableMixin, dict):
         if old_value != new_value:
             # For flux-affecting parameters, clear all caches for now
             # In the future, we could be more selective
-            if parameter_name in ['temp', 'radius', 'n_mol', 'rv_shift', 'fwhm', 'broad', 'distance', 'wavelength_range']:
+            if parameter_name in ['temp', 'radius', 'n_mol', 'rv_shift', 'fwhm', 'broad', 'distance', 'wavelength_range', 'partition_function']:
                 self._selective_cache_invalidation([molecule_name])
             else:
                 # For other parameters, we might not need to clear all caches

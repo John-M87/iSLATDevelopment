@@ -869,6 +869,39 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         return self.lines
 
     @property
+    def partition_function(self):
+        '''The line list's partition function ``partition(t, q)``, or None.'''
+        self._ensure_lines_loaded()
+        return self.lines.partition if self.lines is not None else None
+
+    @staticmethod
+    def _partition_signature(partition) -> Optional[Tuple]:
+        """Hashable summary used as old/new value in change notifications."""
+        if partition is None:
+            return None
+        t = np.asarray(partition.t, dtype=np.float64)
+        q = np.asarray(partition.q, dtype=np.float64)
+        return (t.size, hash(t.tobytes()), hash(q.tobytes()))
+
+    def set_partition_function(self, t, q) -> None:
+        """Replace this molecule's partition function for the current session.
+
+        Every cached intensity / spectrum / flux result is discarded and a
+        ``'partition_function'`` parameter change is broadcast so plots redraw.
+        The line-list file on disk is not changed.
+        """
+        self._ensure_lines_loaded()
+        old_signature = self._partition_signature(self.lines.partition)
+        self.lines.set_partition_function(t, q)
+        # The Intensity object caches results keyed only on T, N and dv
+        self.intensity = None
+        self.clear_all_caches()
+        self._notify_my_parameter_change(
+            'partition_function', old_signature,
+            self._partition_signature(self.lines.partition_function),
+        )
+
+    @property
     def molar_mass(self) -> float:
         '''Molar mass in g/mol'''
         if not hasattr(self, '_molar_mass') or self._molar_mass is None:
