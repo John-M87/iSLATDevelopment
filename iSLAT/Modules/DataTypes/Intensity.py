@@ -783,8 +783,9 @@ class Intensity(WavelengthRangeMixin):
             intensity = intensity.reshape(output_shape + (len(lines.freq),))
             center_tau = center_tau.reshape(output_shape + (len(lines.freq),))
         elif was_scalar:
-            intensity = intensity.squeeze()
-            center_tau = center_tau.squeeze()
+            # Drop only the condition axis; squeeze() would also drop a length-1 line axis
+            intensity = intensity.reshape(len(lines.freq))
+            center_tau = center_tau.reshape(len(lines.freq))
 
         return intensity, center_tau
 
