@@ -1484,6 +1484,10 @@ class ControlPanel(ttk.Frame):
             command=lambda: self._population_diagram_action(mol_name),
         )
         menu.add_command(
+            label="View Partition Function",
+            command=lambda: self._partition_function_action(mol_name),
+        )
+        menu.add_command(
             label="Change Line List…",
             command=lambda: self._change_line_list_action(mol_name),
         )
@@ -1615,6 +1619,27 @@ class ControlPanel(ttk.Frame):
             MoleculePopulationDiagramWindow,
         )
         MoleculePopulationDiagramWindow.open(self, mol_obj, islat=self.islat)
+
+    def _partition_function_action(self, mol_name: str) -> None:
+        """Open (or raise) the partition function viewer / extender for the named molecule."""
+        mol_obj = self.islat.molecules_dict.get(mol_name)
+        if mol_obj is None:
+            return
+        from iSLAT.Modules.GUI.Widgets.PartitionFunctionWindow import (
+            PartitionFunctionWindow,
+            molecule_partition,
+        )
+        if molecule_partition(mol_obj) is None:
+            msg = f"No partition function available for '{mol_name}'."
+            if self.data_field is not None:
+                self.data_field.insert_text(msg)
+            else:
+                print(f"ControlPanel: {msg}")
+            return
+        PartitionFunctionWindow.open(
+            self, mol_obj, self.data_field, islat=self.islat,
+            theme=getattr(getattr(self.islat, "GUI", None), "theme", None),
+        )
 
     def _filter_line_list_action(self, mol_name: str) -> None:
         """Open the LineListFilterWindow for the named molecule."""

@@ -20,6 +20,13 @@ from .LineFilterExpression import (
     FilterExpression,
     MaskContext,
 )
+from .PartitionFunctionExtender import (
+    EXTENSION_MODES,
+    ExtendedPartition,
+    ExtensionMode,
+    extend_partition_function,
+    register_extension_mode,
+)
 
 __all__ = [
     "Chi2Spectrum",
@@ -36,4 +43,9 @@ __all__ = [
     "ConditionGroup",
     "FilterExpression",
     "MaskContext",
+    "EXTENSION_MODES",
+    "ExtendedPartition",
+    "ExtensionMode",
+    "extend_partition_function",
+    "register_extension_mode",
 ]

@@ -27,6 +27,12 @@
 - Added `Save Line List…` and `Load Line List…` options to the line list filter window
 - The line list viewer window can now display the currently loaded line list
 
+#### Partition Functions
+- Added a `View Partition Function` option to the molecule right-click menu in the control panel. It opens a window (one per molecule) that plots Q(T) (with log/linear axes, the model temperature marked, and a right-click `Save Figure…`) and lists it in a table
+- Added the ability to extend a partition function to lower and/or higher temperatures. Added points are spaced by an adjustable step counted outward from the end of the table (the requested bound is always included) and are previewed live. The only mode for now is `Constant Q(T)`, which holds Q at the nearest tabulated value; new modes can be registered in the new `PartitionFunctionExtender` module (`register_extension_mode`)
+- The extended partition function can be applied to the molecule (`Apply to Molecule`), applied to a copy (`Duplicate & Apply`), and/or saved to disk (`Save Partition Function…`): `.par` writes the molecule's full line list with the new partition function (load it with `Change Line List…`), `.csv` writes a `temp,q` table
+- Added `Molecule.set_partition_function` / `MoleculeLineList.set_partition_function`, which clear the cached model results and redraw the plots. The `.par` partition function writer now keeps fractional temperatures exact
+
 #### Export & Bulk Apply
 - Added the optical depth as a function of wavelength to the CSV output of the Export Models function
 - Added the ability to set the file name/location in the Export Models popup window; exports now use the `MoleculeDict` match pixel sampling when writing a model to CSV
