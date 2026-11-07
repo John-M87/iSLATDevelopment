@@ -60,12 +60,25 @@ def _apply_layout(
     plot._compute_panel_layout()
 
 
-def parse_panel_ranges(text: str) -> List[Tuple[float, float]]:
+#: Range keywords replaced by the first / last observed data point.
+DATA_START_KEYWORD = "DATASTART"
+DATA_END_KEYWORD = "DATAEND"
+_DATA_KEYWORDS = rf"(?:{DATA_START_KEYWORD}|{DATA_END_KEYWORD})"
+
+
+def parse_panel_ranges(
+    text: str,
+    data_start: Optional[float] = None,
+    data_end: Optional[float] = None,
+) -> List[Tuple[float, float]]:
     """Parse one ``start end`` wavelength pair per line (blank and ``#`` lines are skipped).
 
     The two numbers may be separated by spaces, a comma, ``-``, an en dash
-    or ``to``.  Raises ``ValueError`` naming the offending line.
+    or ``to``.  Either bound may be ``DATASTART`` or ``DATAEND``
+    (case-insensitive), replaced by *data_start* / *data_end* (the first /
+    last observed data point).  Raises ``ValueError`` naming the offending line.
     """
+    keyword_values = {DATA_START_KEYWORD: data_start, DATA_END_KEYWORD: data_end}
     ranges: List[Tuple[float, float]] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
@@ -73,13 +86,25 @@ def parse_panel_ranges(text: str) -> List[Tuple[float, float]]:
             continue
         cleaned = re.sub(r"\bto\b|[,;\u2013\u2014]", " ", line, flags=re.IGNORECASE)
         cleaned = re.sub(r"(?<=[\d.])\s*-\s*(?=[\d.])", " ", cleaned)
+        cleaned = re.sub(rf"\b({_DATA_KEYWORDS})\s*-\s*", r"\1 ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"\s*-\s*({_DATA_KEYWORDS})\b", r" \1", cleaned, flags=re.IGNORECASE)
         parts = cleaned.split()
-        try:
-            if len(parts) != 2:
-                raise ValueError
-            lo, hi = float(parts[0]), float(parts[1])
-        except ValueError:
-            raise ValueError(f"Line {lineno}: expected 'start end', got '{raw.strip()}'.") from None
+        if len(parts) != 2:
+            raise ValueError(f"Line {lineno}: expected 'start end', got '{raw.strip()}'.")
+        bounds = []
+        for part in parts:
+            keyword = part.upper()
+            if keyword in keyword_values:
+                value = keyword_values[keyword]
+                if value is None or not np.isfinite(value):
+                    raise ValueError(f"Line {lineno}: {keyword} needs observed data to be loaded.")
+                bounds.append(float(value))
+                continue
+            try:
+                bounds.append(float(part))
+            except ValueError:
+                raise ValueError(f"Line {lineno}: expected 'start end', got '{raw.strip()}'.") from None
+        lo, hi = bounds
         if not (np.isfinite(lo) and np.isfinite(hi)) or lo >= hi:
             raise ValueError(f"Line {lineno}: start must be less than end.")
         ranges.append((lo, hi))
@@ -566,6 +591,18 @@ class FullSpectrumWindow(tk.Toplevel):
         self.view.set_panel_ranges(ranges)
         self._after_change()
 
+    def observed_data_bounds(self) -> Tuple[Optional[float], Optional[float]]:
+        """First and last observed wavelength as plotted (RV-corrected), or ``(None, None)``."""
+        plot = self.view._plot
+        wave = getattr(plot, "wave_data", None) if plot is not None else None
+        if wave is None:
+            return None, None
+        wave = np.asarray(wave, dtype=float)
+        wave = wave[np.isfinite(wave)]
+        if wave.size == 0:
+            return None, None
+        return float(wave.min()), float(wave.max())
+
     # ------------------------------------------------------------------
     # Dialogs
     # ------------------------------------------------------------------
@@ -578,7 +615,8 @@ class FullSpectrumWindow(tk.Toplevel):
         ttk.Label(
             content,
             text="One panel per line: start end (\u03bcm).\n"
-                 "Panels are shown in this order; ranges may overlap or leave gaps.",
+                 "Panels are shown in this order; ranges may overlap or leave gaps.\n"
+                 f"{DATA_START_KEYWORD} / {DATA_END_KEYWORD} = first / last observed data point.",
         ).pack(anchor="w")
         text = tk.Text(content, width=34, height=10, undo=True)
         text.pack(fill="both", expand=True, pady=(6, 4))
@@ -590,7 +628,7 @@ class FullSpectrumWindow(tk.Toplevel):
 
         def _apply():
             try:
-                self.set_panel_ranges(parse_panel_ranges(text.get("1.0", "end")))
+                self.set_panel_ranges(parse_panel_ranges(text.get("1.0", "end"), *self.observed_data_bounds()))
             except ValueError as exc:
                 error_var.set(str(exc))
                 return

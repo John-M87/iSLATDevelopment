@@ -441,6 +441,30 @@ class TestPanelRanges:
         _button(dlg, "Even Split").invoke()
         assert win.view.panel_ranges is None
 
+    def test_parse_data_keywords(self):
+        from iSLAT.Modules.GUI.FullSpectrumWindow import parse_panel_ranges
+        text = "DATASTART 6\n7 dataend\nDataStart-6.5\n8-DATAEND\ndatastart to DATAEND"
+        assert parse_panel_ranges(text, data_start=5.0, data_end=11.0) == [
+            (5.0, 6.0), (7.0, 11.0), (5.0, 6.5), (8.0, 11.0), (5.0, 11.0)]
+        assert parse_panel_ranges("1e-1 2e-1") == [(0.1, 0.2)]  # exponent dashes are not separators
+        for bad, kwargs in (("DATASTART 6", {}),                                   # no data loaded
+                            ("7 DATAEND", {"data_start": 5.0}),
+                            ("DATAEND 10", {"data_start": 5.0, "data_end": 11.0}),  # start >= end
+                            ("DATASTARTX 6", {"data_start": 5.0})):
+            with pytest.raises(ValueError):
+                parse_panel_ranges(bad, **kwargs)
+
+    def test_ranges_dialog_data_keywords(self, make_window):
+        win, _ = make_window()
+        assert win.observed_data_bounds() == pytest.approx((WAVE[0], WAVE[-1]))
+        win.open_panel_ranges_dialog()
+        dlg = win._ranges_dialog
+        text = next(w for w in _walk(dlg) if w.winfo_class() == "Text")
+        text.delete("1.0", "end")
+        text.insert("1.0", "DATASTART 6\n9 DATAEND")
+        _button(dlg, "Apply").invoke()
+        assert _ranges(win) == pytest.approx([(WAVE[0], 6.0), (9.0, WAVE[-1])])
+
 
 class TestStackedPanelRanges:
     def test_plot_level_api(self):
