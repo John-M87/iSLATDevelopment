@@ -16,6 +16,7 @@ from iSLAT.Modules.GUI.Widgets.ChartWindow import MoleculeSelector
 from iSLAT.Modules.GUI.Widgets.SampleManagerWindow import SampleManagerWindow
 from iSLAT.Modules.GUI.Widgets.SortMoleculesWindow import SortMoleculesWindow
 from iSLAT.Modules.GUI.Widgets.BulkApplyWindow import BulkApplyPropertiesWindow
+from iSLAT.Modules.GUI.Widgets.IntensitySettingsWindow import IntensitySettingsWindow
 from iSLAT.Modules.GUI.PlotGridWindow import PlotGridWindow
 from iSLAT.Modules.GUI.FullSpectrumWindow import FullSpectrumWindow
 from iSLAT.Modules.FileHandling.iSLATFileHandling import (
@@ -148,6 +149,7 @@ class TopBar(ResizableFrame):
         molecule_menu.add_command(label="Add Molecules", command=self.add_molecule)
         molecule_menu.add_command(label="Sort Molecules", command=self.sort_molecules)
         molecule_menu.add_command(label="Bulk Apply Properties", command=self.bulk_apply_properties)
+        molecule_menu.add_command(label="Intensity Settings", command=self.intensity_settings)
         molecule_menu.add_command(label="Export Models", command=self.export_models)
         molecule_menu.add_separator()
         save_params_label = f"Save Parameters ({shortcut_text('save_parameters')})"
@@ -166,6 +168,7 @@ class TopBar(ResizableFrame):
             "Add Molecules":                       "Add a molecule from the available\nHITRAN files.",
             "Sort Molecules":                      "Sort the molecules in the control panel\nby a chosen property (temperature, radius,\ncolumn density, …), ascending or descending.",
             "Bulk Apply Properties":               "Set one or more properties on many molecules\nat once, optionally only the visible ones.",
+            "Intensity Settings":                  "Choose how line intensities are calculated\nfrom the optical depth: curve of growth\n(with or without line overlap) or RADEX.\nApplies to all molecules and is saved\nas the default.",
             "Export Models":                       "Export current model spectra\nto CSV files for external use.",
             save_params_label:                     "Save current molecule parameters\nto the default save file\nfor this spectrum.",
             load_params_label:                     "Load molecule parameters from\nthe default save file\nfor this spectrum.",
@@ -1192,6 +1195,10 @@ class TopBar(ResizableFrame):
         BulkApplyPropertiesWindow.open(
             self.master, self.islat, self.control_panel, self.theme
         )
+
+    def intensity_settings(self):
+        """Open the popout window for choosing the intensity calculation method."""
+        IntensitySettingsWindow.open(self.master, self.islat, self.theme)
 
     def save_parameters(self, file_path = None, auto = False):
         """

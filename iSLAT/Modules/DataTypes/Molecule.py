@@ -960,6 +960,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
             'is_visible': lambda x: x.lower() in ('true', '1', 'yes', 'on') if isinstance(x, str) else bool(x),
             'is_bold': lambda x: x.lower() in ('true', '1', 'yes', 'on') if isinstance(x, str) else bool(x),
             'instrumental_profile_key': lambda x: str(x or 'constant'),
+            'intensity_calculation_method': lambda x: str(x or 'curve_growth'),
         }
         
         # Properties with special setters

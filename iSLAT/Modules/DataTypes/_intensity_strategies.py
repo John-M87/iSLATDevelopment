@@ -54,7 +54,7 @@ class IntensityStrategy(Protocol):
         bb_vals : np.ndarray, shape ``(n_cond, n_lines)``
             Planck function values.
         freq_ratio : np.ndarray, shape ``(1, n_lines)``
-            ``ν / c`` conversion factors.
+            ``nu / c`` conversion factors.
         sqrt_ln2_inv : float
             ``1 / (2 √(ln 2))`` normalisation constant.
         frequencies : np.ndarray, shape ``(n_lines,)``
@@ -73,7 +73,7 @@ class IntensityStrategy(Protocol):
 class RadexStrategy:
     """Simple ``1 - e^{−τ}`` formula (van der Tak et al. 2007).
 
-    Saturates at τ ≈ a few; identical to curve-of-growth for τ < 1.
+    Saturates at τ ~= a few; identical to curve-of-growth for τ < 1.
     """
 
     __slots__ = ()
@@ -98,7 +98,7 @@ class RadexStrategy:
         )
 
 class CurveOfGrowthStrategy:
-    """Full curve-of-growth with overlap treatment (Banzatti et al. 2012).
+    """Full curve-of-growth with overlap treatment (McCaskill et al. 2026).
 
     Delegates to ``Intensity._fint_multi`` which handles isolated-line
     fast paths, tau-regime shortcuts, and multi-line Gauss-Legendre
@@ -125,7 +125,7 @@ class CurveOfGrowthNoOverlapStrategy:
     """Curve-of-growth without overlap grouping.
 
     Uses the same Gauss-Legendre quadrature as :class:`CurveOfGrowthStrategy`
-    but treats every line independently (the original iSLAT method before the overlap rewrite).
+    but treats every line independently (Banzatti et al. 2012).
     """
 
     __slots__ = ()
@@ -168,4 +168,26 @@ DEFAULT_STRATEGIES: dict[str, IntensityStrategy] = {
     "radex": RadexStrategy(),
     "curve_growth": CurveOfGrowthStrategy(),
     "curve_growth_no_overlap": CurveOfGrowthNoOverlapStrategy(),
+}
+
+#: Display name and short description of each built-in method, in the order
+#: they are offered to the user (the default, ``"curve_growth"``, first).
+#: See :meth:`Intensity.available_strategies` / :meth:`Intensity.describe_strategy`.
+STRATEGY_DESCRIPTIONS: dict[str, tuple[str, str]] = {
+    "curve_growth": (
+        "Curve of growth (with line overlap)",
+        "Full curve-of-growth integral (McCaskill et al. 2026). Lines that "
+        "overlap in velocity are integrated together, so blended optically "
+        "thick lines are not over-counted. Default.",
+    ),
+    "curve_growth_no_overlap": (
+        "Curve of growth (no overlap)",
+        "The same curve-of-growth integral, but every line is treated "
+        "independently (Banzatti et al. 2012).",
+    ),
+    "radex": (
+        "RADEX (1 - e^−τ)",
+        "Simple expression used e.g. in RADEX (van der Tak et al. 2007). "
+        "Saturates at τ ≈ a few; identical to the curve of growth for τ < 1.",
+    ),
 }

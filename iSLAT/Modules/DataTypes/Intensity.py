@@ -50,7 +50,7 @@ else:
 __all__ = ["Intensity"]
 
 class Intensity(WavelengthRangeMixin):
-    __slots__ = ('_molecule', '_intensity', '_tau', '_t_kin', '_n_mol', '_dv', '_cache_valid', '_sorted_idx', '_sorted_freq',
+    __slots__ = ('_molecule', '_intensity', '_tau', '_t_kin', '_n_mol', '_dv', '_method', '_cache_valid', '_sorted_idx', '_sorted_freq',
                  '_cached_line_scalar', '_cached_e_delta', '_cached_dv_star',
                  '_cached_freq_ratio', '_wavelength_range')
     
@@ -83,6 +83,7 @@ class Intensity(WavelengthRangeMixin):
         self._t_kin: Optional[float] = None
         self._n_mol: Optional[float] = None
         self._dv: Optional[float] = None
+        self._method: Optional[str] = None  # calculation method of the cached result
         self._cache_valid: bool = False
         self._sorted_idx: Optional[np.ndarray] = None
         self._sorted_freq: Optional[np.ndarray] = None
@@ -214,6 +215,30 @@ class Intensity(WavelengthRangeMixin):
         """
         cls._ensure_strategy_registry()
         cls._strategy_registry[method_name] = strategy
+
+    @classmethod
+    def available_strategies(cls) -> list:
+        """Return the names usable as ``calc_intensity(method=...)``.
+
+        The built-in methods come first, in the order of
+        :data:`~._intensity_strategies.STRATEGY_DESCRIPTIONS` (default first),
+        followed by any added with :meth:`register_strategy`, sorted.
+        """
+        cls._ensure_strategy_registry()
+        from ._intensity_strategies import STRATEGY_DESCRIPTIONS
+        builtin = [name for name in STRATEGY_DESCRIPTIONS if name in cls._strategy_registry]
+        extra = sorted(name for name in cls._strategy_registry if name not in STRATEGY_DESCRIPTIONS)
+        return builtin + extra
+
+    @staticmethod
+    def describe_strategy(method: str) -> tuple:
+        """Return ``(display_name, description)`` for *method*.
+
+        Methods without a description (e.g. custom ones added with
+        :meth:`register_strategy`) are shown by name with an empty description.
+        """
+        from ._intensity_strategies import STRATEGY_DESCRIPTIONS
+        return STRATEGY_DESCRIPTIONS.get(method, (str(method), ""))
 
     @classmethod
     def _get_strategy(cls, method: str):
@@ -810,11 +835,12 @@ class Intensity(WavelengthRangeMixin):
         """
         start_time = time.perf_counter()
         
-        # Check if we can use cached result
-        if (self._cache_valid and 
-            self._t_kin == t_kin and 
-            self._n_mol == n_mol and 
+        # Check if we can use cached result (computed with the same method)
+        if (self._cache_valid and
+            self._t_kin == t_kin and
+            self._n_mol == n_mol and
             self._dv == dv and
+            self._method == method and
             self._intensity is not None):
             log_timing(f"Intensity.calc_intensity(cache_hit)", time.perf_counter() - start_time, verbose=False)
             return
@@ -832,6 +858,7 @@ class Intensity(WavelengthRangeMixin):
         self._t_kin = t_kin
         self._n_mol = n_mol
         self._dv = dv
+        self._method = method
         self._tau = tau
         self._intensity = intensity
         self._cache_valid = True
@@ -1179,7 +1206,7 @@ class Intensity(WavelengthRangeMixin):
                 t_kin=self._t_kin,
                 n_mol=self._n_mol,
                 dv=self._dv,
-                method="curve_growth",
+                method=self._method or "curve_growth",
             )
             full_i, full_t = tmp_intens._intensity, tmp_intens._tau
         except Exception:

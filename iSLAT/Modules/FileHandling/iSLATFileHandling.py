@@ -122,16 +122,31 @@ def load_user_settings(file_path=user_configuration_file_path, file_name=user_co
         user_settings["theme"] = theme_settings
 
     # convert intensity_opacity_overlap_setting to method to be used in intensity calculations
-    if user_settings.get("intensity_opacity_overlap_setting", True) == True or user_settings.get("intensity_opacity_overlap_setting", "curve_growth") == "curve_growth":
-        user_settings["intensity_calculation_method"] = "curve_growth"
-    elif user_settings.get("intensity_opacity_overlap_setting", False) == False or user_settings.get("intensity_opacity_overlap_setting", "curve_growth_no_overlap") == "curve_growth_no_overlap":
-        user_settings["intensity_calculation_method"] = "curve_growth_no_overlap"
-    elif user_settings.get("intensity_opacity_overlap_setting", "radex") == "radex":
-        user_settings["intensity_calculation_method"] = "radex"
-    else:
-        user_settings["intensity_calculation_method"] = "curve_growth" # default fallback 
-    
+    user_settings["intensity_calculation_method"] = intensity_method_from_setting(
+        user_settings.get(INTENSITY_METHOD_SETTING_KEY, True)
+    )
+
     return user_settings
+
+#: User-settings key that stores the intensity calculation method.  For
+#: backward compatibility it also accepts ``true`` (curve of growth with line
+#: overlap) and ``false`` (curve of growth without overlap).
+INTENSITY_METHOD_SETTING_KEY = "intensity_opacity_overlap_setting"
+
+def intensity_method_from_setting(value) -> str:
+    """Map the stored intensity setting to an intensity calculation method name.
+
+    ``True`` or ``"curve_growth"`` give ``"curve_growth"``; ``False`` or
+    ``"curve_growth_no_overlap"`` give ``"curve_growth_no_overlap"``;
+    ``"radex"`` gives ``"radex"``; anything else falls back to ``"curve_growth"``.
+    """
+    if value == True or value == "curve_growth":
+        return "curve_growth"
+    if value == False or value == "curve_growth_no_overlap":
+        return "curve_growth_no_overlap"
+    if value == "radex":
+        return "radex"
+    return "curve_growth"  # default fallback
 
 def save_user_settings(user_settings, file_path=user_configuration_file_path, file_name=user_configuration_file_name):
     """

@@ -12,8 +12,16 @@
 - Added Y-axis controls to the `Views` menu in the top bar: an `Auto-scale Y Axis` toggle, an `Auto-scale Y to Model Flux` toggle (fits the axis to the plotted models instead of the observed data), a `Set Y Limits…` dialog for pinning a manual Y range, and a `Show Observed Data` toggle
 - Added new options to the Center View function (center on a wavelength, display an exact wavelength range, or display a fixed number of data points) and added a `Center View… (C)` entry to the Spectral Functions menu. A `Mark center wavelength` toggle (remembered for the session) also adds a wavelength mark at the center
 
+#### Molecules & Intensity
+- Added `Intensity Settings` to the `Manage Molecules` menu: a window for choosing how line intensities are calculated from the optical depth, either curve of growth with line overlap (default), curve of growth without overlap, or RADEX (1 − e^−τ), each with a short description. The choice applies to all molecules (the models are recalculated and the plots redrawn) and is saved in the user settings (`intensity_opacity_overlap_setting`, which now also accepts the method names) as the default for future sessions
+- `Intensity.available_strategies()` lists the usable calculation methods (built-ins first, then any added with `Intensity.register_strategy()`), and `Intensity.describe_strategy()` returns a method's display name and description
+
+### Bug Fixes
+- Fixed changing the intensity calculation method after molecules were loaded having no effect: `MoleculeDict.global_intensity_calculation_method` (and `Molecule.bulk_update_parameters`) silently dropped the method name, and `Intensity.calc_intensity` returned its cached result whenever T, N and Δv were unchanged, even when it had been calculated with a different method. The full-line-list recalculation used by the population diagrams also always used the curve of growth; it now uses the molecule's method
+
 ### Code Quality
 - Bumped version to `v5.03.05`
+- The user setting that selects the intensity calculation method is now mapped by `iSLATFileHandling.intensity_method_from_setting()` (same behaviour as before)
 
 ---
 
