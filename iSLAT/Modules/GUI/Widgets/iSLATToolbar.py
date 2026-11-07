@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import tkinter as tk
 import tkinter.ttk as ttk
+import weakref
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
+from matplotlib import cbook
+from matplotlib.backend_bases import _Mode
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 from iSLAT.Modules.GUI.ControlSurface import ControlSurface
@@ -208,6 +211,81 @@ class iSLATNavigationToolbar(NavigationToolbar2Tk):
         super().__init__(canvas, window)
         self._configure_subplots_surface = configure_subplots_surface
         self._configure_subplots_dialog: Optional[iSLATConfigureSubplotsDialog] = None
+        # Per-canvas view history, so Back / Forward / Home survive view switches.
+        self._nav_stacks: "weakref.WeakKeyDictionary[Any, cbook._Stack]" = weakref.WeakKeyDictionary()
+
+    # ------------------------------------------------------------------
+    # Canvas retargeting
+    # ------------------------------------------------------------------
+
+    def set_canvas(self, canvas: Optional["FigureCanvasTkAgg"], reset_history: bool = False) -> None:
+        """Drive *canvas* (e.g. the active plot view's) instead of the current one.
+
+        The Pan / Zoom mode carries over; each canvas keeps its own view
+        history unless *reset_history* is set (for redrawn content, where the
+        old limits no longer apply).
+        """
+        if canvas is None:
+            return
+        if canvas is not self.canvas:
+            mode = self.mode
+            self._detach_canvas()
+            self.canvas = canvas
+            canvas.toolbar = self
+            self._id_press = canvas.mpl_connect("button_press_event", self._zoom_pan_handler)
+            self._id_release = canvas.mpl_connect("button_release_event", self._zoom_pan_handler)
+            self._id_drag = canvas.mpl_connect("motion_notify_event", self.mouse_move)
+            self._nav_stack = self._nav_stacks.setdefault(canvas, cbook._Stack())
+            self._set_mode(mode)
+        if reset_history:
+            self._nav_stack.clear()
+        self.sync_navigate_mode()
+        self.set_history_buttons()
+
+    def sync_navigate_mode(self) -> None:
+        """Apply the toolbar's mode to every axes of the canvas (new axes start with none)."""
+        self._set_axes_navigate_mode(self.canvas, getattr(self.mode, "_navigate_mode", None))
+
+    @staticmethod
+    def _set_axes_navigate_mode(canvas: Any, value: Optional[str]) -> None:
+        # matplotlib < 3.11 mirrors the toolbar mode on each axes; 3.11 dropped
+        # that (and deprecated Axes.set_navigate_mode), so there is nothing to do.
+        if not hasattr(_Mode.NONE, "_navigate_mode"):
+            return
+        figure = getattr(canvas, "figure", None)
+        if figure is None:
+            return
+        for ax in figure.get_axes():
+            ax.set_navigate_mode(value)
+
+    def _detach_canvas(self) -> None:
+        """Disconnect from the current canvas and release its widget lock."""
+        old = self.canvas
+        if old is None:
+            return
+        self._nav_stacks[old] = self._nav_stack
+        for cid in (self._id_press, self._id_release, self._id_drag):
+            old.mpl_disconnect(cid)
+        try:
+            self.remove_rubberband()
+        except (tk.TclError, AttributeError):
+            pass  # the old canvas widget may already be destroyed
+        if old.widgetlock.isowner(self):
+            old.widgetlock.release(self)
+        self._set_axes_navigate_mode(old, None)
+        if getattr(old, "toolbar", None) is self:
+            old.toolbar = None
+        self._pan_info = None
+        self._zoom_info = None
+
+    def _set_mode(self, mode: "_Mode") -> None:
+        """Enter *mode* on the current canvas (falls back to no mode if the canvas is locked)."""
+        if mode != _Mode.NONE and not self.canvas.widgetlock.available(self):
+            mode = _Mode.NONE
+        self.mode = mode
+        if mode != _Mode.NONE:
+            self.canvas.widgetlock(self)
+        self._update_buttons_checked()
 
     # ------------------------------------------------------------------
 

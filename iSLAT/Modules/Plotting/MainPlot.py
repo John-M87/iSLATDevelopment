@@ -244,7 +244,25 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             window=frame,
             configure_subplots_surface=self._configure_subplots_surface,
         )
+        self.sync_toolbar_to_active_view()
         return self.toolbar
+
+    def sync_toolbar_to_active_view(self, reset_history: bool = False) -> None:
+        """Point the navigation toolbar (Pan / Zoom / Home / …) at the active view's canvas."""
+        toolbar = getattr(self, "toolbar", None)
+        view = getattr(self, "active_view", None)
+        if toolbar is None or view is None or not hasattr(toolbar, "set_canvas"):
+            return
+        try:
+            canvas = view.get_canvas()
+        except Exception:
+            canvas = None
+        toolbar.set_canvas(canvas, reset_history=reset_history)
+
+    def on_view_canvas_changed(self, view) -> None:
+        """Called by a view after it replaced its canvas or redrew its content."""
+        if view is getattr(self, "active_view", None):
+            self.sync_toolbar_to_active_view(reset_history=True)
 
     def _apply_plot_theming(self):
         """Apply theme colors to matplotlib figure, axes, data artists, and toolbar.
@@ -357,6 +375,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         self.is_full_spectrum = (target is self._full_spectrum_view)
 
         target.activate(self.parent_frame)
+        self.sync_toolbar_to_active_view()
         self._notify_view_change(old_view, target)
 
         debug_config.info("main_plot", f"switch_view: active view → '{view_name}'")

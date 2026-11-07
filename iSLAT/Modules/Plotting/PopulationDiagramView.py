@@ -207,6 +207,7 @@ class PopulationDiagramView(PlotView, PopulationDiagramContextMixin):
             self._right_click_cid = self._canvas.mpl_connect(
                 'button_press_event', self._on_canvas_button_press
             )
+            self._notify_canvas_changed()
 
     def _apply_theme_to_fig(self) -> None:
         """Apply the controller's current theme to the owned figure."""
@@ -304,7 +305,12 @@ class PopulationDiagramView(PlotView, PopulationDiagramContextMixin):
     # ==================================================================
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Any:
         """Delegate to the shared population-diagram context menu builder."""
-        draw_idle = self._canvas.draw_idle if self._canvas is not None else lambda: None
+        def draw_idle() -> None:
+            # Menu actions regenerate the plot, so earlier zoom history no longer applies.
+            self._notify_canvas_changed()
+            if self._canvas is not None:
+                self._canvas.draw_idle()
+
         menu = self._build_population_diagram_menu(self._plot, canvas_widget, draw_idle)
         if menu is not None:
             self._append_save_figure_item(menu)
@@ -337,6 +343,7 @@ class PopulationDiagramView(PlotView, PopulationDiagramContextMixin):
             self._refresh_plot()
             self._needs_refresh = False
             self._apply_theme_to_fig()
+            self._notify_canvas_changed()
             if self._canvas is not None:
                 self._canvas.draw_idle()
 
@@ -394,6 +401,7 @@ class PopulationDiagramView(PlotView, PopulationDiagramContextMixin):
         # Refresh in-place - do NOT destroy and recreate the canvas.
         self._refresh_plot()
         self._apply_theme_to_fig()
+        self._notify_canvas_changed()
         if self._canvas is not None:
             self._canvas.draw_idle()
 

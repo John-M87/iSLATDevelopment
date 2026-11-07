@@ -704,6 +704,16 @@ class PlotView(ABC):
     # ------------------------------------------------------------------
     # Canvas / drawing
     # ------------------------------------------------------------------
+    def _notify_canvas_changed(self) -> None:
+        """Tell the plot manager this view replaced its canvas or redrew its content.
+
+        Lets the main navigation toolbar follow the new canvas and drop
+        view history that no longer applies.
+        """
+        notify = getattr(getattr(self, "_pm", None), "on_view_canvas_changed", None)
+        if callable(notify):
+            notify(self)
+
     @abstractmethod
     def draw(self) -> None:
         """

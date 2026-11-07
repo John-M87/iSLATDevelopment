@@ -593,6 +593,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
             self._canvas.mpl_connect(
                 "button_press_event", self._on_canvas_button_press
             )
+            self._notify_canvas_changed()
 
     def _on_canvas_button_press(self, event: Any) -> None:
         """Route right-click events to :meth:`build_context_menu`."""
