@@ -337,7 +337,7 @@ class ControlPanel(ttk.Frame):
 
     def _create_bound_parameter_entry(self, label_text, param_name, row, col, width=8):
         """Create an entry bound to a global parameter in molecules_dict"""
-        if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
+        if self._molecules_dict() is None:
             return None, None
             
         molecules_dict = self.islat.molecules_dict
@@ -372,7 +372,7 @@ class ControlPanel(ttk.Frame):
 
     def _create_wavelength_controls(self, parent, start_row, start_col):
         """Create wavelength range controls for model calculation range"""
-        if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
+        if self._molecules_dict() is None:
             return
         min_wave_tip = "Minimum wavelength\nto calculate the models\nunits: μm"
         max_wave_tip = "Maximum wavelength\nto calculate the models\nunits: μm"
@@ -386,7 +386,7 @@ class ControlPanel(ttk.Frame):
 
     def _create_global_parameter_controls(self, parent, start_row, start_col):
         """Create global parameter entry fields using MoleculeDict properties"""
-        if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
+        if self._molecules_dict() is None:
             label = tk.Label(parent, text="Global parameters not available")
             label.grid(row=start_row, column=start_col, columnspan=4, padx=5, pady=5)
             return
@@ -735,7 +735,7 @@ class ControlPanel(ttk.Frame):
         
         # Get current value from molecules_dict
         current_value = 0.0
-        if hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict:
+        if self._molecules_dict() is not None:
             current_value = getattr(self.islat.molecules_dict, property_name, 0.0)
         
         return self._create_simple_entry(parent, label_text, current_value, row, col, update_global_parameter, width, param_name=property_name, tip_text=tip_text)
@@ -821,8 +821,8 @@ class ControlPanel(ttk.Frame):
         pass
 
     def _delete_molecule(self, mol_name = None, frame = None):
-        mol_name = mol_name
-        active_mol = self._get_active_molecule_object().name
+        active = self._get_active_molecule_object()
+        active_mol = active.name if active is not None else None
 
         # print(f"destroying {mol_name}")
         self.data_field.insert_text(f"Deleting {mol_name}", clear_after = True)
@@ -1005,11 +1005,12 @@ class ControlPanel(ttk.Frame):
     def _register_callbacks(self):
         """Register callbacks for UI synchronization only"""
         try:
-            if hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict:
-                self.islat.molecules_dict.add_active_molecule_change_callback(self._on_active_molecule_change)
-            
-            if hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict:
-                self.islat.molecules_dict.add_global_parameter_change_callback(self._on_global_parameter_change)
+            # Register even when the dict is empty, so the panel follows
+            # molecules that are added later in the session.
+            molecules_dict = self._molecules_dict()
+            if molecules_dict is not None:
+                molecules_dict.add_active_molecule_change_callback(self._on_active_molecule_change)
+                molecules_dict.add_global_parameter_change_callback(self._on_global_parameter_change)
             
             Molecule.add_molecule_parameter_change_callback(self._on_molecule_parameter_change)
 
@@ -1195,6 +1196,16 @@ class ControlPanel(ttk.Frame):
             if hasattr(selected_mol, '_notify_my_parameter_change'):
                 selected_mol._notify_my_parameter_change('color', old_color, color_code)
 
+    def _molecules_dict(self):
+        """The MoleculeDict, or ``None`` if there is none.
+
+        Unlike a plain truth test this also returns an *empty* MoleculeDict:
+        global parameters (distance, stellar RV, wavelength range, ...) and
+        callbacks live on the dict itself and must keep working when every
+        molecule has been deleted or an empty save file was loaded.
+        """
+        return getattr(self.islat, 'molecules_dict', None)
+
     def _get_active_molecule_object(self) -> Molecule:
         """Get the active molecule object, similar to MoleculeWindow logic"""
         if not hasattr(self.islat, 'active_molecule') or not self.islat.active_molecule:
@@ -1211,12 +1222,20 @@ class ControlPanel(ttk.Frame):
     def _update_active_molecule_changes(self):
         """Update color button and visibility checkbox based on active molecule"""
         active_mol = self._get_active_molecule_object()
-        self.selected_name = active_mol.name
 
         # Reset all frames to default, then highlight active + comparison
         for name, frame in self.mol_frames.items():
             frame.config(bg=self.bg_color)
-        self.mol_frames[active_mol.name].config(bg=self.selected_color)
+
+        if active_mol is None:
+            # No molecules (e.g. all deleted, or an empty save file was loaded)
+            self.selected_name = None
+            self.selected_label.config(text="Selected Molecule: None")
+            return
+
+        self.selected_name = active_mol.name
+        if active_mol.name in self.mol_frames:
+            self.mol_frames[active_mol.name].config(bg=self.selected_color)
         # Re-apply comparison highlights
         for comp_mol in self.islat.comparison_molecules:
             comp_name = getattr(comp_mol, 'name', str(comp_mol))
@@ -1333,7 +1352,7 @@ class ControlPanel(ttk.Frame):
 
     def _update_wavelength_range(self, value_str=None):
         """Update wavelength range for model calculations (not display)"""
-        if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
+        if self._molecules_dict() is None:
             return
             
         try:
@@ -1804,8 +1823,8 @@ class ControlPanel(ttk.Frame):
             print(f"Error setting active molecule: {e}")
 
     def refresh_from_molecules_dict(self):
-        """Refresh all fields from current molecules_dict values"""
-        if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
+        """Refresh all fields from current molecules_dict values (also when it holds no molecules)"""
+        if self._molecules_dict() is None:
             return
             
         molecules_dict = self.islat.molecules_dict
@@ -1847,7 +1866,7 @@ class ControlPanel(ttk.Frame):
 
     def cleanup(self):
         try:
-            if hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict:
+            if self._molecules_dict() is not None:
                 self.islat.molecules_dict.remove_active_molecule_change_callback(self._on_active_molecule_change)
         except Exception as e:
             print(f"Error during ControlPanel cleanup: {e}")
@@ -1881,8 +1900,8 @@ class ControlPanel(ttk.Frame):
         """Update all global parameter fields with values from the molecules_dict"""
         if not hasattr(self, '_global_parameter_entries'):
             return
-        
-        if not (hasattr(self.islat, 'molecules_dict') and self.islat.molecules_dict):
+
+        if self._molecules_dict() is None:
             return
             
         for property_name, (entry, var) in self._global_parameter_entries.items():

@@ -327,7 +327,11 @@ class iSLAT:
             success_count = results.get("success", 0)
             if success_count > 0:
                 print(f"Successfully loaded {success_count} molecules.")
-                
+
+                # Starting from no molecules (all deleted / empty save), pick an active one
+                if self.active_molecule is None:
+                    self._set_initial_active_molecule()
+
                 # Refresh GUI if requested using existing GUI methods
                 if refresh and hasattr(self, 'GUI') and self.GUI is not None:
                     try:

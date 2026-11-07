@@ -122,11 +122,40 @@ class MoleculeDict(ObservableMixin, dict):
         Molecule.add_molecule_parameter_change_callback(self._on_molecule_parameter_changed)
     
     def clear(self):
-        """Clear the dictionary of all molecules."""
+        """Clear the dictionary of all molecules.
+
+        The active and comparison molecules are reset as well (see
+        :meth:`_release_removed_molecules`).
+        """
         super().clear()
         self._clear_all_caches()
         self._visible_molecules = set()  # Clear visibility cache
+        self._release_removed_molecules()
         print("MoleculeDict cleared.")
+
+    def __delitem__(self, key: str) -> None:
+        """Remove a molecule; it also stops being the active or a comparison molecule."""
+        super().__delitem__(key)
+        self._release_removed_molecules()
+
+    def _release_removed_molecules(self) -> None:
+        """Drop references to molecules that are no longer in the dict.
+
+        Removed molecules leave the comparison list, and when the active
+        molecule was removed the active molecule becomes ``None`` (with the
+        usual change notification).  To make another molecule active instead,
+        set it before removing the old one.
+        """
+        present = {id(mol) for mol in super().values()}
+        comparison = getattr(self, "_comparison_molecules", None)
+        if comparison:
+            kept = [mol for mol in comparison if id(mol) in present]
+            if len(kept) != len(comparison):
+                comparison[:] = kept
+                self._notify_comparison_molecules_change()
+        active = getattr(self, "_active_molecule", None)
+        if active is not None and id(active) not in present:
+            self.active_molecule = None
 
     def reorder(self, new_order: list) -> None:
         """Reorder molecules in-place according to *new_order* (list of names).
