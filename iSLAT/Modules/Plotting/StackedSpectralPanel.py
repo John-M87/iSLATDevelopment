@@ -93,6 +93,9 @@ class StackedSpectralPanel(CompositePlot):
     **kwargs
         Forwarded to :class:`BasePlot`.
     """
+    #: Shared y-axis label drawn down the left side of the figure.
+    y_axis_label: str = "Flux Density (Jy)"
+
     def __init__(
         self,
         wave_data: np.ndarray,
@@ -895,7 +898,7 @@ class StackedSpectralPanel(CompositePlot):
 
         # --- Global figure labels --------------------------------------
         self.fig.supylabel(
-            "Flux Density (Jy)", fontsize=10, color=fg, x=0.01,
+            self.y_axis_label, fontsize=10, color=fg, x=0.01,
         )
 
         # Apply theme

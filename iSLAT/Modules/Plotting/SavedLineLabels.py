@@ -23,7 +23,7 @@ USER_SETTING_KEYS = {
 
 #: Views (by their name in the Views menu) that draw saved lines.  Full-spectrum
 #: exports follow "Full Spectrum".
-LABEL_VIEWS = ("Three Panel", "Full Spectrum", "Line Grid")
+LABEL_VIEWS = ("Three Panel", "Full Spectrum", "Optical Depth", "Line Grid")
 
 #: Views without labels until the user turns them on.
 DEFAULT_HIDDEN_VIEWS: "FrozenSet[str]" = frozenset({"Three Panel"})

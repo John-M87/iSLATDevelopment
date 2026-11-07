@@ -208,3 +208,121 @@ class TestOpticalDepthSpectrumPlot:
         # Should have panels from both sources
         assert len(composite.panels) >= 3
         composite.close()
+
+
+class TestOpticalDepthTagsAndLabels:
+    """Artist tags and labels the Optical Depth view relies on."""
+
+    def test_total_tau_line_is_tagged(self):
+        from iSLAT.Modules.Plotting.OpticalDepthPanel import TOTAL_TAU_TAG
+        wave, flux, err = make_wave_flux(n=200)
+        panel = OpticalDepthPanel(
+            wave, flux, xmin=float(wave[0]), xmax=float(wave[-1]),
+            mol_tau_cache=_make_tau_cache(wave, n_molecules=2), show_total=True,
+        )
+        panel.generate_plot()
+        tagged = [ln for ln in panel.ax.lines if hasattr(ln, TOTAL_TAU_TAG)]
+        assert len(tagged) == 1 and tagged[0].get_label() == "Total \u03c4"
+        panel.close()
+
+    def test_stacked_plot_y_label_is_optical_depth(self):
+        wave, flux, err = make_wave_flux(n=200)
+        odsp = OpticalDepthSpectrumPlot(wave, flux, n_panels=3)
+        odsp.generate_plot()
+        assert odsp.fig._supylabel.get_text() == "Optical Depth (\u03c4)"
+        assert all(ax.get_ylabel() == "" for ax in odsp.subplots.values())
+        odsp.close()
+
+    def test_flux_plots_keep_flux_label(self):
+        from iSLAT.Modules.Plotting import FullSpectrumPlot
+        wave, flux, err = make_wave_flux(n=200)
+        fsp = FullSpectrumPlot(wave, flux, n_panels=2)
+        fsp.generate_plot()
+        assert fsp.fig._supylabel.get_text() == "Flux Density (Jy)"
+        fsp.close()
+
+
+class TestOpticalDepthUpdateData:
+    def test_keeps_range_and_reports_layout_change(self):
+        wave, flux, err = make_wave_flux(n=200)
+        odsp = OpticalDepthSpectrumPlot(wave, flux, n_panels=4, xlim_range=(12.0, 16.0))
+        new_flux = flux * 2
+        assert odsp.update_data(wave, new_flux) is False
+        assert (odsp._xlim_start, odsp._xlim_end) == (12.0, 16.0)
+        assert np.array_equal(odsp.flux_data, new_flux)
+        odsp.n_panels = 2
+        assert odsp.update_data(wave, new_flux) is True
+        assert len(odsp._panel_edges) == 2
+
+
+class TestOpticalDepthStemLimits:
+    """Stem mode scales each panel to its per-line τ, not the convolved profile."""
+
+    @staticmethod
+    def _molecules():
+        from tests.plotting.test_plot_views import _make_test_molecule
+
+        class _Dict(dict):
+            def get_visible_molecules(self, return_objects=False):
+                return list(self.values()) if return_objects else list(self)
+
+            def get_matched_sampling_wavelengths(self, w):
+                return False, w
+
+        return _Dict(H2O=_make_test_molecule())
+
+    def _stem_plot(self, **kwargs):
+        wave = np.linspace(10.0, 20.0, 2000)
+        odsp = OpticalDepthSpectrumPlot(
+            wave, np.ones_like(wave), molecules=self._molecules(),
+            n_panels=3, display_mode="stem", **kwargs,
+        )
+        odsp.generate_plot()
+        return odsp
+
+    def test_limits_fit_stems(self):
+        odsp = self._stem_plot()
+        checked = 0
+        for cell in odsp.panels.values():
+            peak = cell[0].stem_tau_max()
+            if peak > 0:
+                checked += 1
+                assert cell[0].ax.get_ylim() == pytest.approx((0.0, peak * 1.1))
+        assert checked > 0
+        odsp.close()
+
+    def test_uniform_limits_share_tallest_stem(self):
+        odsp = self._stem_plot(uniform_ylim=True)
+        top = max(cell[0].stem_tau_max() for cell in odsp.panels.values())
+        for cell in odsp.panels.values():
+            assert cell[0].ax.get_ylim() == pytest.approx((0.0, top * 1.1))
+        odsp.close()
+
+    def test_log_stems_start_at_floor(self):
+        from iSLAT.Modules.Plotting.OpticalDepthPanel import TAU_STEM_TAG
+        odsp = self._stem_plot(log_scale=True, tau_floor=1e-6)
+        bottoms = [
+            seg[:, 1].min()
+            for cell in odsp.panels.values()
+            for coll in cell[0].ax.collections if hasattr(coll, TAU_STEM_TAG)
+            for seg in coll.get_segments()
+        ]
+        assert bottoms and min(bottoms) == pytest.approx(1e-6)
+        odsp.close()
+
+
+def test_stacked_panels_use_the_plot_theme():
+    """The total τ line follows the plot's theme foreground (e.g. light on a dark theme)."""
+    from iSLAT.Modules.Plotting.OpticalDepthPanel import TOTAL_TAU_TAG
+    from tests.plotting.test_plot_views import _make_test_molecule
+    molecules = TestOpticalDepthStemLimits._molecules()
+    molecules["CO2"] = _make_test_molecule(name="CO2", lam_start=12.3)
+    wave = np.linspace(10.0, 20.0, 2000)
+    odsp = OpticalDepthSpectrumPlot(
+        wave, np.ones_like(wave), molecules=molecules, n_panels=2, theme={"foreground": "#eeeeee"},
+    )
+    odsp.generate_plot()
+    assert all(cell[0].theme is odsp.theme for cell in odsp.panels.values())
+    totals = [ln for ax in odsp.subplots.values() for ln in ax.lines if hasattr(ln, TOTAL_TAU_TAG)]
+    assert totals and {ln.get_color() for ln in totals} == {"#eeeeee"}
+    odsp.close()

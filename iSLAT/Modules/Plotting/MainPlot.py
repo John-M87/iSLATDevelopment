@@ -18,6 +18,7 @@ from .FullSpectrumView import FullSpectrumView
 from .PopulationDiagramView import PopulationDiagramView
 from .LineInspectionView import LineInspectionView
 from .FitLinesPlotGridView import FitLinesPlotGridView
+from .OpticalDepthView import OpticalDepthView, TAU_OPTION_DEFAULTS
 from iSLAT.Modules.DataTypes.Molecule import Molecule
 from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
 from iSLAT.Modules.DataProcessing.FittingEngine import FittingEngine
@@ -89,6 +90,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             "y_limits":     None,        # manual (ymin, ymax) used when y_autoscale is False
             "observed":     True,        # observed-spectrum artists visible
             "wavelength_markers": [],    # user marks: [{"start", "end", "label", "color"}, ...]
+            **TAU_OPTION_DEFAULTS,       # Optical Depth view: log axis, profile / stem, stacking
         }
 
         # Session-only size overrides for full-spectrum exports (inches; None = default).
@@ -127,6 +129,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         self._population_diagram_view: PlotView = PopulationDiagramView(self)
         self._line_inspection_view: PlotView = LineInspectionView(self)
         self._fit_lines_grid_view: FitLinesPlotGridView = FitLinesPlotGridView(self)
+        self._optical_depth_view: OpticalDepthView = OpticalDepthView(self)
         self.active_view: PlotView = self._three_panel_view
         self.is_full_spectrum: bool = False
         # Name of the view that was active before entering Full Spectrum mode,
@@ -138,6 +141,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         self._views: dict = {
             "Three Panel": self._three_panel_view,
             "Full Spectrum": self._full_spectrum_view,
+            "Optical Depth": self._optical_depth_view,
             "Population Diagram": self._population_diagram_view,
             "Line Inspection": self._line_inspection_view,
             "Line Grid": self._fit_lines_grid_view,
@@ -975,6 +979,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         # colors.
         self._three_panel_view.apply_theme(self.theme)
         self._full_spectrum_view.apply_theme(self.theme)
+        self._optical_depth_view.apply_theme(self.theme)
 
         # Theme the matplotlib toolbar
         if hasattr(self, 'toolbar') and self.toolbar is not None:

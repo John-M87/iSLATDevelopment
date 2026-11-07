@@ -43,6 +43,7 @@ Class hierarchy::
     PlotView (ABC)             — switchable view interface (GUI only)
     ├── ThreePanelView         — standard 3-panel GUI layout
     └── FullSpectrumView       — multi-panel full spectrum GUI layout
+        └── OpticalDepthView   — multi-panel optical depth τ(λ) GUI layout
 """
 
 from .BasePlot import BasePlot, DEFAULT_THEME, _detect_system_theme
@@ -70,6 +71,7 @@ from .LineInspectionContextMixin import LineInspectionContextMixin
 from .SpectrumPanelView import SpectrumPanelView
 from .ThreePanelView import ThreePanelView
 from .FullSpectrumView import FullSpectrumView
+from .OpticalDepthView import OpticalDepthView
 from .PopulationDiagramView import PopulationDiagramView
 from .LineInspectionView import LineInspectionView
 from .FitLinesPlotGridView import FitLinesPlotGridView
@@ -98,6 +100,7 @@ __all__ = [
     "ToggleMixin",
     "ThreePanelView",
     "FullSpectrumView",
+    "OpticalDepthView",
     "PopulationDiagramView",
     "LineInspectionView",
     "FitLinesPlotGridView",

@@ -503,12 +503,13 @@ class GUI:
         except Exception:
             pass
 
-        # Destroy the full-spectrum view's figure (non-pyplot managed)
-        try:
-            if hasattr(self, 'plot') and hasattr(self.plot, '_full_spectrum_view'):
-                self.plot._full_spectrum_view.destroy()
-        except Exception:
-            pass
+        # Destroy the stacked views' figures (non-pyplot managed)
+        for view_attr in ('_full_spectrum_view', '_optical_depth_view'):
+            try:
+                if hasattr(self, 'plot') and hasattr(self.plot, view_attr):
+                    getattr(self.plot, view_attr).destroy()
+            except Exception:
+                pass
 
         try:
             self.window.destroy()

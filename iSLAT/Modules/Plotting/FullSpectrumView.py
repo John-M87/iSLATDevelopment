@@ -94,6 +94,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
     :class:`StackedSpectralPanel` subclass.
     """
 
+    #: Name this view is registered under in the Views menu (``iSLATPlot.views``).
+    VIEW_NAME: str = "Full Spectrum"
+
     def __init__(self, plot_manager: Any) -> None:
         self._pm = plot_manager
         self._islat = plot_manager.islat
@@ -650,7 +653,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
             def _open_in_three_panel():
                 pm.islat.display_range = (xmin, xmax)
                 # Mirror toggle_three_panel so the back-button works.
-                pm._pre_threepanel_view_name = "Full Spectrum"
+                pm._pre_threepanel_view_name = self.VIEW_NAME
                 pm.switch_view("Three Panel")
                 try:
                     pm.ax1.set_xlim(xmin, xmax)
@@ -1214,9 +1217,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
         self._plot.plot_saved_lines(self.line_data, show_labels=self._saved_line_labels_visible())
 
     def _saved_line_labels_visible(self) -> bool:
-        """Whether this view labels its saved lines (the "Full Spectrum" toggle)."""
+        """Whether this view labels its saved lines (its :attr:`VIEW_NAME` toggle)."""
         from .SavedLineLabels import labels_visible
-        return labels_visible("Full Spectrum")
+        return labels_visible(self.VIEW_NAME)
 
     def _remove_saved_line_artists(self) -> None:
         """Remove all ``_islat_saved_line`` artists."""

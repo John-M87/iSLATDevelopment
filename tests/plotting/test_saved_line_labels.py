@@ -218,7 +218,7 @@ class TestDialog:
         assert dlg_mod.open_saved_line_label_dialog(tk_root, islat) is win
         view_boxes = {w.cget("text"): w for w in _walk(win) if w.winfo_class() == "TCheckbutton"}
         assert set(view_boxes) == set(sll.LABEL_VIEWS)
-        assert {v for v, b in view_boxes.items() if "selected" in b.state()} == {"Full Spectrum", "Line Grid"}
+        assert {v for v, b in view_boxes.items() if "selected" in b.state()} == {"Full Spectrum", "Optical Depth", "Line Grid"}
         view_boxes["Line Grid"].invoke()
         combo = next(w for w in _walk(win) if w.winfo_class() == "TCombobox")
         assert list(combo.cget("values"))[0] == dlg_mod.DEFAULT_CHOICE

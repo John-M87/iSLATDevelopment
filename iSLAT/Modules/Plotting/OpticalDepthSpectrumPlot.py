@@ -63,6 +63,8 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     **kwargs
         Forwarded to :class:`StackedSpectralPanel`.
     """
+    y_axis_label: str = "Optical Depth (τ)"
+
     def __init__(
         self,
         wave_data: np.ndarray,
@@ -114,6 +116,46 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
 
         # Backward-compatible per-row axes storage
         self.subplots: Dict[int, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Public data mutator (for interactive reuse)
+    # ------------------------------------------------------------------
+    def update_data(
+        self,
+        wave_data: np.ndarray,
+        flux_data: np.ndarray,
+        molecules: Optional["MoleculeDict"] = None,
+        error_data: Optional[np.ndarray] = None,
+        wave_data_obs: Optional[np.ndarray] = None,
+    ) -> bool:
+        """Replace the data arrays and recompute the panel layout.
+
+        The wavelength range (``_xlim_start`` / ``_xlim_end``) is kept, as in
+        :meth:`FullSpectrumPlot.update_data`.  Call :meth:`generate_plot`
+        afterwards to re-render.
+
+        Returns *True* if the panel edges changed.
+        """
+        self.wave_data = np.asarray(wave_data)
+        self.flux_data = np.asarray(flux_data)
+        self.wave_data_obs = (
+            np.asarray(wave_data_obs) if wave_data_obs is not None
+            else self.wave_data
+        )
+        if molecules is not None:
+            self.molecules = molecules
+        self.error_data = np.asarray(error_data) if error_data is not None else None
+
+        old_edges = self._panel_edges.copy()
+        if len(self._panel_edges) == 0:
+            self._xlim_start = float(np.nanmin(self.wave_data))
+            self._xlim_end = float(np.nanmax(self.wave_data))
+        self._compute_panel_layout()
+
+        return (
+            len(old_edges) != len(self._panel_edges)
+            or not np.allclose(old_edges, self._panel_edges, atol=1e-6)
+        )
 
     # ------------------------------------------------------------------
     # Molecule tau-cache helper
@@ -175,7 +217,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         """
         cache = getattr(self, "_mol_tau_cache", [])
         if not cache:
-            return (0.0, 1.0)
+            return (self.tau_floor, 1.0) if self.log_scale else (0.0, 1.0)
 
         xmin = float(np.nanmin(self.wave_data[mask])) if np.any(mask) else 0.0
         xmax = float(np.nanmax(self.wave_data[mask])) if np.any(mask) else 1.0
@@ -212,6 +254,29 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             return (self.tau_floor, max_tau * 2.0)
         return (0.0, max_tau * 1.1)
 
+    def _apply_stem_ylims(self) -> None:
+        """Fit each panel's y-limits to its tallest stem (``"stem"`` mode).
+
+        Honours :attr:`uniform_ylim` and :attr:`log_scale` like the profile limits.
+        """
+        peaks = {
+            idx: max((p.stem_tau_max() for p in cell if isinstance(p, OpticalDepthPanel)), default=0.0)
+            for idx, cell in self.panels.items()
+        }
+        if not peaks:
+            return
+        if self.uniform_ylim:
+            top = max(peaks.values())
+            peaks = {idx: top for idx in peaks}
+        self._panel_ylims = list(getattr(self, "_panel_ylims", []) or [])
+        for idx, peak in peaks.items():
+            if peak <= 0:
+                peak = 1.0
+            ylim = (self.tau_floor, peak * 2.0) if self.log_scale else (0.0, peak * 1.1)
+            self.panels[idx][0].ax.set_ylim(*ylim)
+            if idx < len(self._panel_ylims):
+                self._panel_ylims[idx] = ylim
+
     # ------------------------------------------------------------------
     # StackedSpectralPanel factory
     # ------------------------------------------------------------------
@@ -239,6 +304,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             stacked_fill=self.stacked_fill,
             tau_floor=self.tau_floor,
             ax=ax,
+            theme=self.theme,
             gap_mode=self.gap_mode,
             gap_threshold=self.gap_threshold,
             x_scaling=self.x_scaling,
@@ -260,6 +326,8 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             cell_panels[0].ax.set_ylim(*ylims[idx])
 
         ax = cell_panels[0].ax
+        # The figure-wide y label (y_axis_label) replaces the per-panel one.
+        ax.set_ylabel("")
         ax.tick_params(axis="x", labelsize=7)
         ax.tick_params(axis="y", labelsize=7)
         ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
@@ -300,6 +368,10 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             mol_tau_cache=mol_tau_cache,
             **kwargs,
         )
+
+        # Stems show the per-line τ, which the profile-based limits do not cover.
+        if self.display_mode == "stem":
+            self._apply_stem_ylims()
 
         # color legend on the first panel
         legend_ax = self._legend_axes

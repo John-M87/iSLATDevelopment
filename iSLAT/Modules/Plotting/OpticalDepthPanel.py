@@ -10,6 +10,7 @@ Renders the convolved optical-depth profile τ(λ) for one or more molecules on 
 
 Used both as a standalone single-panel plot and as the cell type created by :class:`OpticalDepthSpectrumPlot`.
 """
+import warnings
 from typing import Optional, List, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -21,6 +22,12 @@ from .BasePlot import BasePlot
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
+
+#: Attribute tagging the combined "Total τ" line (toggled like the summed model).
+TOTAL_TAU_TAG = "_islat_total_tau"
+#: Attribute tagging the per-line τ stems drawn in ``"stem"`` mode.
+TAU_STEM_TAG = "_islat_tau_stem"
+
 
 class OpticalDepthPanel(SpectralPanel):
     """
@@ -142,7 +149,10 @@ class OpticalDepthPanel(SpectralPanel):
         ax.set_ylabel("Optical Depth (\u03c4)", color=fg, fontsize=8)
 
         if self.log_scale:
-            ax.set_yscale("log")
+            # A panel without τ > 0 warns here; its limits are set afterwards.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Data has no positive values")
+                ax.set_yscale("log")
 
     # ------------------------------------------------------------------
     # Profile mode
@@ -198,7 +208,7 @@ class OpticalDepthPanel(SpectralPanel):
             ref_lam = entries[0][0]
             ref_mask = (ref_lam >= xr[0]) & (ref_lam <= xr[1])
             if np.any(ref_mask):
-                ax.plot(
+                total_line, = ax.plot(
                     ref_lam[ref_mask], total_tau,
                     color=self._get_theme_value("foreground", "black"),
                     linewidth=self._get_theme_value("model_linewidth", 2) * 0.6,
@@ -206,6 +216,7 @@ class OpticalDepthPanel(SpectralPanel):
                     label="Total \u03c4",
                     zorder=self._get_theme_value("zorder_model", 3) + 1,
                 )
+                setattr(total_line, TOTAL_TAU_TAG, True)
 
     # ------------------------------------------------------------------
     # Stem mode
@@ -243,12 +254,31 @@ class OpticalDepthPanel(SpectralPanel):
                     tau_vals.append(tau)
 
             if lam_vals:
-                ax.vlines(
-                    lam_vals, 0, tau_vals,
+                # A log axis cannot show a stem starting at zero.
+                bottom = self.tau_floor if self.log_scale else 0
+                stems = ax.vlines(
+                    lam_vals, bottom, tau_vals,
                     colors=color, alpha=0.7,
                     linewidth=0.8, label=label,
                     zorder=self._get_theme_value("zorder_model", 3),
                 )
+                setattr(stems, TAU_STEM_TAG, True)
+
+    def stem_tau_max(self) -> float:
+        """Return the tallest stem drawn in ``"stem"`` mode (0.0 when none)."""
+        ax = self.ax
+        if ax is None:
+            return 0.0
+        peak = 0.0
+        for coll in ax.collections:
+            if not hasattr(coll, TAU_STEM_TAG):
+                continue
+            for seg in coll.get_segments():
+                if len(seg):
+                    top = float(np.nanmax(seg[:, 1]))
+                    if np.isfinite(top):
+                        peak = max(peak, top)
+        return peak
 
     # ------------------------------------------------------------------
     def compute_ylim(self, ymax_factor: float = 0.2) -> Tuple[float, float]:

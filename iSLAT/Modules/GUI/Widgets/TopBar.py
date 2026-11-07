@@ -275,6 +275,7 @@ class TopBar(ResizableFrame):
         MenuToolTip(views_menu, {
             "Three Panel":        "Standard 3-panel layout:\nfull spectrum, line inspection,\nand population diagram.",
             "Full Spectrum":      "Multi-panel full-spectrum view\nshowing the entire wavelength range.",
+            "Optical Depth":      "Multi-panel optical depth τ(λ)\nof the visible molecules over\nthe entire wavelength range.",
             "Population Diagram": "Standalone Boltzmann / rotation\ndiagram for the active molecule.",
             "Line Grid":          "Grid of individual line fits\nfrom the most recent fit run.",
             "Auto-scale Y Axis":  "ON: the main plot's Y axis follows\nthe data in view.\nOFF: it stays at the current / set limits.",
