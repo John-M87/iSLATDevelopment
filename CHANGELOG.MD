@@ -34,8 +34,14 @@
 - The Bulk Apply window now lets you specify how the properties should be applied (e.g. to visible molecules only)
 - Added a `Full Spectrum Export Settings…` dialog to the Spectral Functions menu for overriding the exported full-spectrum figure width (longer panels) and per-panel height; the values are remembered for the session and used by `Output Full Spectrum (Ctrl+Shift+F)` and the Full Spectrum view's `Save Figure…`. `output_full_spectrum` also accepts `figure_width` / `panel_height` overrides, and `FullSpectrumPlot` gains `set_figure_size`
 
+#### Keyboard Shortcuts
+- Keyboard shortcuts now match their exact modifiers: a modifier combination that has no binding (e.g. `Ctrl+C`, `Ctrl+A` or `Shift+R`) no longer triggers the plain key's action and is passed on to the focused widget instead. Every existing shortcut keeps its key
+- Shortcut hints in the top bar menus and tooltips (and the full spectrum `Residuals` toggle) are now generated from the key bindings, so they always match the real keys and show `Cmd` instead of `Ctrl` on macOS
+
 ### Bug Fixes
 - Fixed molecules added from line lists in a sub-folder of `HITRANdata` (e.g. `HITRANdata/CustomFolder/`) being saved as `HITRANdata/<file>`, which made them fail to load ("No such file or directory") after a save and reload. The sub-folders are now kept, and existing saves with such paths are repaired on load when exactly one file of that name exists under `HITRANdata` (the next save writes the corrected path)
+- Fixed `Ctrl+S` / `Cmd+S` in the `View Line List` window also saving the main window's molecule parameters in addition to exporting the CSV
+- Fixed the `H` key grid toggle on the main plot raising an error instead of toggling the grid
 - Fixed the full spectrum output (`Output Full Spectrum`, the Full Spectrum view's `Save Figure…`, and the `Display Full Spectrum` window) ignoring the `Show Observed Data` and Y-axis settings: exports now hide the observed data when it is hidden in the GUI and follow `Auto-scale Y Axis`, `Auto-scale Y to Model Flux`, and `Set Y Limits…` (annotations are placed against the final Y range)
 - Fixed a bug with the model range extension in the spectrum plotting modules: models are now drawn over the full global wavelength range even when `Match Pix. Sampling` resamples them onto a narrower observed grid
 - Fixed the per-line FWHM arrays of the population diagram data collapsing to a single value with the constant instrumental profile, which broke plotting on the FWHM properties
@@ -52,6 +58,7 @@
 - The `Intensity` line info output now reports line center flux, line center opacity, and model opacity in range
 - Updated the population diagram examples notebook to use the new method of setting the active molecule in the grid
 - Added tests for the filtered population diagram window, line filter expression module, center view, and model range extension
+- Replaced the keyboard shortcut `if/elif` chain in `InteractionHandler` with a declarative keymap: the new `KeyBindings` module holds the default key map (`DEFAULT_KEYMAP`, action ID to key chords), turns key events into chords and formats them for display (`chord_from_event`, `format_chord`, `shortcut_text`), and provides an `ActionRegistry` that dispatches key presses and rejects conflicting bindings. Added tests for the key bindings
 - The line list filter's property labels and keys now come from the shared property list (e.g. `Quantum lev_up` is now `Upper level (lev_up)`, `Species` is now `Molecule (species)`, and the table view's added-column keys use the shared keys such as `qn_upper:J`); `vib_band_label` moved to `LineFilterExpression`
 - Bumped version to `v5.03.04`
 

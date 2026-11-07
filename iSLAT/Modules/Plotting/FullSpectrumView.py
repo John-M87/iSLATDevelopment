@@ -28,6 +28,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.widgets import SpanSelector
 
 from .PlotView import PlotView, draw_wavelength_markers
+from ..GUI.KeyBindings import shortcut_text
 from .StackedSpectralPanel import StackedSpectralPanel
 from .FullSpectrumPlot import FullSpectrumPlot
 from .ResidualSpectrumPlot import ResidualSpectrumPlot
@@ -766,7 +767,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 getter=_residuals_getter,
                 setter=_residuals_setter,
                 owner=self,
-                tip="Toggle residual sub-panels on/off\nin full spectrum mode\nKeybind: R",
+                tip=f"Toggle residual sub-panels on/off\nin full spectrum mode\nKeybind: {shortcut_text('toggle_residuals')}",
             ),
             "top_bar",
         )

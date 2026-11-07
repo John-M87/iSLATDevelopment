@@ -3,6 +3,8 @@ import time
 from matplotlib.widgets import SpanSelector
 from typing import Optional, Tuple, Callable, Dict, Any
 
+from .KeyBindings import ActionRegistry, TEXT_INPUT_CLASSES, chord_from_event
+
 class InteractionHandler:
     """Mouse/keyboard events - handles all user interactions with plots"""
     
@@ -378,8 +380,10 @@ class InteractionHandler:
     
     def _toggle_grid(self):
         """Toggle grid on/off"""
-        for ax in [self.ax1, self.ax2, self.ax3]:
-            ax.grid(not ax.get_grid)
+        self._grid_visible = not getattr(self, "_grid_visible", False)
+        for ax in (self.ax1, self.ax2, self.ax3):
+            if ax is not None:
+                ax.grid(self._grid_visible)
         self.canvas.draw_idle()
     
     def _setup_tkinter_keybindings(self):
@@ -413,167 +417,81 @@ class InteractionHandler:
         # Use KeyPress event with keysym check for more reliable handling
         root.bind_all('<KeyPress>', self._on_tk_keypress)
     
+    # Action ID -> handler method name.  Methods are resolved at call time so
+    # instance-level overrides (e.g. test doubles) are honored.
+    _ACTION_METHODS: Dict[str, str] = {
+        "toggle_full_spectrum": "_toggle_full_spectrum",
+        "open_full_spectrum_window": "_open_full_spectrum_window",
+        "output_full_spectrum": "_output_full_spectrum",
+        "toggle_three_panel": "_toggle_three_panel",
+        "toggle_residuals": "_toggle_residuals",
+        "toggle_summed_spectrum": "_toggle_summed_spectrum",
+        "open_wavelength_marker_dialog": "_open_wavelength_marker_dialog",
+        "toggle_saved_lines": "_toggle_saved_lines",
+        "toggle_atomic_lines": "_toggle_atomic_lines",
+        "toggle_legend": "_toggle_legend",
+        "toggle_active_molecule_visibility": "_toggle_active_molecule_visibility",
+        "toggle_all_molecule_visibility": "_toggle_all_molecule_visibility",
+        "open_center_view_dialog": "_open_center_view_dialog",
+        "save_parameters": "_save_parameters",
+        "save_parameters_to_file": "_save_parameters_to_file",
+        "load_parameters": "_load_parameters",
+        "load_parameters_from_file": "_load_parameters_from_file",
+        "select_previous_molecule": "_select_previous_molecule",
+        "select_next_molecule": "_select_next_molecule",
+        "cycle_spectrum_previous": "_cycle_spectrum_previous",
+        "cycle_spectrum_next": "_cycle_spectrum_next",
+        "retreat_plot_start": "_retreat_plot_start",
+        "retreat_plot_start_half": "_retreat_plot_start_half",
+        "advance_plot_start": "_advance_plot_start",
+        "advance_plot_start_half": "_advance_plot_start_half",
+    }
+
+    def _build_action_registry(self) -> ActionRegistry:
+        """Bind every action in :data:`DEFAULT_KEYMAP` to its handler method."""
+        registry = ActionRegistry()
+        registry.register_defaults({
+            action_id: (lambda name=method_name: getattr(self, name)())
+            for action_id, method_name in self._ACTION_METHODS.items()
+        })
+        return registry
+
+    def _get_action_registry(self) -> ActionRegistry:
+        """Return the keyboard action registry, building it on first use."""
+        registry = getattr(self, "_action_registry", None)
+        if registry is None:
+            registry = self._build_action_registry()
+            self._action_registry = registry
+        return registry
+
+    def _half_plot_range(self) -> float:
+        return float(self.islat.GUI.control_panel.plot_range_var.get()) / 2
+
+    def _retreat_plot_start_half(self):
+        """Retreat the plot start by half the current plot range (Shift+<)."""
+        self._retreat_plot_start(extra_amount=self._half_plot_range())
+
+    def _advance_plot_start_half(self):
+        """Advance the plot start by half the current plot range (Shift+>)."""
+        self._advance_plot_start(extra_amount=self._half_plot_range())
+
     def _on_tk_keypress(self, event):
-        """Handle all key press events from tkinter"""
-        import platform
-        
-        keysym = event.keysym.lower()
-        
-        # Check if focus is on an entry widget - don't interfere with typing
+        """Dispatch a global tkinter key press to the bound action.
+
+        Returns ``'break'`` when an action handled the key, otherwise ``None``
+        so the event propagates normally.
+        """
         # event.widget may be a string path if the widget was destroyed or during dialogs
         try:
             widget_class = event.widget.winfo_class()
         except AttributeError:
-            return
-        if widget_class in ('Entry', 'Text', 'TEntry', 'TCombobox'):
-            return  # Don't consume event, let typing work
-        
-        # Handle 'f' key for full spectrum
-        if keysym == 'f':
-            # Check if Ctrl or Command modifier is pressed
-            # On Windows/Linux: Control is state bit 2 (0x4)
-            # On Mac: Command is state bit 3 (0x8)
-            # Shift is state bit 0 (0x1)
-            ctrl_pressed = False
-            shift_pressed = bool(event.state & 0x1)
-            if platform.system() == "Darwin":
-                ctrl_pressed = bool(event.state & 0x8) or bool(event.state & 0x4)
-            else:
-                ctrl_pressed = bool(event.state & 0x4)
-            
-            if ctrl_pressed and shift_pressed:
-                # Ctrl+Shift+F / Cmd+Shift+F - output full spectrum (save to file)
-                #print("[DEBUG] Ctrl+Shift+F pressed, outputting full spectrum")
-                self._output_full_spectrum()
-            elif ctrl_pressed:
-                # Ctrl+F / Cmd+F - open full spectrum window
-                #print("[DEBUG] Ctrl+F pressed, opening full spectrum window")
-                self._open_full_spectrum_window()
-            else:
-                # Just 'f' - toggle full spectrum mode
-                #print(f"[DEBUG] 'f' key pressed alone, toggling full spectrum.")
-                self._toggle_full_spectrum()
-            
-            return 'break'  # Prevent event from propagating
-        
-        # Handle arrow keys for molecule selection
-        elif keysym == 'up':
-            self._select_previous_molecule()
-            return 'break'
-        elif keysym == 'down':
-            self._select_next_molecule()
-            return 'break'
-        
-        # Handle Ctrl+S for save parameters, plain 's' for toggle saved lines
-        elif keysym == 's':
-            ctrl_pressed = False
-            shift_pressed = bool(event.state & 0x1)
-            if platform.system() == "Darwin":
-                ctrl_pressed = bool(event.state & 0x8) or bool(event.state & 0x4)
-            else:
-                ctrl_pressed = bool(event.state & 0x4)
-            
-            if ctrl_pressed and shift_pressed:
-                self._save_parameters_to_file()
-            elif ctrl_pressed:
-                self._save_parameters()
-            else:
-                self._toggle_saved_lines()
-            return 'break'
-        
-        # Handle Ctrl+Shift+L for load parameters from file, Ctrl+L for load parameters, plain 'l' for toggle legend
-        elif keysym == 'l':
-            ctrl_pressed = False
-            shift_pressed = bool(event.state & 0x1)
-            if platform.system() == "Darwin":
-                ctrl_pressed = bool(event.state & 0x8) or bool(event.state & 0x4)
-            else:
-                ctrl_pressed = bool(event.state & 0x4)
-            
-            if ctrl_pressed and shift_pressed:
-                self._load_parameters_from_file()
-            elif ctrl_pressed:
-                self._load_parameters()
-            else:
-                self._toggle_legend()
-            return 'break'
-        
-        # Handle left/right arrow keys for cycling through sample spectra
-        elif keysym == 'left':
-            self._cycle_spectrum_previous()
-            return 'break'
-        elif keysym == 'right':
-            self._cycle_spectrum_next()
-            return 'break'
-        
-        # Handle 'a' key for toggling atomic lines
-        elif keysym == 'a':
-            self._toggle_atomic_lines()
-            return 'break'
-        
-        # Handle 'm' key: Shift+M = mark wavelengths dialog, plain m = toggle summed spectrum
-        elif keysym == 'm':
-            if event.state & 0x1:
-                self._open_wavelength_marker_dialog()
-            else:
-                self._toggle_summed_spectrum()
-            return 'break'
+            return None
+        if widget_class in TEXT_INPUT_CLASSES:
+            return None  # Don't consume event, let typing work
 
-        # Handle 'v' key for toggling molecule visibility
-        # Shift+V = toggle ALL molecules, plain v = toggle active molecule
-        elif keysym == 'v':
-            shift_pressed = bool(event.state & 0x1)
-            if shift_pressed:
-                self._toggle_all_molecule_visibility()
-            else:
-                self._toggle_active_molecule_visibility()
+        if self._get_action_registry().dispatch(chord_from_event(event)):
             return 'break'
-
-        # Handle 'r' key for toggling residual sub-panels
-        elif keysym == 'r':
-            self._toggle_residuals()
-            return 'break'
-
-        # Handle 't' key for toggling three panel view
-        elif keysym == 't':
-            self._toggle_three_panel()
-            return 'break'
-
-        # Handle 'c' key for opening the center-view dialog
-        elif keysym == 'c':
-            self._open_center_view_dialog()
-            return 'break'
-
-        # Handle 'n' key for advancing plot start by the current range
-        # Shift+N = retreat (subtract range), plain N = advance (add range)
-        #elif keysym == 'n':
-        #    shift_pressed = bool(event.state & 0x1)
-        #    if shift_pressed:
-        #        self._retreat_plot_start()
-        #    else:
-        #        self._advance_plot_start()
-        #    return 'break'
-        
-        #elif keysym == ',' or keysym == '<':
-        elif keysym in [',', '<', 'comma', 'less']: # needed for mac for some reason
-            shift_pressed = bool(event.state & 0x1)
-            if shift_pressed:
-                self._retreat_plot_start(extra_amount=float(self.islat.GUI.control_panel.plot_range_var.get())/2)
-            else:
-                self._retreat_plot_start()
-            return 'break'
-            #self._retreat_plot_start()
-            #return 'break'
-
-        elif keysym in ['.', '>', 'period', 'greater']:
-            shift_pressed = bool(event.state & 0x1)
-            if shift_pressed:
-                self._advance_plot_start(extra_amount=float(self.islat.GUI.control_panel.plot_range_var.get())/2)
-            else:
-                self._advance_plot_start()
-            return 'break'
-            #self._advance_plot_start()
-            #return 'break'
+        return None
 
     def _cycle_spectrum_previous(self):
         """Switch to the previous spectrum in the sample list."""
