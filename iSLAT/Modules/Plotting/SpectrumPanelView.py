@@ -128,6 +128,7 @@ class SpectrumPanelView(PlotView):
             self._right_click_cid = self._canvas.mpl_connect(
                 "button_press_event", self._on_canvas_button_press
             )
+            self._notify_canvas_changed()
 
     def _apply_theme_to_fig(self) -> None:
         """Apply ``self._pm.theme`` to the owned figure and canvas widget."""

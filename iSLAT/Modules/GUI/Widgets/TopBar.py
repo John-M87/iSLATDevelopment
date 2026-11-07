@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 import iSLAT.Constants as c
 from ..GUIFunctions import create_button, create_menu_btn
+from ..KeyBindings import shortcut_text
 from ..Tooltips import CreateToolTip, MenuToolTip
 from .ResizableFrame import ResizableFrame
 from iSLAT.Modules.GUI.Widgets.ChartWindow import MoleculeSelector
@@ -149,11 +150,15 @@ class TopBar(ResizableFrame):
         molecule_menu.add_command(label="Bulk Apply Properties", command=self.bulk_apply_properties)
         molecule_menu.add_command(label="Export Models", command=self.export_models)
         molecule_menu.add_separator()
-        molecule_menu.add_command(label="Save Parameters (Ctrl+S)", command=self.save_parameters)
-        molecule_menu.add_command(label="Load Parameters (Ctrl+L)", command=self.load_parameters)
-        molecule_menu.add_command(label="Load Parameters From File (Ctrl+Shift+L)", command=self.load_parameters_from_file)
+        save_params_label = f"Save Parameters ({shortcut_text('save_parameters')})"
+        load_params_label = f"Load Parameters ({shortcut_text('load_parameters')})"
+        load_params_file_label = f"Load Parameters From File ({shortcut_text('load_parameters_from_file')})"
+        save_params_file_label = f"Save Parameters To File ({shortcut_text('save_parameters_to_file')})"
+        molecule_menu.add_command(label=save_params_label, command=self.save_parameters)
+        molecule_menu.add_command(label=load_params_label, command=self.load_parameters)
+        molecule_menu.add_command(label=load_params_file_label, command=self.load_parameters_from_file)
         molecule_menu.add_command(label="Import Parameters From File", command=self.import_parameters_from_file)
-        molecule_menu.add_command(label="Save Parameters To File (Ctrl+Shift+S)", command=self.save_parameters_to_file)
+        molecule_menu.add_command(label=save_params_file_label, command=self.save_parameters_to_file)
         molecule_drpdwn.config(menu=molecule_menu)
         MenuToolTip(molecule_menu, {
             "HITRAN Query":                        "Open the HITRAN molecule selector\nto query and add molecules by species.",
@@ -162,11 +167,11 @@ class TopBar(ResizableFrame):
             "Sort Molecules":                      "Sort the molecules in the control panel\nby a chosen property (temperature, radius,\ncolumn density, …), ascending or descending.",
             "Bulk Apply Properties":               "Set one or more properties on many molecules\nat once, optionally only the visible ones.",
             "Export Models":                       "Export current model spectra\nto CSV files for external use.",
-            "Save Parameters (Ctrl+S)":            "Save current molecule parameters\nto the default save file\nfor this spectrum.",
-            "Load Parameters (Ctrl+L)":            "Load molecule parameters from\nthe default save file\nfor this spectrum.",
-            "Load Parameters From File (Ctrl+Shift+L)": "Load molecule parameters from\na user-selected CSV save file,\nreplacing existing molecules.",
-            "Import Parameters From File":              "Load molecules from a CSV save file\nand add them to the existing set\nwithout replacing current molecules.",
-            "Save Parameters To File (Ctrl+Shift+S)":   "Save current molecule parameters\nto a user-selected CSV file.",
+            save_params_label:                     "Save current molecule parameters\nto the default save file\nfor this spectrum.",
+            load_params_label:                     "Load molecule parameters from\nthe default save file\nfor this spectrum.",
+            load_params_file_label:                "Load molecule parameters from\na user-selected CSV save file,\nreplacing existing molecules.",
+            "Import Parameters From File":         "Load molecules from a CSV save file\nand add them to the existing set\nwithout replacing current molecules.",
+            save_params_file_label:                "Save current molecule parameters\nto a user-selected CSV file.",
         })
 
         spec_functions_drpwn = create_menu_btn(self.button_frame, self.theme, "Spectral Functions", 0, 1)
@@ -187,12 +192,16 @@ class TopBar(ResizableFrame):
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Subtract Models from Data", command=self.subtract_models_from_data)
         spec_functions_menu.add_separator()
-        spec_functions_menu.add_command(label="Output Full Spectrum (Ctrl+Shift+F)", command=lambda: output_full_spectrum(self.islat))
+        output_fs_label = f"Output Full Spectrum ({shortcut_text('output_full_spectrum')})"
+        display_fs_label = f"Display Full Spectrum ({shortcut_text('open_full_spectrum_window')})"
+        center_view_label = f"Center View\u2026 ({shortcut_text('open_center_view_dialog')})"
+        mark_wavelengths_label = f"Mark Wavelengths\u2026 ({shortcut_text('open_wavelength_marker_dialog')})"
+        spec_functions_menu.add_command(label=output_fs_label, command=lambda: output_full_spectrum(self.islat))
         spec_functions_menu.add_command(label="Full Spectrum Export Settings\u2026", command=self.open_full_spectrum_export_settings)
-        spec_functions_menu.add_command(label="Display Full Spectrum (Ctrl+F)", command=lambda: FullSpectrumWindow(self.master, self.islat))
+        spec_functions_menu.add_command(label=display_fs_label, command=lambda: FullSpectrumWindow(self.master, self.islat))
         spec_functions_menu.add_separator()
-        spec_functions_menu.add_command(label="Center View\u2026 (C)", command=self.open_center_view_dialog)
-        spec_functions_menu.add_command(label="Mark Wavelengths\u2026 (Shift+M)", command=self.open_wavelength_marker_dialog)
+        spec_functions_menu.add_command(label=center_view_label, command=self.open_center_view_dialog)
+        spec_functions_menu.add_command(label=mark_wavelengths_label, command=self.open_wavelength_marker_dialog)
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Manage Sample\u2026", command=self.manage_sample)
         
@@ -205,12 +214,12 @@ class TopBar(ResizableFrame):
             "Single Slab Fit":                  "Run a single-slab LTE model fit\nusing the saved line measurements.",
             "Line de-Blender":                  "Fit and de-blend overlapping\nspectral lines in the selection.",
             "Subtract Models from Data":        "Subtract all visible molecule models\nfrom the observed spectrum.",
-            "Output Full Spectrum (Ctrl+Shift+F)": "Save the full combined model spectrum\nto a file, matching the current overlay,\nobserved-data and Y-axis settings.",
+            output_fs_label: "Save the full combined model spectrum\nto a file, matching the current overlay,\nobserved-data and Y-axis settings.",
             "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth and per-panel height.\nRemembered for this session.",
-            "Display Full Spectrum (Ctrl+F)":   "Open the full combined model spectrum\nin a separate window.",
+            display_fs_label:                   "Open the full combined model spectrum\nin a separate window.",
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
-            "Center View\u2026 (C)":           "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: C",
-            "Mark Wavelengths\u2026 (Shift+M)": "Mark a wavelength (line) or a range\n(shaded band) on the spectrum plots,\nwith an optional label (left / center /\nright of the mark), line and label\ncolors (color pickers) and line style.\nMarks are included in full-spectrum output.\nKeybind: Shift+M",
+            center_view_label:                  "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: " + shortcut_text("open_center_view_dialog"),
+            mark_wavelengths_label:             "Mark a wavelength (line) or a range\n(shaded band) on the spectrum plots,\nwith an optional label (left / center /\nright of the mark), line and label\ncolors (color pickers) and line style.\nMarks are included in full-spectrum output.\nKeybind: " + shortcut_text("open_wavelength_marker_dialog"),
         })
 
         # ── Views dropdown ─────────────────────────────────────────────
@@ -277,12 +286,15 @@ class TopBar(ResizableFrame):
         })
         # ──────────────────────────────────────────────────────────────
 
-        saved_lines_tip = "Show saved lines\nfrom the 'Input Line List'\nKeybind: S"
-        atomic_lines_tip = "Show atomic lines\nusing separation threshold\nset in the 'Line Separ.\nKeybind: A"
+        saved_lines_tip = f"Show saved lines\nfrom the 'Input Line List'\nKeybind: {shortcut_text('toggle_saved_lines')}"
+        atomic_lines_tip = f"Show atomic lines\nusing separation threshold\nset in the 'Line Separ.\nKeybind: {shortcut_text('toggle_atomic_lines')}"
         #export_model_tip = "Export current\nmodels into csv files"
-        toggle_legend_tip = "Turn legend on/off\nKeybind: L"
-        toggle_full_spectrum_tip = "Toggle full spectrum view on/off\nKeybind: F\n\nOpen in new window: Ctrl+F"
-        toggle_summed_tip = "Toggle summed model flux on/off\n(gray fill in plot)\nKeybind: M"
+        toggle_legend_tip = f"Turn legend on/off\nKeybind: {shortcut_text('toggle_legend')}"
+        toggle_full_spectrum_tip = (
+            f"Toggle full spectrum view on/off\nKeybind: {shortcut_text('toggle_full_spectrum')}"
+            f"\n\nOpen in new window: {shortcut_text('open_full_spectrum_window')}"
+        )
+        toggle_summed_tip = f"Toggle summed model flux on/off\n(gray fill in plot)\nKeybind: {shortcut_text('toggle_summed_spectrum')}"
         create_button(self.button_frame, self.theme, "Saved Lines", self.toggle_saved_lines, 0, 3, tip_text=saved_lines_tip)
         create_button(self.button_frame, self.theme, "Atomic Lines", self.toggle_atomic_lines, 0, 4, tip_text=atomic_lines_tip)
         create_button(self.button_frame, self.theme, "Full Spectrum", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
@@ -290,8 +302,8 @@ class TopBar(ResizableFrame):
         create_button(self.button_frame, self.theme, "Legend", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
         
         # Navigate buttons - compact with minimal padding
-        retreat_tip = "Retreat the plot start\nby the current range value\nShortcut: <"
-        advance_tip = "Advance the plot start\nby the current range value\nShortcut: >"
+        retreat_tip = f"Retreat the plot start\nby the current range value\nShortcut: {shortcut_text('retreat_plot_start')}"
+        advance_tip = f"Advance the plot start\nby the current range value\nShortcut: {shortcut_text('advance_plot_start')}"
         
         self._retreat_btn = ttk.Button(self.button_frame, text="<", command=self.retreat_plot_start, width=2)
         self._retreat_btn.grid(row=0, column=9, padx=(4, 0), pady=2, sticky="nsew")

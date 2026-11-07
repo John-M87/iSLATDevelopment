@@ -460,8 +460,13 @@ class LineListViewWindow(tk.Toplevel):
         status.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 4))
 
         # Ctrl+S / Cmd+S → export
-        self.bind("<Control-s>", lambda _e: self._export_csv())
-        self.bind("<Command-s>", lambda _e: self._export_csv())
+        self.bind("<Control-s>", self._on_export_shortcut)
+        self.bind("<Command-s>", self._on_export_shortcut)
+
+    def _on_export_shortcut(self, _event=None) -> str:
+        """Export, then stop the key event so the global Save Parameters shortcut doesn't also fire."""
+        self._export_csv()
+        return "break"
 
     # ------------------------------------------------------------------
     # Data loading
