@@ -354,7 +354,8 @@ class LineInspectionPlot(SpectrumPanel):
         model_flux_in_range : float, optional
             Model flux integral in the selection range (erg s^-1 cm^-2).
         opacity_in_range: float, optional
-            Model optical depth in the selection range.
+            Integral of the model optical-depth profile over the selection
+            range: the summed line-center optical depth of the lines in it.
         molecule : Molecule, optional
             Active molecule.  When provided the instrumental, Keplerian,
             and convolved FWHM at the line wavelength are included in the

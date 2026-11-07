@@ -169,30 +169,81 @@ def extend_grid_to_range(grid: np.ndarray, lo: float, hi: float) -> np.ndarray:
 
 
 def flux_integral(lam, flux, err, lam_min, lam_max) -> Tuple[float, float]:
+    """Integrate a flux density over ``[lam_min, lam_max]``.
+
+    Parameters
+    ----------
+    lam : np.ndarray
+        Wavelengths in um.
+    flux : np.ndarray
+        Flux density F_nu in Jy at *lam*.
+    err : np.ndarray or None
+        Flux uncertainties in Jy (integrated the same way as *flux*).
+    lam_min, lam_max : float
+        Wavelength range in um.
+
+    Returns
+    -------
+    (float, float)
+        The flux and the uncertainty integrated over frequency, in
+        erg/s/cm^2, or ``(0.0, 0.0)`` with fewer than two points in range.
+    """
+    lam = np.asarray(lam, dtype=float)
     wavelength_mask = (lam >= lam_min) & (lam <= lam_max)
 
     if not np.any (wavelength_mask):
         return 0.0, 0.0
 
     lam_range = lam[wavelength_mask]
-    flux_range = flux[wavelength_mask]
+    flux_range = np.asarray(flux, dtype=float)[wavelength_mask]
 
     if len (lam_range) < 2:
         return 0.0, 0.0
 
-    # Convert to frequency space for proper integration
-    freq_range = c.SPEED_OF_LIGHT_MICRONS / lam_range[::-1]
+    # Integrate in frequency space.  Every flux value must stay paired with
+    # its own frequency, so sort both by frequency together (ascending
+    # frequency, i.e. descending wavelength) rather than reversing only one of them.
+    freq_range = c.SPEED_OF_LIGHT_MICRONS / lam_range
+    order = np.argsort(freq_range)
+    freq_sorted = freq_range[order]
 
-    # Integrate in frequency space (reverse order for proper frequency ordering)
-    line_flux_meas = np.trapezoid(flux_range[::-1], x=freq_range[::-1])
-    line_flux_meas = -line_flux_meas * 1e-23  # Convert Jy*Hz to erg/s/cm^2
+    line_flux_meas = np.trapezoid(flux_range[order], x=freq_sorted)
+    line_flux_meas = line_flux_meas * 1e-23  # Convert Jy*Hz to erg/s/cm^2
 
     # Calculate error propagation if error data provided
     if err is not None:
-        err_range = err[wavelength_mask]
-        line_err_meas = np.trapezoid(err_range[::-1], x=freq_range[::-1])
-        line_err_meas = -line_err_meas * 1e-23
+        err_range = np.asarray(err, dtype=float)[wavelength_mask]
+        line_err_meas = np.trapezoid(err_range[order], x=freq_sorted) * 1e-23
     else:
         line_err_meas = 0.0
 
     return line_flux_meas, line_err_meas
+
+
+def opacity_integral(lam, tau, lam_min, lam_max) -> float:
+    """Integrate a model optical-depth profile over ``[lam_min, lam_max]``.
+
+    *tau* is the convolved profile of :meth:`Molecule.get_tau` /
+    :attr:`Spectrum.tau_profile`, in which every line's line-center optical
+    depth is spread over an area-normalised Gaussian in wavelength (units of
+    1/um).  Its integral over wavelength therefore gives the **summed
+    line-center optical depth of the lines in the range** (dimensionless;
+    lines near the range edges count only with the part of their profile
+    inside the range).
+
+    Unlike :func:`flux_integral`, no frequency conversion or Jy unit factor
+    is applied - the optical depth is not a flux density.
+
+    Returns
+    -------
+    float
+        The optical-depth profile integrated over wavelength in the range,
+        or ``0.0`` with fewer than two points in range.
+    """
+    lam = np.asarray(lam, dtype=float)
+    mask = (lam >= lam_min) & (lam <= lam_max)
+    if np.count_nonzero(mask) < 2:
+        return 0.0
+    lam_range = lam[mask]
+    order = np.argsort(lam_range)
+    return float(np.trapezoid(np.asarray(tau, dtype=float)[mask][order], x=lam_range[order]))

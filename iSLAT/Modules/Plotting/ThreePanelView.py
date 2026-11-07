@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 import iSLAT.Constants as c
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 #from iSLAT.Modules.DataProcessing.LineAnalyzer import LineAnalyzer
-from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral
+from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral, opacity_integral
 
 # Import debug configuration
 try:
@@ -1058,6 +1058,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         # --- flux integrals in the selected range ----------------------
         data_flux = None
         model_flux = None
+        opacity_in_range = None
         current_selection = self._pm.toggle_state.get("current_selection")
         if current_selection is not None:
             xmin, xmax = current_selection
@@ -1078,10 +1079,9 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
                     lam_min=xmin, lam_max=xmax,
                     err=None,
                 )
-                _, mol_opacity_arr = active_mol.get_tau(return_wavelengths=True)
-                opacity_in_range, _ = flux_integral(
-                    lam=molecule_wave, flux=mol_opacity_arr,
-                    lam_min=xmin, lam_max=xmax, err=None,
+                tau_wave, tau_profile = active_mol.get_tau(return_wavelengths=True)
+                opacity_in_range = opacity_integral(
+                    lam=tau_wave, tau=tau_profile, lam_min=xmin, lam_max=xmax,
                 )
 
         # --- build line info dict + formatted string -------------------

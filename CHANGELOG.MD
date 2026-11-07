@@ -18,6 +18,9 @@
 
 ### Bug Fixes
 - Fixed changing the intensity calculation method after molecules were loaded having no effect: `MoleculeDict.global_intensity_calculation_method` (and `Molecule.bulk_update_parameters`) silently dropped the method name, and `Intensity.calc_intensity` returned its cached result whenever T, N and Δv were unchanged, even when it had been calculated with a different method. The full-line-list recalculation used by the population diagrams also always used the curve of growth; it now uses the molecule's method
+- Fixed `Model opacity in range` in the line information output. It integrated the model optical-depth profile as if it were a flux density in Jy (over frequency, times 1e-23), giving meaningless values of ~1e-10. It now integrates the optical-depth profile over wavelength with the new `spectral_utils.opacity_integral()`, which gives the summed line-center optical depth of the active molecule's lines in the selected range, comparable to the `Line center opacity` above it; the label now says so
+- Fixed `spectral_utils.flux_integral` pairing each flux value with the wrong frequency (the profile was effectively mirrored across the selected range). The result was only exact for a line centred in the selection; for typical line selections on a MIRI spectrum it was off by up to ~0.3%, and more for wide or strongly off-centre ranges. This affects the `Data / Model flux in range` output and the integrated fluxes (and their uncertainties) saved by line saving and batch fitting. It now also accepts wavelengths in any order
+- Fixed a possible error in the Three Panel view's line information output when no range was selected or no molecule was active
 
 ### Code Quality
 - Bumped version to `v5.03.05`

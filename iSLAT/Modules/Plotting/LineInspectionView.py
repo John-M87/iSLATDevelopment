@@ -361,7 +361,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         """Push line info for *value* to the GUI data field."""
         islat = self._islat
         from .LineInspectionPlot import LineInspectionPlot as _LIP
-        from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral
+        from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral, opacity_integral
 
         data_flux = None
         model_flux = None
@@ -382,10 +382,9 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
                     lam=mol_wave, flux=mol_flux_arr,
                     lam_min=xmin, lam_max=xmax, err=None,
                 )
-                _, mol_opacity_arr = active_mol.get_tau(return_wavelengths=True)
-                opacity_in_range, _ = flux_integral(
-                    lam=mol_wave, flux=mol_opacity_arr,
-                    lam_min=xmin, lam_max=xmax, err=None,
+                tau_wave, tau_profile = active_mol.get_tau(return_wavelengths=True)
+                opacity_in_range = opacity_integral(
+                    lam=tau_wave, tau=tau_profile, lam_min=xmin, lam_max=xmax,
                 )
 
         class _L:

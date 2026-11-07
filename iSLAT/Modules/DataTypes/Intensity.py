@@ -1891,6 +1891,11 @@ class Intensity(WavelengthRangeMixin):
             Observed flux integral in the selection range (erg s⁻¹ cm⁻²).
         model_flux_in_range : float, optional
             Model flux integral in the selection range (erg s⁻¹ cm⁻²).
+        opacity_in_range : float, optional
+            Integral of the model optical-depth profile over the selection
+            range, i.e. the summed line-center optical depth of the lines in
+            it (dimensionless; see
+            :func:`~iSLAT.Modules.DataProcessing.spectral_utils.opacity_integral`).
         molecule : optional
             Active molecule.  When provided the instrumental, Keplerian,
             and convolved FWHM at the line wavelength are included.
@@ -1949,7 +1954,7 @@ class Intensity(WavelengthRangeMixin):
         tau_s   = f"{tau_val:.3f}"   if isinstance(tau_val, (int, float))         else str(tau_val)
         dflux_s = f"{data_flux_in_range:.3e}"  if data_flux_in_range  is not None else "N/A"
         mflux_s = f"{model_flux_in_range:.3e}" if model_flux_in_range is not None else "N/A"
-        moptical_s = f"{opacity_in_range:.3e}" if opacity_in_range is not None else "N/A"
+        moptical_s = f"{opacity_in_range:.4g}" if opacity_in_range is not None else "N/A"
 
         fwhm_block = ""
         if fwhm_inst is not None:
@@ -1973,7 +1978,8 @@ class Intensity(WavelengthRangeMixin):
             f"Upper level energy (K) = {e_s}\n"
             f"Line center flux (erg/s/cm2) = {intensity:.3g}\n"
             f"Line center opacity = {tau_s}\n"
-            f"Model opacity in range = {moptical_s}\n"
+            #f"Model opacity in range (sum of line-center opacities) = {moptical_s}\n"
+            f"Sum of model line-center opacities in range = {moptical_s}\n"
             f"Data flux in range (erg/s/cm2) = {dflux_s}\n"
             f"Model flux in range (erg/s/cm2) = {mflux_s}\n"
             + fwhm_block
