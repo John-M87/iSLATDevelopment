@@ -521,10 +521,18 @@ class FullSpectrumView(ToggleMixin, PlotView):
     # ==================================================================
     # Span selector (interactive-only feature)
     # ==================================================================
-    def _install_span_selectors(self) -> None:
-        """Add span selectors to every primary subplot for click-to-inspect."""
-        self.span_selectors.clear()
+    def _span_selector_axes(self):
+        """Yield ``(key, panel_idx, ax)`` for every axes that gets a span selector.
+
+        Defaults to the primary axes of each panel, keyed by panel index.
+        """
         for idx, ax in self.subplots.items():
+            yield idx, idx, ax
+
+    def _install_span_selectors(self) -> None:
+        """Add span selectors (see :meth:`_span_selector_axes`) for click-to-inspect."""
+        self.span_selectors.clear()
+        for key, idx, ax in self._span_selector_axes():
             span = SpanSelector(
                 ax,
                 lambda xmin, xmax, i=idx: self._on_span_select(xmin, xmax, i),
@@ -534,7 +542,16 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 interactive=True,
                 drag_from_anywhere=True,
             )
-            self.span_selectors[idx] = span
+            self.span_selectors[key] = span
+
+    def _panel_index_of(self, ax: Any) -> Optional[int]:
+        """Return the panel index whose cell contains *ax* (any of its sub-axes), or ``None``."""
+        if ax is None or self._plot is None:
+            return None
+        for idx, val in getattr(self._plot, "subplots", {}).items():
+            if ax is val or (isinstance(val, tuple) and any(ax is sub for sub in val)):
+                return idx
+        return None
 
     def _on_span_select(self, xmin: float, xmax: float, subplot_index: int) -> None:
         if abs(xmax - xmin) < 0.001:
@@ -632,13 +649,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
         pm = self._pm
         plot = self._plot
 
-        # Identify which panel was clicked
-        panel_idx = None
-        if plot is not None:
-            for idx, ax in self.subplots.items():
-                if event.inaxes is ax:
-                    panel_idx = idx
-                    break
+        # Identify which panel was clicked (any sub-axes of its cell)
+        panel_idx = self._panel_index_of(event.inaxes)
 
         menu = tk.Menu(canvas_widget, tearoff=0)
 

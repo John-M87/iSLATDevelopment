@@ -46,6 +46,15 @@ class _MolDict(dict):
     def apply_stellar_rv(self, wave):
         return np.array(wave, copy=True)
 
+    def get_summed_flux(self, wave, visible_only=True, extend_to_global_range=False):
+        lam, total = None, None
+        for mol in self.get_visible_molecules(return_objects=True):
+            m_lam, m_flux = mol.get_flux(return_wavelengths=True)
+            lam, total = (m_lam, m_flux.copy()) if total is None else (lam, total + m_flux)
+        if total is None:
+            return np.array([]), np.array([])
+        return lam, total
+
 
 class _NoopSurface(ControlSurface):
     def _rebuild(self):
@@ -306,7 +315,7 @@ class TestControlsAndInteraction:
         assert isinstance(cp.get_field("n_panels"), EntryField)
         assert any(isinstance(f, DisplayRangeField) for f in cp.fields())
         tb_keys = [f.key for f in tb.fields()]
-        assert tb_keys == ["tau_log_scale", "tau_stem_mode", "tau_stacked_fill", "data_density"]
+        assert tb_keys == ["tau_log_scale", "tau_stem_mode", "tau_stacked_fill", "tau_show_flux", "data_density"]
         assert all(isinstance(f, ToggleField) for f in tb.fields())
 
         log_field = tb.get_field("tau_log_scale")
@@ -350,3 +359,133 @@ class TestControlsAndInteraction:
         assert created[0].n_panels == 3
         assert created[0].fig is None  # closed after saving
         islat.GUI.data_field.insert_text.assert_called_once()
+
+
+# ======================================================================
+# Flux sub-panels below each τ panel
+# ======================================================================
+
+def _artists(ax, tag):
+    return [a for a in list(ax.lines) + list(ax.collections) if hasattr(a, tag)]
+
+
+@pytest.fixture
+def with_flux():
+    view, pm, islat, mols = _make_view(tau_show_flux=True)
+    _render(view)
+    yield view, pm, islat, mols
+    view.destroy()
+
+
+class TestFluxPanels:
+    def test_toggle_adds_and_removes_flux_sub_panels(self, rendered):
+        view, pm, *_ = rendered
+        n = view._plot.n_panels
+        view._set_show_flux(True)
+        assert pm.toggle_state["tau_show_flux"] is True
+        flux_axes = view._plot.get_flux_axes()
+        assert len(flux_axes) == n and len(list(view._iter_all_axes())) == 2 * n
+        # The view's primary axes stay the τ panels (legend, overlays).
+        assert view.subplots == view._plot.get_tau_axes()
+        for idx, ax in flux_axes.items():
+            assert _artists(ax, "_islat_observed")
+            assert ax.get_shared_x_axes().joined(ax, view.subplots[idx])
+        view._set_show_flux(False)
+        assert view._plot.get_flux_axes() == {}
+        assert len(list(view._iter_all_axes())) == n
+
+    def test_manual_y_limits_apply_to_flux_panels_only(self, with_flux):
+        view, pm, *_ = with_flux
+        tau_before = [ax.get_ylim() for ax in view.subplots.values()]
+        ts = dict(pm.toggle_state, y_autoscale=False, y_limits=(-0.01, 0.5))
+        assert view.apply_y_limits(ts) is True
+        assert all(ax.get_ylim() == (-0.01, 0.5) for ax in view._plot.get_flux_axes().values())
+        assert [ax.get_ylim() for ax in view.subplots.values()] == tau_before
+        assert view.get_y_limits() == (-0.01, 0.5)
+
+    def test_autoscale_restores_per_panel_flux_limits(self, with_flux):
+        view, pm, *_ = with_flux
+        view.apply_y_limits(dict(pm.toggle_state, y_autoscale=False, y_limits=(0.0, 9.0)))
+        assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
+        expected = view._plot.compute_flux_ylims()
+        for idx, ax in view._plot.get_flux_axes().items():
+            assert ax.get_ylim() == pytest.approx(expected[idx])
+
+    def test_autoscale_to_model(self, with_flux):
+        view, pm, *_ = with_flux
+        pm.toggle_state["y_autoscale_source"] = "model"
+        assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
+
+    def test_observed_toggle_hides_flux_data(self, with_flux):
+        view, *_ = with_flux
+        view.toggle_observed_data(False)
+        for ax in view._plot.get_flux_axes().values():
+            assert not any(a.get_visible() for a in _artists(ax, "_islat_observed"))
+        view.toggle_observed_data(True)
+        for ax in view._plot.get_flux_axes().values():
+            assert all(a.get_visible() for a in _artists(ax, "_islat_observed"))
+
+    def test_total_model_toggles_summed_fill_and_total_tau(self, with_flux):
+        view, *_ = with_flux
+        fills = [a for ax in view._plot.get_flux_axes().values() for a in _artists(ax, "_islat_summed")]
+        assert fills and _total_tau_lines(view)
+        view.toggle_summed_spectrum(False)
+        assert not any(a.get_visible() for a in fills + _total_tau_lines(view))
+        view.toggle_summed_spectrum(True)
+        assert all(a.get_visible() for a in fills + _total_tau_lines(view))
+
+    def test_settings_survive_rerender(self, with_flux):
+        view, pm, *_ = with_flux
+        pm.toggle_state.update(observed=False, y_autoscale=False, y_limits=(0.0, 0.25))
+        view._set_log_scale(True)  # full re-render
+        for ax in view._plot.get_flux_axes().values():
+            assert ax.get_ylim() == (0.0, 0.25)
+            assert not any(a.get_visible() for a in _artists(ax, "_islat_observed"))
+
+    def test_span_selectors_and_context_lookup_cover_flux_axes(self, with_flux):
+        view, *_ = with_flux
+        n = view._plot.n_panels
+        assert len(view.span_selectors) == 2 * n
+        for idx, ax in view._plot.get_flux_axes().items():
+            assert view._panel_index_of(ax) == idx
+            assert view._panel_index_of(view.subplots[idx]) == idx
+        assert view._panel_index_of(None) is None
+
+    def test_markers_and_saved_lines_reach_flux_panels(self, tmp_path):
+        csv = tmp_path / "lines.csv"
+        make_line_list([12.5]).to_csv(csv, index=False)
+        view, pm, islat, _ = _make_view(tau_show_flux=True, saved_lines=True,
+                                        wavelength_markers=[{"start": 13.5, "end": 13.5, "color": "red"}])
+        islat.input_line_list = str(csv)
+        _render(view)
+        flux_axes = list(view._plot.get_flux_axes().values())
+        assert all(any(hasattr(c, "_islat_wavelength_marker") for c in ax.collections) for ax in flux_axes)
+        assert any(_artists(ax, "_islat_saved_line") for ax in flux_axes)
+        view.destroy()
+
+    def test_save_figure_includes_flux_settings(self, with_flux, tmp_path, monkeypatch):
+        view, pm, islat, _ = with_flux
+        pm.toggle_state.update(observed=False, summed=False, y_autoscale=False, y_limits=(0.0, 0.3))
+        created = []
+        original = view._create_standalone_plot
+
+        def _capture(*args, **kwargs):
+            plot = original(*args, **kwargs)
+            created.append(plot)
+            plot.close = lambda: None  # keep the figure to inspect; closed below
+            return plot
+
+        monkeypatch.setattr(view, "_create_standalone_plot", _capture)
+        out = tmp_path / "tau_flux.png"
+        assert view.save_figure(str(out), file_format="png", dpi=40) == str(out)
+        plot = created[0]
+        try:
+            assert out.exists() and plot.show_flux
+            flux_axes = list(plot.get_flux_axes().values())
+            assert len(flux_axes) == plot.n_panels
+            for ax in flux_axes:
+                assert ax.get_ylim() == (0.0, 0.3)
+                assert not any(a.get_visible() for a in _artists(ax, "_islat_observed"))
+                assert not any(a.get_visible() for a in _artists(ax, "_islat_summed"))
+        finally:
+            type(plot).close(plot)

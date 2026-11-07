@@ -326,3 +326,82 @@ def test_stacked_panels_use_the_plot_theme():
     totals = [ln for ax in odsp.subplots.values() for ln in ax.lines if hasattr(ln, TOTAL_TAU_TAG)]
     assert totals and {ln.get_color() for ln in totals} == {"#eeeeee"}
     odsp.close()
+
+
+class TestOpticalDepthFluxSubPanels:
+    """``show_flux=True``: a flux sub-panel below every τ panel (residual-plot style)."""
+
+    @staticmethod
+    def _plot(**kwargs):
+        from tests.plotting.test_plot_views import _make_test_molecule
+
+        class _Dict(dict):
+            def get_visible_molecules(self, return_objects=False):
+                return list(self.values()) if return_objects else list(self)
+
+            def get_matched_sampling_wavelengths(self, w):
+                return False, w
+
+            def get_summed_flux(self, w, visible_only=True, extend_to_global_range=False):
+                return self["H2O"].get_flux(return_wavelengths=True)
+
+        wave = np.linspace(10.0, 20.0, 2000)
+        flux = np.full_like(wave, 0.05)
+        return OpticalDepthSpectrumPlot(
+            wave, flux, molecules=_Dict(H2O=_make_test_molecule()),
+            error_data=np.full_like(wave, 0.005), n_panels=3, show_flux=True, **kwargs,
+        )
+
+    def test_layout_pairs_tau_and_flux(self):
+        from iSLAT.Modules.Plotting import SpectrumPanel
+        odsp = self._plot()
+        odsp.generate_plot()
+        assert set(odsp.subplots) == {0, 1, 2}
+        for idx, cell in odsp.panels.items():
+            assert isinstance(cell[0], OpticalDepthPanel) and isinstance(cell[1], SpectrumPanel)
+            tau_ax, flux_ax = odsp.subplots[idx]
+            assert (cell[0].ax, cell[1].ax) == (tau_ax, flux_ax)
+            assert flux_ax.get_shared_x_axes().joined(tau_ax, flux_ax)
+            # τ above flux, touching (no gap), wavelength ticks under the flux panel only
+            assert tau_ax.get_position().y0 == pytest.approx(flux_ax.get_position().y1)
+            assert not any(t.get_visible() for t in tau_ax.get_xticklabels())
+            assert (tau_ax.get_ylabel(), flux_ax.get_ylabel()) == ("\u03c4", "Jy")
+        assert odsp.get_tau_axes() == {i: v[0] for i, v in odsp.subplots.items()}
+        assert odsp.get_flux_axes() == {i: v[1] for i, v in odsp.subplots.items()}
+        # Each sub-panel is labelled; a figure-wide label would collide with them.
+        assert odsp.fig._supylabel.get_text() == ""
+        assert odsp.subplots[2][1].get_xlabel().startswith("Wavelength")
+        odsp.close()
+
+    def test_flux_panels_draw_spectrum_models_and_sum(self):
+        odsp = self._plot()
+        odsp.generate_plot()
+        expected = odsp.compute_flux_ylims()
+        for idx, flux_ax in odsp.get_flux_axes().items():
+            assert any(hasattr(a, "_islat_observed") for a in flux_ax.lines)
+            assert flux_ax.get_ylim() == pytest.approx(expected[idx])
+        models = {getattr(ln, "_molecule_name", None) for ax in odsp.get_flux_axes().values() for ln in ax.lines}
+        assert "H2O" in models
+        assert any(hasattr(c, "_islat_summed") for ax in odsp.get_flux_axes().values() for c in ax.collections)
+        odsp.close()
+
+    def test_height_ratio_and_auto_figsize(self):
+        odsp = self._plot(flux_height_ratio=0.5)
+        assert odsp._figsize == pytest.approx((12, 1.6 * 1.5 * 3))
+        odsp.generate_plot()
+        tau_ax, flux_ax = odsp.subplots[0]
+        assert flux_ax.get_position().height == pytest.approx(0.5 * tau_ax.get_position().height)
+        odsp.close()
+
+    @pytest.mark.parametrize("ratio", [0, -1, float("nan")])
+    def test_invalid_height_ratio(self, ratio):
+        with pytest.raises(ValueError):
+            self._plot(flux_height_ratio=ratio)
+
+    def test_without_flux_axes_accessors(self):
+        wave, flux, err = make_wave_flux(n=200)
+        odsp = OpticalDepthSpectrumPlot(wave, flux, n_panels=2)
+        odsp.generate_plot()
+        assert odsp.get_flux_axes() == {}
+        assert odsp.get_tau_axes() == odsp.subplots
+        odsp.close()

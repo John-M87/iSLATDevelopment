@@ -6,9 +6,9 @@ Shows an :class:`OpticalDepthSpectrumPlot` (the convolved τ of every visible mo
 The view builds on :class:`FullSpectrumView`, which already drives any :class:`StackedSpectralPanel`, so it shares the canvas lifecycle, the *N Panels* and *Plot Start / Plot Range* controls, saved / atomic line overlays, wavelength markers, the legend toggle and the right-click *Open in Three Panel view* item.
 What differs from the full spectrum view:
 
-* The *Total Model* toggle shows / hides the combined "Total τ" line.
-* The flux Y-axis settings (auto-scale, *Set Y Limits…*, in Jy) and the observed-data toggle do not apply: each panel is scaled to its own τ.
-* View-specific top-bar toggles switch between a linear and a logarithmic τ axis, between the convolved profile and per-line stems at the line centres, and between stacked and overlaid molecules (plus the data-density x scaling shared with the full spectrum view).
+* The *Total Model* toggle shows / hides the combined "Total τ" line (and the summed-model fill of the flux sub-panels).
+* View-specific top-bar toggles switch between a linear and a logarithmic τ axis, between the convolved profile and per-line stems at the line centres, between stacked and overlaid molecules, and add a flux sub-panel below each τ panel (*Flux Panels*), plus the data-density x scaling shared with the full spectrum view.
+* The flux Y-axis settings (auto-scale, *Set Y Limits…*, in Jy) and the observed-data toggle apply to the flux sub-panels only; each τ panel is scaled to its own τ.
 * Dragging a range on a panel opens it in the Three Panel view for line inspection.
 * *Save Figure…* exports a fresh standalone optical depth figure.
 
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .FullSpectrumView import FullSpectrumView, draw_toggle_state_markers
+from .PlotView import PlotView, fit_y_limits_to_data, fit_y_limits_to_model
 from .OpticalDepthPanel import TOTAL_TAU_TAG
 from .OpticalDepthSpectrumPlot import OpticalDepthSpectrumPlot
 from .SpectralPanel import XScaling
@@ -38,6 +39,7 @@ TAU_OPTION_DEFAULTS: Dict[str, Any] = {
     "tau_log_scale": False,         # logarithmic τ axis
     "tau_display_mode": "profile",  # "profile" (convolved τ) or "stem" (per-line τ)
     "tau_stacked_fill": True,       # stack molecules (False: overlay one line each)
+    "tau_show_flux": False,         # flux sub-panel below each τ panel
 }
 
 
@@ -64,6 +66,7 @@ class OpticalDepthView(FullSpectrumView):
             "display_mode": "stem" if self._tau_option("tau_display_mode") == "stem" else "profile",
             "log_scale": bool(self._tau_option("tau_log_scale")),
             "stacked_fill": bool(self._tau_option("tau_stacked_fill")),
+            "show_flux": bool(self._tau_option("tau_show_flux")),
         }
 
     def _x_scaling(self) -> XScaling:
@@ -99,6 +102,12 @@ class OpticalDepthView(FullSpectrumView):
 
     def _set_stacked_fill(self, value: bool) -> None:
         self._set_tau_option("tau_stacked_fill", bool(value))
+
+    def _get_show_flux(self) -> bool:
+        return bool(self._tau_option("tau_show_flux"))
+
+    def _set_show_flux(self, value: bool) -> None:
+        self._set_tau_option("tau_show_flux", bool(value))
 
     # ==================================================================
     # Plot creation / refresh
@@ -151,24 +160,41 @@ class OpticalDepthView(FullSpectrumView):
         self._notify_canvas_changed()
 
     # ==================================================================
-    # Y-axis policy: the flux limits (Jy) do not apply to τ
+    # Y-axis policy: the flux settings (Jy) apply to the flux sub-panels only
     # ==================================================================
+    def _flux_axes(self):
+        """The flux sub-panels' axes (none unless *Flux Panels* is on)."""
+        if self._plot is None:
+            return []
+        return list(self._plot.get_flux_axes().values())
+
     def _iter_observed_axes(self):
-        """No observed spectrum is drawn in this view."""
-        return iter(())
+        """The observed spectrum is drawn in the flux sub-panels only."""
+        return iter(self._flux_axes())
 
     def _iter_y_axes(self):
-        """Each panel keeps its own τ scale; the main plot's Y limits are flux."""
-        return iter(())
+        """The main plot's Y limits are flux, so they govern the flux sub-panels; τ panels keep their own scale."""
+        return iter(self._flux_axes())
 
     def _autoscale_y_axes(self) -> bool:
-        return False
+        """Re-fit the flux sub-panels to the observed data (per panel) or to the drawn model."""
+        flux_axes = self._plot.get_flux_axes() if self._plot is not None else {}
+        if not flux_axes:
+            return False
+        if self._y_autoscale_source() == "model":
+            return PlotView._autoscale_y_axes(self)
+        ylims = self._plot.compute_flux_ylims()
+        for idx, ax in flux_axes.items():
+            if idx < len(ylims):
+                ax.set_ylim(*ylims[idx])
+        return True
 
     # ==================================================================
     # Toggles
     # ==================================================================
     def _set_summed_visibility(self, visible: bool) -> None:
-        """The *Total Model* toggle shows / hides the combined "Total τ" line."""
+        """*Total Model* shows / hides the "Total τ" line and the flux sub-panels' summed fill."""
+        super()._set_summed_visibility(visible)
         for ax in self._iter_toggle_axes():
             for line in ax.lines:
                 if hasattr(line, TOTAL_TAU_TAG):
@@ -238,6 +264,19 @@ class OpticalDepthView(FullSpectrumView):
                 ),
             ),
             ToggleField(
+                "tau_show_flux", "Flux Panels",
+                getter=self._get_show_flux,
+                setter=self._set_show_flux,
+                owner=self,
+                tip=(
+                    "Toggle a flux panel below each\n"
+                    "optical depth panel: observed data,\n"
+                    "molecule models and total model.\n"
+                    "The Y-axis options in the Views menu\n"
+                    "apply to these flux panels."
+                ),
+            ),
+            ToggleField(
                 "data_density", "Data Density X-Scale",
                 getter=self._get_data_density,
                 setter=self._set_data_density,
@@ -253,6 +292,13 @@ class OpticalDepthView(FullSpectrumView):
     # ==================================================================
     # Selection: inspect lines in the Three Panel view
     # ==================================================================
+    def _span_selector_axes(self):
+        """Every axes of a panel (τ and flux) can be dragged to select a range."""
+        raw = getattr(self._plot, "subplots", {}) if self._plot is not None else {}
+        for idx, val in raw.items():
+            for k, ax in enumerate(val if isinstance(val, tuple) else (val,)):
+                yield (idx, k), idx, ax
+
     def _on_span_select(self, xmin: float, xmax: float, subplot_index: int) -> None:
         """Open the dragged range in the Three Panel view (line inspection lives there)."""
         if abs(xmax - xmin) < 0.001:
@@ -354,6 +400,34 @@ class OpticalDepthView(FullSpectrumView):
             kw["n_panels"] = n_panels
         return OpticalDepthSpectrumPlot(**kw)
 
+    @staticmethod
+    def _apply_flux_display_state(plot: OpticalDepthSpectrumPlot, ts: dict) -> None:
+        """Give *plot*'s flux sub-panels the GUI's observed-data visibility and Y-axis setting.
+
+        Mirrors the live view: hidden observed data, manual Y limits while
+        auto-scale is off, otherwise a fit to the drawn model when the
+        auto-scale source is "model" (the plot's own per-panel data limits
+        are already set).
+        """
+        flux_axes = list(plot.get_flux_axes().values())
+        if not flux_axes:
+            return
+        if not ts.get("observed", True):
+            for ax in flux_axes:
+                for art in list(ax.lines) + list(ax.collections):
+                    if hasattr(art, "_islat_observed"):
+                        art.set_visible(False)
+        manual = ts.get("y_limits")
+        if not ts.get("y_autoscale", True):
+            if manual is not None:
+                for ax in flux_axes:
+                    ax.set_ylim(float(manual[0]), float(manual[1]))
+        elif ts.get("y_autoscale_source") == "model":
+            for ax in flux_axes:
+                lims = fit_y_limits_to_model(ax) or fit_y_limits_to_data(ax, plot.wave_data, plot.flux_data)
+                if lims is not None:
+                    ax.set_ylim(*lims)
+
     def save_figure(
         self,
         save_path: str | None = None,
@@ -365,8 +439,9 @@ class OpticalDepthView(FullSpectrumView):
         """Export the optical depth plot as shown, using a fresh standalone figure.
 
         The figure uses the live panel count and wavelength range and follows
-        the toggle state: total τ line, legend, saved / atomic lines and
-        wavelength markers.
+        the toggle state: flux sub-panels (with their observed-data and Y-axis
+        settings), total τ line / summed model, legend, saved / atomic lines
+        and wavelength markers.
         """
         if save_path is None:
             from tkinter import filedialog
@@ -400,9 +475,10 @@ class OpticalDepthView(FullSpectrumView):
 
             if not ts.get("summed", True):
                 for ax in standalone.fig.axes:
-                    for line in ax.lines:
-                        if hasattr(line, TOTAL_TAU_TAG):
-                            line.set_visible(False)
+                    for art in list(ax.lines) + list(ax.collections):
+                        if hasattr(art, TOTAL_TAU_TAG) or hasattr(art, "_islat_summed"):
+                            art.set_visible(False)
+            self._apply_flux_display_state(standalone, ts)
             if not ts.get("legend", True) and standalone._legend_axes is not None:
                 standalone.legend_strategy.update_visibility(standalone._legend_axes, False)
             if ts.get("atomic_lines", False):

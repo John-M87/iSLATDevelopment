@@ -3,17 +3,21 @@ OpticalDepthSpectrumPlot -- Multi-panel stacked optical-depth overview.
 
 Generates a vertically stacked series of panels, each showing the convolved τ(λ) profile (or line-center stems) for visible molecules with color-coded stacked fills.
 
-Inherits the stacking layout from :class:`StackedSpectralPanel` and implements :meth:`_create_cell` to produce a single :class:`OpticalDepthPanel` per row.
+Inherits the stacking layout from :class:`StackedSpectralPanel` and implements :meth:`_create_cell` to produce one :class:`OpticalDepthPanel` per row.
+With ``show_flux=True`` each row also gets a :class:`SpectrumPanel` directly beneath its τ panel (sharing its wavelength axis, like the residual sub-panels of :class:`ResidualSpectrumPlot`) showing the observed flux, the molecule models and the summed model.
 
-Can be combined with :class:`FullSpectrumPlot` using the ``+`` operator or :meth:`stack_with` to produce a composite flux + τ overview.
+Can also be combined with :class:`FullSpectrumPlot` using the ``+`` operator or :meth:`stack_with` to produce a composite flux + τ overview.
 """
-from typing import Optional, Tuple, List, Dict, Any, TYPE_CHECKING
+from typing import Optional, Tuple, List, Dict, Any, Callable, TYPE_CHECKING
 
 import numpy as np
+from matplotlib.axes import Axes
+from matplotlib.gridspec import GridSpecFromSubplotSpec
 from matplotlib.ticker import MaxNLocator
 
 from .StackedSpectralPanel import StackedSpectralPanel
 from .SpectralPanel import SpectralPanel, GapMode
+from .SpectrumPanel import SpectrumPanel
 from .OpticalDepthPanel import OpticalDepthPanel
 from .BasePlot import BasePlot
 
@@ -21,6 +25,10 @@ if TYPE_CHECKING:
     from matplotlib.gridspec import SubplotSpec
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
+
+#: Height (inches) of one τ panel when the figure size is computed automatically.
+_TAU_ROW_HEIGHT = 1.6
+
 
 class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     """
@@ -31,11 +39,11 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     wave_data : np.ndarray
         Observed wavelength array.
     flux_data : np.ndarray
-        Observed flux array (used only for layout / gap detection).
+        Observed flux array (plotted only in the flux sub-panels, see *show_flux*).
     molecules : MoleculeDict, optional
         Collection of molecules -- visible ones are plotted.
     error_data : np.ndarray, optional
-        Flux uncertainties (forwarded to base; not plotted directly).
+        Flux uncertainties (error bars in the flux sub-panels).
     n_panels : int, optional
         Target number of panels.  Default 10.
     step : float, optional
@@ -43,7 +51,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     xlim_range : tuple[float, float], optional
         Wavelength range.  Defaults to full data range.
     ymax_factor : float, optional
-        Fractional padding above peak τ (0.2 = 20 %).
+        Fractional padding above the peak flux in the flux sub-panels (0.2 = 20 %).
     uniform_ylim : bool, optional
         When True every panel shares the same τ scale.  Default False.
     display_mode : str, optional
@@ -56,6 +64,11 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         Cumulative fill per molecule.  Default True.
     tau_floor : float, optional
         Minimum τ for log-scale.  Default ``1e-10``.
+    show_flux : bool, optional
+        Add a flux sub-panel (observed spectrum, molecule models and summed
+        model, as in :class:`FullSpectrumPlot`) below each τ panel.  Default False.
+    flux_height_ratio : float, optional
+        Height of each flux sub-panel relative to its τ panel.  Default 1.0.
     figsize : tuple, optional
         Figure size.  Height is auto-scaled if None.
     wave_data_obs : np.ndarray, optional
@@ -63,7 +76,6 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     **kwargs
         Forwarded to :class:`StackedSpectralPanel`.
     """
-    y_axis_label: str = "Optical Depth (τ)"
 
     def __init__(
         self,
@@ -81,11 +93,19 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         show_total: bool = True,
         stacked_fill: bool = True,
         tau_floor: float = 1e-10,
+        show_flux: bool = False,
+        flux_height_ratio: float = 1.0,
         figsize: Optional[Tuple[float, float]] = None,
         wave_data_obs: Optional[np.ndarray] = None,
         **kwargs,
     ):
-        kwargs.setdefault("row_height", 1.6)
+        flux_height_ratio = float(flux_height_ratio)
+        if not np.isfinite(flux_height_ratio) or flux_height_ratio <= 0:
+            raise ValueError(f"flux_height_ratio must be a positive number, got {flux_height_ratio!r}")
+        kwargs.setdefault(
+            "row_height",
+            _TAU_ROW_HEIGHT * (1.0 + flux_height_ratio) if show_flux else _TAU_ROW_HEIGHT,
+        )
 
         super().__init__(
             wave_data=wave_data,
@@ -110,12 +130,41 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         self.show_total = show_total
         self.stacked_fill = stacked_fill
         self.tau_floor = tau_floor
+        self.show_flux = bool(show_flux)
+        self.flux_height_ratio = flux_height_ratio
 
         if figsize is None:
-            self._figsize = (12, 1.6 * len(self._panel_edges))
+            self._figsize = (12, self.row_height * len(self._panel_edges))
 
-        # Backward-compatible per-row axes storage
+        # Per-row axes: {idx: tau_ax} or, with show_flux, {idx: (tau_ax, flux_ax)}
         self.subplots: Dict[int, Any] = {}
+
+    @property
+    def y_axis_label(self) -> str:
+        """Figure-wide y label.
+
+        Blank with flux sub-panels: each sub-panel then carries its own short
+        label ("τ" / "Jy"), and a figure-wide label would collide with them.
+        """
+        return "" if self.show_flux else "Optical Depth (τ)"
+
+    # ------------------------------------------------------------------
+    # Axes accessors
+    # ------------------------------------------------------------------
+    def get_tau_axes(self) -> Dict[int, Axes]:
+        """Return ``{row_index: Axes}`` for the τ panels."""
+        return {
+            idx: (val[0] if isinstance(val, tuple) else val)
+            for idx, val in self.subplots.items()
+        }
+
+    def get_flux_axes(self) -> Dict[int, Axes]:
+        """Return ``{row_index: Axes}`` for the flux sub-panels (empty unless *show_flux*)."""
+        return {
+            idx: val[1]
+            for idx, val in self.subplots.items()
+            if isinstance(val, tuple) and len(val) > 1
+        }
 
     # ------------------------------------------------------------------
     # Public data mutator (for interactive reuse)
@@ -158,16 +207,18 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         )
 
     # ------------------------------------------------------------------
-    # Molecule tau-cache helper
+    # Molecule cache helpers
     # ------------------------------------------------------------------
-    def _build_mol_tau_cache(
+    def _build_mol_data_cache(
         self,
+        getter: Callable[..., Tuple[Optional[np.ndarray], Optional[np.ndarray]]],
     ) -> Tuple[List[tuple], List[str], List[str]]:
-        """Pre-compute molecule tau data, labels, and colors.
+        """Pre-compute per-molecule ``(wavelengths, values)`` with *getter*.
 
-        Returns ``(mol_tau_cache, mol_labels, mol_colors)`` where each
-        entry in *mol_tau_cache* is
-        ``(wavelengths, tau, color, label, name)``.
+        *getter* is :meth:`BasePlot.get_molecule_tau_data` or
+        :meth:`BasePlot.get_molecule_spectrum_data`.  Returns
+        ``(cache, mol_labels, mol_colors)`` where each *cache* entry is
+        ``(wavelengths, values, color, label, name)``.
         """
         cache: List[tuple] = []
         labels: List[str] = []
@@ -192,23 +243,54 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
                 target_wave = None
 
         for mol in visible:
-            lam, tau = self.get_molecule_tau_data(
+            lam, values = getter(
                 mol, self.wave_data,
                 interpolate_to_input=use_interp,
                 target_wavelengths=target_wave,
                 extend_to_range=True,
             )
-            if lam is not None and tau is not None and len(tau) > 0:
+            if lam is not None and values is not None and len(values) > 0:
                 cache.append((
-                    lam, tau,
+                    lam, values,
                     self.get_molecule_color(mol),
                     self.get_molecule_display_name(mol),
                     getattr(mol, "name", "unknown"),
                 ))
         return cache, labels, colors
 
+    def _build_mol_tau_cache(
+        self,
+    ) -> Tuple[List[tuple], List[str], List[str]]:
+        """Pre-compute molecule tau data, labels, and colors.
+
+        Returns ``(mol_tau_cache, mol_labels, mol_colors)`` where each
+        entry in *mol_tau_cache* is
+        ``(wavelengths, tau, color, label, name)``.
+        """
+        return self._build_mol_data_cache(self.get_molecule_tau_data)
+
+    def _build_mol_flux_cache(self) -> List[tuple]:
+        """Pre-compute the molecule model fluxes for the flux sub-panels.
+
+        Entries are ``(wavelengths, flux, color, label, name)``, the format
+        :class:`SpectrumPanel` expects (same as :meth:`FullSpectrumPlot._build_mol_cache`).
+        """
+        cache, _labels, _colors = self._build_mol_data_cache(self.get_molecule_spectrum_data)
+        return cache
+
+    def _summed_model_flux(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Return the visible molecules' summed model ``(wave, flux)``, or ``(None, None)``."""
+        if self.molecules is None:
+            return None, None
+        try:
+            return self.molecules.get_summed_flux(
+                self.wave_data_obs, visible_only=True, extend_to_global_range=True,
+            )
+        except Exception:
+            return None, None
+
     # ------------------------------------------------------------------
-    # Y-limit function for tau
+    # Y-limit functions
     # ------------------------------------------------------------------
     def _tau_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
         """Per-panel y-limit function driven by pre-computed tau cache.
@@ -254,6 +336,14 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             return (self.tau_floor, max_tau * 2.0)
         return (0.0, max_tau * 1.1)
 
+    def _flux_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
+        """Per-panel flux sub-panel limits: the observed flux, as in :class:`FullSpectrumPlot`."""
+        return self._default_ylim_fn(self.wave_data, self.flux_data, mask, self.ymax_factor)
+
+    def compute_flux_ylims(self) -> List[Tuple[float, float]]:
+        """Return the automatic ``(ymin, ymax)`` of every flux sub-panel (each scaled independently)."""
+        return self._compute_panel_ylims(uniform=False, ylim_fn=self._flux_ylim_fn)
+
     def _apply_stem_ylims(self) -> None:
         """Fit each panel's y-limits to its tallest stem (``"stem"`` mode).
 
@@ -288,9 +378,25 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         gs_slot: "SubplotSpec",
         **kwargs,
     ) -> List[SpectralPanel]:
-        ax = self.fig.add_subplot(gs_slot)
+        """Create the τ panel for a row, plus its flux sub-panel when *show_flux* is set.
 
-        panel = OpticalDepthPanel(
+        With flux the slot is split by a nested ``GridSpecFromSubplotSpec``
+        (τ on top, flux below, no gap, shared wavelength axis).
+        """
+        if self.show_flux:
+            gs_inner = GridSpecFromSubplotSpec(
+                2, 1,
+                subplot_spec=gs_slot,
+                height_ratios=[1.0, self.flux_height_ratio],
+                hspace=0.0,
+            )
+            ax_tau = self.fig.add_subplot(gs_inner[0, 0])
+            ax_flux = self.fig.add_subplot(gs_inner[1, 0], sharex=ax_tau)
+        else:
+            ax_tau = self.fig.add_subplot(gs_slot)
+            ax_flux = None
+
+        panels: List[SpectralPanel] = [OpticalDepthPanel(
             wave_data=self.wave_data,
             flux_data=self.flux_data,
             xmin=xmin,
@@ -303,14 +409,36 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             show_total=self.show_total,
             stacked_fill=self.stacked_fill,
             tau_floor=self.tau_floor,
-            ax=ax,
+            ax=ax_tau,
             theme=self.theme,
             gap_mode=self.gap_mode,
             gap_threshold=self.gap_threshold,
             x_scaling=self.x_scaling,
-        )
-        self.subplots[idx] = ax
-        return [panel]
+        )]
+
+        if ax_flux is None:
+            self.subplots[idx] = ax_tau
+            return panels
+
+        panels.append(SpectrumPanel(
+            wave_data=self.wave_data,
+            flux_data=self.flux_data,
+            xmin=xmin,
+            xmax=xmax,
+            error_data=self.error_data,
+            molecules=self.molecules,
+            mol_cache=kwargs.get("mol_flux_cache", []),
+            summed_wave=kwargs.get("summed_wave"),
+            summed_flux=kwargs.get("summed_flux"),
+            wave_data_obs=self.wave_data_obs,
+            ax=ax_flux,
+            theme=self.theme,
+            gap_mode=self.gap_mode,
+            gap_threshold=self.gap_threshold,
+            x_scaling=self.x_scaling,
+        ))
+        self.subplots[idx] = (ax_tau, ax_flux)
+        return panels
 
     # ------------------------------------------------------------------
     def _post_render_cell(
@@ -326,17 +454,43 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             cell_panels[0].ax.set_ylim(*ylims[idx])
 
         ax = cell_panels[0].ax
-        # The figure-wide y label (y_axis_label) replaces the per-panel one.
-        ax.set_ylabel("")
+        flux_ax = cell_panels[1].ax if len(cell_panels) > 1 else None
+
         ax.tick_params(axis="x", labelsize=7)
         ax.tick_params(axis="y", labelsize=7)
         ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
-        if is_last:
-            ax.set_xlabel("Wavelength (\u03bcm)", color=fg)
+
+        if flux_ax is None:
+            # The figure-wide y label (y_axis_label) replaces the per-panel one.
+            ax.set_ylabel("")
+            if is_last:
+                ax.set_xlabel("Wavelength (μm)", color=fg)
+        else:
+            # Short labels tell the two sub-panels apart; the wavelength
+            # ticks sit under the flux sub-panel only.
+            ax.set_ylabel("τ", fontsize=8, color=fg)
+            ax.tick_params(axis="x", labelbottom=False)
+            # Drop τ's bottom tick label so it does not collide with the
+            # flux panel's top one at the shared edge.
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=self._y_tick_bins(ax), prune="lower"))
+            flux_ylims = getattr(self, "_flux_ylims", None)
+            if flux_ylims is not None and idx < len(flux_ylims):
+                flux_ax.set_ylim(*flux_ylims[idx])
+            flux_ax.set_ylabel("Jy", fontsize=8, color=fg)
+            flux_ax.tick_params(axis="x", labelsize=7, labelbottom=True)
+            flux_ax.tick_params(axis="y", labelsize=7)
+            flux_ax.yaxis.set_major_locator(MaxNLocator(nbins=self._y_tick_bins(flux_ax), prune="both"))
+            if is_last:
+                flux_ax.set_xlabel("Wavelength (μm)", color=fg)
 
         if self.gap_mode is GapMode.SKIP:
             for panel in cell_panels:
                 panel.draw_gap_indicators()
+
+    def _y_tick_bins(self, ax: Axes) -> int:
+        """2-4 y-tick intervals depending on *ax*'s height, so short sub-panels stay legible."""
+        height_in = ax.get_position().height * self.fig.get_figheight()
+        return int(np.clip(height_in / 0.15, 2, 4))
 
     # ------------------------------------------------------------------
     @property
@@ -351,7 +505,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
 
     # ------------------------------------------------------------------
     def generate_plot(self, **kwargs) -> None:
-        """Build the multi-panel optical-depth figure."""
+        """Build the multi-panel optical-depth figure (with flux sub-panels when *show_flux*)."""
         self.subplots.clear()
 
         # Pre-compute molecule tau data
@@ -363,11 +517,24 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             ylim_fn=self._tau_ylim_fn,
         )
 
+        cell_kwargs: Dict[str, Any] = {"mol_tau_cache": mol_tau_cache}
+        if self.show_flux:
+            summed_wave, summed_flux = self._summed_model_flux()
+            self._flux_ylims = self.compute_flux_ylims()
+            cell_kwargs.update(
+                mol_flux_cache=self._build_mol_flux_cache(),
+                summed_wave=summed_wave,
+                summed_flux=summed_flux,
+                # Flux sub-panels use the Full Spectrum model styling.
+                model_linewidth=self._get_theme_value("full_spectrum_model_linewidth", 1.0),
+                model_alpha=self._get_theme_value("full_spectrum_model_alpha", 0.8),
+            )
+        else:
+            self._flux_ylims = None
+        cell_kwargs.update(kwargs)
+
         # Delegate stacking to the parent class
-        super().generate_plot(
-            mol_tau_cache=mol_tau_cache,
-            **kwargs,
-        )
+        super().generate_plot(**cell_kwargs)
 
         # Stems show the per-line τ, which the profile-based limits do not cover.
         if self.display_mode == "stem":
