@@ -315,7 +315,7 @@ class TestControlsAndInteraction:
         assert isinstance(cp.get_field("n_panels"), EntryField)
         assert any(isinstance(f, DisplayRangeField) for f in cp.fields())
         tb_keys = [f.key for f in tb.fields()]
-        assert tb_keys == ["tau_log_scale", "tau_stem_mode", "tau_stacked_fill", "tau_show_flux", "data_density"]
+        assert tb_keys == ["tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill", "tau_show_flux", "data_density"]
         assert all(isinstance(f, ToggleField) for f in tb.fields())
 
         log_field = tb.get_field("tau_log_scale")
@@ -489,3 +489,68 @@ class TestFluxPanels:
                 assert not any(a.get_visible() for a in _artists(ax, "_islat_summed"))
         finally:
             type(plot).close(plot)
+
+
+# ======================================================================
+# Fractional share of the total τ
+# ======================================================================
+
+class TestFractionToggle:
+    def test_fraction_mode_renders_shares(self, rendered):
+        view, pm, *_ = rendered
+        view._set_fraction_mode(True)
+        assert pm.toggle_state["tau_display_mode"] == "fraction"
+        assert view._plot.display_mode == "fraction"
+        assert view.fig._supylabel.get_text() == "Fraction of total \u03c4"
+        for ax in view.subplots.values():
+            assert ax.get_ylim() == pytest.approx((0.0, 1.05))
+        assert not _total_tau_lines(view)
+        for cell in view._plot.panels.values():
+            lam, shares = cell[0].compute_fractional_shares()
+            total = np.nansum([s[0] for s in shares], axis=0)
+            defined = ~np.isnan(shares[0][0])
+            assert np.allclose(total[defined], 1.0)
+
+    def test_fraction_and_stems_are_exclusive(self, rendered):
+        view, pm, *_ = rendered
+        view._set_stem_mode(True)
+        view._set_fraction_mode(True)
+        assert (view._get_fraction_mode(), view._get_stem_mode()) == (True, False)
+        view._set_stem_mode(False)  # not active: leaves fraction alone
+        assert pm.toggle_state["tau_display_mode"] == "fraction"
+        view._set_stem_mode(True)
+        assert (view._get_fraction_mode(), view._get_stem_mode()) == (False, True)
+        view._set_stem_mode(False)
+        assert pm.toggle_state["tau_display_mode"] == "profile"
+
+    def test_top_bar_button_flips_fraction(self, rendered):
+        view, pm, *_ = rendered
+        bus = ControlBus()
+        tb = _NoopSurface()
+        bus.register_surface("top_bar", tb)
+        pm.control_bus = bus
+        view._register_control_fields()
+        field = tb.get_field("tau_fraction_mode")
+        field.setter(not field.getter())
+        assert pm.toggle_state["tau_display_mode"] == "fraction"
+        field.setter(not field.getter())
+        assert pm.toggle_state["tau_display_mode"] == "profile"
+
+    def test_fraction_with_flux_panels_and_log(self, rendered):
+        view, pm, *_ = rendered
+        pm.toggle_state["tau_log_scale"] = True
+        view._set_show_flux(True)
+        view._set_fraction_mode(True)
+        assert len(view._plot.get_flux_axes()) == view._plot.n_panels
+        for ax in view.subplots.values():
+            assert ax.get_yscale() == "linear" and ax.get_ylim() == pytest.approx((0.0, 1.05))
+
+    def test_export_uses_fraction_mode(self, rendered, tmp_path, monkeypatch):
+        view, pm, *_ = rendered
+        view._set_fraction_mode(True)
+        created = []
+        original = view._create_standalone_plot
+        monkeypatch.setattr(view, "_create_standalone_plot",
+                            lambda *a, **k: created.append(original(*a, **k)) or created[-1])
+        assert view.save_figure(str(tmp_path / "frac.png"), file_format="png", dpi=40)
+        assert created[0].display_mode == "fraction"

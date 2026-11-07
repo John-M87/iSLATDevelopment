@@ -1,7 +1,7 @@
 """
 OpticalDepthSpectrumPlot -- Multi-panel stacked optical-depth overview.
 
-Generates a vertically stacked series of panels, each showing the convolved τ(λ) profile (or line-center stems) for visible molecules with color-coded stacked fills.
+Generates a vertically stacked series of panels, each showing the convolved τ(λ) profile (or line-center stems, or each molecule's fractional share of the total τ per pixel) for visible molecules with color-coded stacked fills.
 
 Inherits the stacking layout from :class:`StackedSpectralPanel` and implements :meth:`_create_cell` to produce one :class:`OpticalDepthPanel` per row.
 With ``show_flux=True`` each row also gets a :class:`SpectrumPanel` directly beneath its τ panel (sharing its wavelength axis, like the residual sub-panels of :class:`ResidualSpectrumPlot`) showing the observed flux, the molecule models and the summed model.
@@ -18,7 +18,12 @@ from matplotlib.ticker import MaxNLocator
 from .StackedSpectralPanel import StackedSpectralPanel
 from .SpectralPanel import SpectralPanel, GapMode
 from .SpectrumPanel import SpectrumPanel
-from .OpticalDepthPanel import OpticalDepthPanel
+from .OpticalDepthPanel import (
+    OpticalDepthPanel,
+    FRACTION_YLIM,
+    FRACTION_YLABEL,
+    FRACTION_YLABEL_SHORT,
+)
 from .BasePlot import BasePlot
 
 if TYPE_CHECKING:
@@ -55,15 +60,20 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     uniform_ylim : bool, optional
         When True every panel shares the same τ scale.  Default False.
     display_mode : str, optional
-        ``"profile"`` or ``"stem"``.  Default ``"profile"``.
+        ``"profile"`` (convolved τ), ``"stem"`` (per-line τ) or
+        ``"fraction"`` (each molecule's share of the total τ per pixel,
+        y axis 0 to 1).  Default ``"profile"``.
     log_scale : bool, optional
-        Logarithmic y-axis.  Default False.
+        Logarithmic y-axis.  Default False.  Not applied in ``"fraction"`` mode.
     show_total : bool, optional
-        Show combined τ line.  Default True.
+        Show combined τ line.  Default True.  Not drawn in ``"fraction"`` mode.
     stacked_fill : bool, optional
         Cumulative fill per molecule.  Default True.
     tau_floor : float, optional
         Minimum τ for log-scale.  Default ``1e-10``.
+    fraction_min_tau : float, optional
+        ``"fraction"`` mode leaves pixels whose total τ is at or below this
+        blank.  Default ``1e-6``.
     show_flux : bool, optional
         Add a flux sub-panel (observed spectrum, molecule models and summed
         model, as in :class:`FullSpectrumPlot`) below each τ panel.  Default False.
@@ -93,6 +103,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         show_total: bool = True,
         stacked_fill: bool = True,
         tau_floor: float = 1e-10,
+        fraction_min_tau: float = 1e-6,
         show_flux: bool = False,
         flux_height_ratio: float = 1.0,
         figsize: Optional[Tuple[float, float]] = None,
@@ -130,6 +141,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         self.show_total = show_total
         self.stacked_fill = stacked_fill
         self.tau_floor = tau_floor
+        self.fraction_min_tau = fraction_min_tau
         self.show_flux = bool(show_flux)
         self.flux_height_ratio = flux_height_ratio
 
@@ -146,7 +158,9 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         Blank with flux sub-panels: each sub-panel then carries its own short
         label ("τ" / "Jy"), and a figure-wide label would collide with them.
         """
-        return "" if self.show_flux else "Optical Depth (τ)"
+        if self.show_flux:
+            return ""
+        return FRACTION_YLABEL if self.display_mode == "fraction" else "Optical Depth (τ)"
 
     # ------------------------------------------------------------------
     # Axes accessors
@@ -296,7 +310,10 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         """Per-panel y-limit function driven by pre-computed tau cache.
 
         Falls back to a simple default if the cache is not yet available.
+        Shares (``"fraction"`` mode) always span 0 to 1.
         """
+        if self.display_mode == "fraction":
+            return FRACTION_YLIM
         cache = getattr(self, "_mol_tau_cache", [])
         if not cache:
             return (self.tau_floor, 1.0) if self.log_scale else (0.0, 1.0)
@@ -409,6 +426,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             show_total=self.show_total,
             stacked_fill=self.stacked_fill,
             tau_floor=self.tau_floor,
+            fraction_min_tau=self.fraction_min_tau,
             ax=ax_tau,
             theme=self.theme,
             gap_mode=self.gap_mode,
@@ -468,7 +486,8 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         else:
             # Short labels tell the two sub-panels apart; the wavelength
             # ticks sit under the flux sub-panel only.
-            ax.set_ylabel("τ", fontsize=8, color=fg)
+            tau_label = FRACTION_YLABEL_SHORT if self.display_mode == "fraction" else "τ"
+            ax.set_ylabel(tau_label, fontsize=8, color=fg)
             ax.tick_params(axis="x", labelbottom=False)
             # Drop τ's bottom tick label so it does not collide with the
             # flux panel's top one at the shared edge.

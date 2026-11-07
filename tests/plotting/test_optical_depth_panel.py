@@ -405,3 +405,100 @@ class TestOpticalDepthFluxSubPanels:
         assert odsp.get_flux_axes() == {}
         assert odsp.get_tau_axes() == odsp.subplots
         odsp.close()
+
+
+class TestFractionMode:
+    """``display_mode="fraction"``: each molecule's share of the total τ per pixel."""
+
+    @staticmethod
+    def _panel(cache, **kwargs):
+        wave, flux, err = make_wave_flux(n=200)
+        return OpticalDepthPanel(
+            wave, flux, xmin=float(wave[0]), xmax=float(wave[-1]),
+            mol_tau_cache=cache, display_mode="fraction", **kwargs,
+        )
+
+    def test_shares_are_tau_over_total(self):
+        wave, flux, err = make_wave_flux(n=200)
+        cache = _make_tau_cache(wave, n_molecules=3)
+        panel = self._panel(cache)
+        lam, shares = panel.compute_fractional_shares()
+        assert np.array_equal(lam, wave)
+        assert [s[3] for s in shares] == ["mol_0", "mol_1", "mol_2"]
+        total = sum(entry[1] for entry in cache)
+        defined = total > panel.fraction_min_tau
+        for (share, *_), entry in zip(shares, cache):
+            assert np.allclose(share[defined], entry[1][defined] / total[defined])
+            assert np.all((share[defined] >= 0) & (share[defined] <= 1))
+        assert np.allclose(np.sum([s[0] for s in shares], axis=0)[defined], 1.0)
+
+    def test_negligible_total_tau_is_undefined(self):
+        wave, flux, err = make_wave_flux(n=200)
+        cache = _make_tau_cache(wave, n_molecules=2)  # sin(0): total τ is 0 at the first pixel
+        lam, shares = self._panel(cache, fraction_min_tau=0.05).compute_fractional_shares()
+        total = cache[0][1] + cache[1][1]
+        for share, *_ in shares:
+            assert np.all(np.isnan(share[total <= 0.05]))
+            assert not np.any(np.isnan(share[total > 0.05]))
+
+    def test_molecules_on_other_grids_are_interpolated(self):
+        wave, flux, err = make_wave_flux(n=200)
+        coarse = np.linspace(wave[0], wave[-1], 50)
+        cache = [
+            (wave, np.ones_like(wave), "blue", "A", "a"),
+            (coarse, np.full_like(coarse, 3.0), "red", "B", "b"),
+        ]
+        lam, shares = self._panel(cache).compute_fractional_shares()
+        assert len(lam) == len(wave)
+        assert np.allclose(shares[0][0], 0.25) and np.allclose(shares[1][0], 0.75)
+
+    def test_stacked_fills_reach_one(self):
+        wave, flux, err = make_wave_flux(n=200)
+        panel = self._panel(_make_tau_cache(wave, n_molecules=3))
+        panel.generate_plot()
+        fills = panel.ax.collections
+        assert len(fills) == 3
+        top = max(np.nanmax(path.vertices[:, 1]) for path in fills[-1].get_paths())
+        assert top == pytest.approx(1.0)
+        assert panel.ax.get_ylim() == pytest.approx((0.0, 1.05))
+        assert panel.ax.get_ylabel() == "Fraction of total \u03c4"
+        assert not [ln for ln in panel.ax.lines]  # no total line: it would be 1
+        panel.close()
+
+    def test_unstacked_draws_one_share_line_per_molecule(self):
+        wave, flux, err = make_wave_flux(n=200)
+        panel = self._panel(_make_tau_cache(wave, n_molecules=2), stacked_fill=False)
+        panel.generate_plot()
+        assert [ln.get_label() for ln in panel.ax.lines] == ["Mol0", "Mol1"]
+        assert np.nanmax(panel.ax.lines[0].get_ydata()) <= 1.0
+        panel.close()
+
+    def test_axis_stays_linear_with_log_scale(self):
+        wave, flux, err = make_wave_flux(n=200)
+        panel = self._panel(_make_tau_cache(wave, n_molecules=2), log_scale=True)
+        panel.generate_plot()
+        assert panel.ax.get_yscale() == "linear"
+        assert panel.compute_ylim() == (0.0, 1.05)
+        panel.close()
+
+    def test_empty_cache(self):
+        lam, shares = self._panel([]).compute_fractional_shares()
+        assert lam.size == 0 and shares == []
+
+    def test_stacked_plot_labels_and_limits(self):
+        molecules = TestOpticalDepthStemLimits._molecules()
+        from tests.plotting.test_plot_views import _make_test_molecule
+        molecules["CO2"] = _make_test_molecule(name="CO2", lam_start=12.3)
+        wave = np.linspace(10.0, 20.0, 2000)
+        for show_flux, sup, tau_label in ((False, "Fraction of total \u03c4", ""), (True, "", r"$\tau_i/\tau$")):
+            odsp = OpticalDepthSpectrumPlot(
+                wave, np.ones_like(wave), molecules=molecules, n_panels=2,
+                display_mode="fraction", log_scale=True, show_flux=show_flux,
+            )
+            odsp.generate_plot()
+            assert odsp.fig._supylabel.get_text() == sup
+            for ax in odsp.get_tau_axes().values():
+                assert ax.get_ylim() == pytest.approx((0.0, 1.05))
+                assert ax.get_yscale() == "linear"
+                assert ax.get_ylabel() == tau_label
+            odsp.close()

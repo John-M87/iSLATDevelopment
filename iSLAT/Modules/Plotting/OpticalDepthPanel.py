@@ -1,12 +1,15 @@
 """
 OpticalDepthPanel -- Concrete :class:`SpectralPanel` for optical depth display.
 
-Renders the convolved optical-depth profile τ(λ) for one or more molecules on a single axes.  Supports two display modes:
+Renders the convolved optical-depth profile τ(λ) for one or more molecules on a single axes.  Supports three display modes:
 
 * **profile** (default) - continuous Gaussian-convolved τ(λ) with
   stacked ``fill_between`` per molecule.
 * **stem** - vertical lines at each line-center wavelength with
   height equal to the per-line τ value.
+* **fraction** - each molecule's fractional share of the total convolved
+  τ per pixel, τᵢ / Σⱼ τⱼ (stacked fills sum to 1); see
+  :meth:`OpticalDepthPanel.compute_fractional_shares`.
 
 Used both as a standalone single-panel plot and as the cell type created by :class:`OpticalDepthSpectrumPlot`.
 """
@@ -27,6 +30,11 @@ if TYPE_CHECKING:
 TOTAL_TAU_TAG = "_islat_total_tau"
 #: Attribute tagging the per-line τ stems drawn in ``"stem"`` mode.
 TAU_STEM_TAG = "_islat_tau_stem"
+#: Y limits of the ``"fraction"`` mode (shares lie in [0, 1]; a little headroom keeps the top edge visible).
+FRACTION_YLIM: Tuple[float, float] = (0.0, 1.05)
+#: Axis labels of the ``"fraction"`` mode (full and short, for stacked sub-panels).
+FRACTION_YLABEL = "Fraction of total τ"
+FRACTION_YLABEL_SHORT = r"$\tau_i/\tau$"
 
 
 class OpticalDepthPanel(SpectralPanel):
@@ -52,17 +60,24 @@ class OpticalDepthPanel(SpectralPanel):
         Pre-computed ``(wavelengths, tau, color, label, name)`` tuples
         from :meth:`OpticalDepthSpectrumPlot._build_mol_tau_cache`.
     display_mode : str, optional
-        ``"profile"`` for convolved Gaussian profiles (default) or
-        ``"stem"`` for per-line markers.
+        ``"profile"`` for convolved Gaussian profiles (default),
+        ``"stem"`` for per-line markers, or ``"fraction"`` for each
+        molecule's share of the total τ per pixel (y axis 0 to 1).
     log_scale : bool, optional
-        Use logarithmic y-axis.  Default ``False``.
+        Use logarithmic y-axis.  Default ``False``.  Not applied in
+        ``"fraction"`` mode, whose axis is always linear.
     show_total : bool, optional
         Show combined τ line when multiple molecules are rendered.
-        Default ``True``.
+        Default ``True``.  Not drawn in ``"fraction"`` mode (it would be 1).
     stacked_fill : bool, optional
         Use cumulative ``fill_between`` per molecule.  Default ``True``.
+        In ``"fraction"`` mode the stacked fills sum to 1; otherwise each
+        molecule's share is drawn as a line.
     tau_floor : float, optional
         Minimum τ value when *log_scale* is ``True``.  Default ``1e-10``.
+    fraction_min_tau : float, optional
+        In ``"fraction"`` mode, pixels whose total τ is at or below this
+        value are left blank (the share is undefined there).  Default ``1e-6``.
     ax : Axes, optional
         Pre-existing axes to draw into.
     **kwargs
@@ -83,6 +98,7 @@ class OpticalDepthPanel(SpectralPanel):
         show_total: bool = True,
         stacked_fill: bool = True,
         tau_floor: float = 1e-10,
+        fraction_min_tau: float = 1e-6,
         ax: Optional[Axes] = None,
         **kwargs,
     ):
@@ -103,6 +119,7 @@ class OpticalDepthPanel(SpectralPanel):
         self.show_total = show_total
         self.stacked_fill = stacked_fill
         self.tau_floor = tau_floor
+        self.fraction_min_tau = fraction_min_tau
 
     # ------------------------------------------------------------------
     def _ensure_mol_tau_cache(self) -> None:
@@ -134,21 +151,26 @@ class OpticalDepthPanel(SpectralPanel):
 
     # ------------------------------------------------------------------
     def generate_plot(self, **kwargs) -> None:
-        """Render optical-depth profiles or stem markers."""
+        """Render optical-depth profiles, fractional shares or stem markers."""
         self._ensure_mol_tau_cache()
         ax = self._resolve_axes()
         xr = self.xlim
         fg = self._get_theme_value("foreground", "black")
+        fraction = self.display_mode == "fraction"
 
-        if self.display_mode == "profile":
+        if fraction:
+            self._render_fraction(ax, xr)
+        elif self.display_mode == "profile":
             self._render_profile(ax, xr)
         else:
             self._render_stem(ax, xr)
 
         ax.set_xlim(*xr)
-        ax.set_ylabel("Optical Depth (\u03c4)", color=fg, fontsize=8)
+        ax.set_ylabel(FRACTION_YLABEL if fraction else "Optical Depth (\u03c4)", color=fg, fontsize=8)
 
-        if self.log_scale:
+        if fraction:
+            ax.set_ylim(*FRACTION_YLIM)
+        elif self.log_scale:
             # A panel without τ > 0 warns here; its limits are set afterwards.
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="Data has no positive values")
@@ -219,6 +241,85 @@ class OpticalDepthPanel(SpectralPanel):
                 setattr(total_line, TOTAL_TAU_TAG, True)
 
     # ------------------------------------------------------------------
+    # Fraction mode
+    # ------------------------------------------------------------------
+    def compute_fractional_shares(
+        self,
+        xr: Optional[Tuple[float, float]] = None,
+    ) -> Tuple[np.ndarray, List[tuple]]:
+        """Return each molecule's share of the total convolved τ per pixel.
+
+        The pixels are those of the first molecule's τ grid within *xr*
+        (default: the panel range); molecules on a different grid are
+        interpolated onto it (zero outside their own range).  Negative or
+        non-finite τ counts as zero.
+
+        Returns
+        -------
+        wavelengths : np.ndarray
+            The pixel wavelengths.
+        shares : list[tuple]
+            ``(share, color, label, name)`` per molecule, in cache order,
+            where ``share = τᵢ / Σⱼ τⱼ`` - in [0, 1] and summing to 1 over
+            the molecules - and NaN where the total τ is at or below
+            :attr:`fraction_min_tau`.
+        """
+        self._ensure_mol_tau_cache()
+        entries = self.mol_tau_cache
+        if not entries:
+            return np.array([]), []
+        if xr is None:
+            xr = self.xlim
+
+        ref_lam = np.asarray(entries[0][0], dtype=float)
+        in_range = (ref_lam >= xr[0]) & (ref_lam <= xr[1])
+        lam = ref_lam[in_range]
+
+        taus = []
+        for m_lam, m_tau, *_ in entries:
+            m_lam = np.asarray(m_lam, dtype=float)
+            m_tau = np.asarray(m_tau, dtype=float)
+            if m_lam.shape == ref_lam.shape and np.array_equal(m_lam, ref_lam):
+                tau = m_tau[in_range]
+            else:
+                tau = np.interp(lam, m_lam, m_tau, left=0.0, right=0.0)
+            taus.append(np.where(np.isfinite(tau) & (tau > 0), tau, 0.0))
+
+        total = np.sum(taus, axis=0)
+        defined = total > self.fraction_min_tau
+        safe_total = np.where(defined, total, 1.0)
+        shares = [
+            (np.where(defined, tau / safe_total, np.nan), color, label, name)
+            for tau, (_lam, _tau, color, label, name) in zip(taus, entries)
+        ]
+        return lam, shares
+
+    def _render_fraction(self, ax: Axes, xr: Tuple[float, float]) -> None:
+        """Render each molecule's share of the total τ (stacked to 1, or one line each)."""
+        lam, shares = self.compute_fractional_shares(xr)
+        if lam.size == 0:
+            return
+        zorder = self._get_theme_value("zorder_model", 3)
+        if self.stacked_fill:
+            bottom = np.zeros_like(lam)
+            for share, color, label, _name in shares:
+                top = bottom + share  # NaN (undefined share) leaves a gap
+                # No edge: a molecule with no share in range would otherwise
+                # leave a zero-height outline along its boundary.
+                ax.fill_between(
+                    lam, bottom, top, color=color, alpha=0.45, linewidth=0,
+                    label=label, zorder=zorder,
+                )
+                bottom = top
+        else:
+            base_lw = self._get_theme_value("full_spectrum_model_linewidth", 0.8)
+            for share, color, label, name in shares:
+                ax.plot(
+                    lam, share, color=color, alpha=0.8, label=label, zorder=zorder,
+                    linewidth=self.get_molecule_linewidth_by_name(name, base_lw),
+                )
+
+    # ------------------------------------------------------------------
     # Stem mode
     # ------------------------------------------------------------------
     def _render_stem(self, ax: Axes, xr: Tuple[float, float]) -> None:
@@ -283,6 +384,8 @@ class OpticalDepthPanel(SpectralPanel):
     # ------------------------------------------------------------------
     def compute_ylim(self, ymax_factor: float = 0.2) -> Tuple[float, float]:
         """Compute appropriate y-limits for the optical-depth panel."""
+        if self.display_mode == "fraction":
+            return FRACTION_YLIM
         max_tau = 0.0
 
         for entry in self.mol_tau_cache:

@@ -7,7 +7,7 @@ The view builds on :class:`FullSpectrumView`, which already drives any :class:`S
 What differs from the full spectrum view:
 
 * The *Total Model* toggle shows / hides the combined "Total τ" line (and the summed-model fill of the flux sub-panels).
-* View-specific top-bar toggles switch between a linear and a logarithmic τ axis, between the convolved profile and per-line stems at the line centres, between stacked and overlaid molecules, and add a flux sub-panel below each τ panel (*Flux Panels*), plus the data-density x scaling shared with the full spectrum view.
+* View-specific top-bar toggles switch between a linear and a logarithmic τ axis, from the convolved profile to per-line stems at the line centres or to each molecule's fractional share of the total τ per pixel (*τ Fraction*), between stacked and overlaid molecules, and add a flux sub-panel below each τ panel (*Flux Panels*), plus the data-density x scaling shared with the full spectrum view.
 * The flux Y-axis settings (auto-scale, *Set Y Limits…*, in Jy) and the observed-data toggle apply to the flux sub-panels only; each τ panel is scaled to its own τ.
 * Dragging a range on a panel opens it in the Three Panel view for line inspection.
 * *Save Figure…* exports a fresh standalone optical depth figure.
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 #: ``toggle_state`` keys (and defaults) for the optical depth display options.
 TAU_OPTION_DEFAULTS: Dict[str, Any] = {
     "tau_log_scale": False,         # logarithmic τ axis
-    "tau_display_mode": "profile",  # "profile" (convolved τ) or "stem" (per-line τ)
+    "tau_display_mode": "profile",  # "profile" (convolved τ), "stem" (per-line τ) or "fraction" (share of total τ)
     "tau_stacked_fill": True,       # stack molecules (False: overlay one line each)
     "tau_show_flux": False,         # flux sub-panel below each τ panel
 }
@@ -62,8 +62,9 @@ class OpticalDepthView(FullSpectrumView):
 
     def _tau_plot_kwargs(self) -> Dict[str, Any]:
         """The :class:`OpticalDepthSpectrumPlot` keywords for the current options."""
+        mode = self._tau_option("tau_display_mode")
         return {
-            "display_mode": "stem" if self._tau_option("tau_display_mode") == "stem" else "profile",
+            "display_mode": mode if mode in ("stem", "fraction") else "profile",
             "log_scale": bool(self._tau_option("tau_log_scale")),
             "stacked_fill": bool(self._tau_option("tau_stacked_fill")),
             "show_flux": bool(self._tau_option("tau_show_flux")),
@@ -91,11 +92,28 @@ class OpticalDepthView(FullSpectrumView):
     def _set_log_scale(self, value: bool) -> None:
         self._set_tau_option("tau_log_scale", bool(value))
 
+    def _set_display_mode(self, mode: str, on: bool) -> None:
+        """Switch to *mode* (``"stem"`` / ``"fraction"``), or back to the profile when turning the active one off.
+
+        The modes are exclusive, so turning one on replaces the other;
+        turning off a mode that is not active changes nothing.
+        """
+        if on:
+            self._set_tau_option("tau_display_mode", mode)
+        elif self._tau_option("tau_display_mode") == mode:
+            self._set_tau_option("tau_display_mode", "profile")
+
     def _get_stem_mode(self) -> bool:
         return self._tau_option("tau_display_mode") == "stem"
 
     def _set_stem_mode(self, value: bool) -> None:
-        self._set_tau_option("tau_display_mode", "stem" if value else "profile")
+        self._set_display_mode("stem", bool(value))
+
+    def _get_fraction_mode(self) -> bool:
+        return self._tau_option("tau_display_mode") == "fraction"
+
+    def _set_fraction_mode(self, value: bool) -> None:
+        self._set_display_mode("fraction", bool(value))
 
     def _get_stacked_fill(self) -> bool:
         return bool(self._tau_option("tau_stacked_fill"))
@@ -247,7 +265,23 @@ class OpticalDepthView(FullSpectrumView):
                     "Toggle the display mode.\n"
                     "OFF: convolved τ(λ) profile (default).\n"
                     "ON:  one stem per line at its centre,\n"
-                    "     as tall as the line's τ."
+                    "     as tall as the line's τ.\n"
+                    "Replaces 'τ Fraction' when turned on."
+                ),
+            ),
+            ToggleField(
+                "tau_fraction_mode", "τ Fraction",
+                getter=self._get_fraction_mode,
+                setter=self._set_fraction_mode,
+                owner=self,
+                tip=(
+                    "Toggle the fractional share of each\n"
+                    "molecule in the total optical depth\n"
+                    "per pixel (molecule τ / total τ, 0 to 1).\n"
+                    "Stacked: the fills add up to 1.\n"
+                    "Pixels with negligible total τ are left blank.\n"
+                    "The axis is linear ('Log τ' does not apply).\n"
+                    "Replaces 'τ Stems' when turned on."
                 ),
             ),
             ToggleField(
