@@ -2,12 +2,50 @@ import numpy as np
 import time
 from matplotlib.widgets import SpanSelector
 from typing import Optional, Tuple, Callable, Dict, Any
-
 from .KeyBindings import ActionRegistry, TEXT_INPUT_CLASSES, chord_from_event
+
+class SingleDrawSpanSelector(SpanSelector):
+    """SpanSelector that does not render the whole figure twice on each draw.
+
+    With ``useblit=True`` the stock ``update_background`` (run on every
+    ``draw_event``) renders the whole canvas a second time, with the
+    selector's artists hidden, whenever the selection is visible.  Once the
+    user has made a selection every redraw therefore costs two full renders.
+
+    When blitting, the selector's artists are created with ``animated=True``,
+    so a normal figure render already leaves them out.  During a
+    ``draw_event`` the canvas holds that just-rendered frame, which can be
+    copied as the background directly.  Every other case uses the stock
+    behaviour: no draw event (the buffer may hold blitted artists), saving,
+    non-animated selector artists, or other animated artists in the figure
+    (another widget's draw callback may already have drawn them into the
+    buffer).
+    """
+    def update_background(self, event):
+        if not self._frame_is_clean_background(event):
+            super().update_background(event)
+            return
+        self.background = self.canvas.copy_from_bbox(self.ax.bbox)
+        artists = sorted(self.artists, key=lambda a: a.get_zorder())
+        if any(artist.get_visible() for artist in artists):
+            for artist in artists:
+                self.ax.draw_artist(artist)
+
+    def _frame_is_clean_background(self, event) -> bool:
+        """True when the canvas holds a fresh render with no animated artist drawn on it."""
+        if not self.useblit or self.canvas.is_saving():
+            return False
+        if getattr(event, "name", None) != "draw_event":
+            return False
+        if not all(artist.get_animated() for artist in self.artists):
+            return False
+        get_animated = getattr(self, "_get_animated_artists", None)
+        if get_animated is None:
+            return False
+        return not get_animated()
 
 class InteractionHandler:
     """Mouse/keyboard events - handles all user interactions with plots"""
-    
     def __init__(self, plot_manager):
         self.plot_manager = plot_manager
         self.islat = plot_manager.islat
@@ -43,7 +81,7 @@ class InteractionHandler:
     
     def _setup_span_selector(self):
         """Set up the span selector for wavelength range selection"""
-        self.span_selector = SpanSelector(
+        self.span_selector = SingleDrawSpanSelector(
             self.ax1,
             self._on_span_select,
             direction='horizontal',
