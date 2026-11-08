@@ -524,16 +524,37 @@ class FullSpectrumPlot(StackedSpectralPanel):
                 if hasattr(art, "_islat_observed"):
                     art.set_visible(False)
 
+    def _refresh_gap_indicators(
+        self,
+        idx: int,
+        ax: Axes,
+        xr: Tuple[float, float],
+    ) -> None:
+        """Redraw the gap markers of row *idx* for the current data (``GapMode.SKIP``).
+
+        The old markers are removed and the x-range reset to the panel's
+        full range before re-detecting, since the previous data may have
+        tightened it.
+        """
+        panel = self._spectrum_panel_for_row(idx)
+        if panel is None:
+            return
+        panel.remove_gap_indicators()
+        ax.set_xlim(*xr)
+        panel.draw_gap_indicators()
+
     def update_panels_inplace(self) -> None:
         """Fast in-place update of existing subplot data without fig.clf().
 
         This is the fast-path used by :class:`FullSpectrumView` when the panel layout (edges/count) hasn't changed.
         Instead of destroying and re-creating every axes object, we update the data on existing ``Line2D`` artists and ``PolyCollection`` fills.
 
-        Falls back to a full :meth:`generate_plot` if the subplot dict is empty (first render) or structurally mismatched.
+        Falls back to a full :meth:`generate_plot` if the subplot dict is empty (first render) or structurally mismatched,
+        including when the set of panels with data changed in ``GapMode.SKIP``.
+        In that mode each panel's gap markers are redrawn for the new data.
         """
-        n = len(self._panel_edges)
-        if not self.subplots or len(self.subplots) != n:
+        active = list(self._active_panel_edges()[0])
+        if not self.subplots or sorted(self.subplots) != active:
             # Structural mismatch -- fall back to full rebuild
             self.generate_plot()
             return
@@ -563,16 +584,16 @@ class FullSpectrumPlot(StackedSpectralPanel):
         )
 
         # --- Update each panel in place ---------------------------------
-        for idx, xlim_start in enumerate(self._panel_edges):
-            is_last = idx == n - 1
-            panel_end = self._panel_ends[idx]
-            xr = (xlim_start, panel_end)
+        for idx in active:
+            xr = (self._panel_edges[idx], self._panel_ends[idx])
             ax = self.subplots[idx]
 
             # Update observed spectrum (tagged with _islat_observed).
             # Re-drawn rather than mutated so the error bars follow the
             # data -- see _update_observed_inplace.
             self._update_observed_inplace(idx, ax, xr)
+            if self.gap_mode is GapMode.SKIP:
+                self._refresh_gap_indicators(idx, ax, xr)
 
             # Update molecule lines in place
             existing_mol_lines = {}
@@ -668,13 +689,14 @@ class FullSpectrumPlot(StackedSpectralPanel):
     def _legend_axes(self) -> Optional["Axes"]:
         """Return the axes that should receive the molecule color legend.
 
-        For single-axes cells this is ``subplots[0]``.  For multi-axes
-        cells (e.g. :class:`ResidualSpectrumPlot` where each value is a
-        tuple) it returns the first element of the first cell.
+        For single-axes cells this is the first rendered panel (panel 0
+        unless it was skipped for having no data).  For multi-axes cells
+        (e.g. :class:`ResidualSpectrumPlot` where each value is a tuple) it
+        returns the first element of that cell.
         """
-        val = self.subplots.get(0)
-        if val is None:
+        if not self.subplots:
             return None
+        val = self.subplots[min(self.subplots)]
         if isinstance(val, tuple):
             return val[0]
         return val

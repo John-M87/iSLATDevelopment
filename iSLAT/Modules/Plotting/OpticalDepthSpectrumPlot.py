@@ -514,10 +514,10 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     # ------------------------------------------------------------------
     @property
     def _legend_axes(self):
-        """Return the axes for the molecule color legend."""
-        val = self.subplots.get(0)
-        if val is None:
+        """Return the axes for the molecule color legend (the first rendered panel)."""
+        if not self.subplots:
             return None
+        val = self.subplots[min(self.subplots)]
         if isinstance(val, tuple):
             return val[0]
         return val

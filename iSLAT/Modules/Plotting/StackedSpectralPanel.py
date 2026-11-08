@@ -810,11 +810,22 @@ class StackedSpectralPanel(CompositePlot):
             self.panels.clear()
             return
 
-        # Adjust figsize for the number of *active* rows.
-        if self.gap_mode is GapMode.SKIP:
-            self._figsize = (self._figsize[0], self.row_height * n_active)
-
-        self._ensure_figure()
+        # Skipped rows take no space: a new figure is made shorter in
+        # proportion so the remaining rows keep their height.  The requested
+        # size is left untouched (re-rendering never compounds the change),
+        # and an existing figure - e.g. one embedded in a GUI canvas - keeps
+        # its size.
+        fig_w, fig_h = self._figsize or (12, 8.0)
+        n_total = len(self._panel_edges)
+        if self.gap_mode is GapMode.SKIP and 0 < n_active < n_total:
+            fig_h = fig_h * n_active / n_total
+        requested_figsize = self._figsize
+        if requested_figsize is not None:
+            self._figsize = (fig_w, fig_h)
+        try:
+            self._ensure_figure()
+        finally:
+            self._figsize = requested_figsize
         self.fig.clf()
         self.panels.clear()
         self.child_panels.clear()
@@ -830,7 +841,7 @@ class StackedSpectralPanel(CompositePlot):
         # is always at least self.hspace and at most 0.8.
         _margin_top = 0.93
         _margin_bottom = 0.06
-        figH = (self._figsize or (12, 8.0))[1]
+        figH = fig_h
         _avg_ax_h = (_margin_top - _margin_bottom) * figH / max(n_active, 1)
         _target_gap = 0.22  # inches needed for tick labels + padding
         _needed_hspace = _target_gap / _avg_ax_h if _avg_ax_h > 0 else 0.35

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 import numpy as np
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
-from iSLAT.Modules.Plotting.FullSpectrumView import FullSpectrumView
+from iSLAT.Modules.Plotting.FullSpectrumView import FullSpectrumView, SKIP_GAPS_TIP
 from iSLAT.Modules.Plotting.PlotView import WavelengthMarkerStoreMixin, normalize_y_data_sync
 from iSLAT.Modules.Plotting.StackedSpectralPanel import StackedSpectralPanel
 from .Tooltips import MenuToolTip
@@ -39,6 +39,7 @@ DEFAULT_WINDOW_TOGGLE_STATE: Dict[str, Any] = {
     "legend": True,
     "show_residuals": False,
     "data_density": False,
+    "skip_gaps": False,
     "current_selection": None,
     "y_autoscale": True,
     "y_autoscale_source": "data",
@@ -432,6 +433,7 @@ class FullSpectrumWindow(tk.Toplevel):
         toggles = (
             ("show_residuals", "Residuals", self.set_residuals),
             ("data_density", "Data Density X-Scale", self.set_data_density),
+            ("skip_gaps", "Skip Data Gaps", self.set_skip_gaps),
             None,
             ("atomic_lines", "Atomic Lines", self.set_atomic_lines),
             ("saved_lines", "Saved Lines", self.set_saved_lines),
@@ -449,6 +451,7 @@ class FullSpectrumWindow(tk.Toplevel):
             self.display_menu.add_checkbutton(label=text, variable=var,
                                               command=lambda s=setter, v=var: s(v.get()))
             self.option_vars[key] = var
+        MenuToolTip(self.display_menu, {"Skip Data Gaps": SKIP_GAPS_TIP})
 
         # Y axis: auto-scale, fit to model, manual limits.
         self.y_autoscale_var = tk.BooleanVar(master=self, value=bool(ts.get("y_autoscale", True)))
@@ -504,6 +507,11 @@ class FullSpectrumWindow(tk.Toplevel):
 
     def set_data_density(self, enabled: bool) -> None:
         self.view._set_data_density(bool(enabled))
+        self._after_change()
+
+    def set_skip_gaps(self, enabled: bool) -> None:
+        """Break the spectrum at data gaps, crop empty panel edges and leave out empty panels."""
+        self.view._set_skip_gaps(bool(enabled))
         self._after_change()
 
     def set_atomic_lines(self, show: bool) -> None:

@@ -87,6 +87,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             "legend":       True,
             "show_residuals": False,
             "data_density": False,       # XScaling.DATA_DENSITY when True
+            "skip_gaps":    False,       # GapMode.SKIP in the stacked (multi-panel) views when True
             "current_selection": None,   # (xmin, xmax) or None
             "y_autoscale":  True,        # main-plot Y axis follows the data in view
             "y_autoscale_source": "data",  # "data" or "model": what auto-scale fits to

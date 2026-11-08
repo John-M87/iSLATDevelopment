@@ -34,6 +34,7 @@ from .FullSpectrumPlot import FullSpectrumPlot
 from .ResidualSpectrumPlot import ResidualSpectrumPlot
 from .BasePlot import BasePlot
 from .ToggleMixin import ToggleMixin
+from .SpectralPanel import GapMode
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -61,6 +62,17 @@ DEFAULT_EXPORT_HEIGHT: float = 16.0
 #: Upper bounds accepted for the export size overrides (inches).
 MAX_EXPORT_WIDTH: float = 200.0
 MAX_EXPORT_PANEL_HEIGHT: float = 20.0
+
+#: Tooltip of the *Skip Data Gaps* toggle (Full Spectrum and Optical Depth views).
+SKIP_GAPS_TIP: str = (
+    "Toggle how gaps in the observed data are drawn.\n"
+    "OFF: one connected line across gaps (default).\n"
+    "ON:  the line breaks at gaps (NaN flux or a\n"
+    "     wavelength jump); gaps inside a panel are\n"
+    "     blanked and labelled, empty stretches at\n"
+    "     panel edges are cropped, and panels with\n"
+    "     no data are left out."
+)
 
 # Import debug configuration
 try:
@@ -173,6 +185,24 @@ class FullSpectrumView(ToggleMixin, PlotView):
             return
         self._plot.x_scaling = XScaling.DATA_DENSITY if value else XScaling.WAVELENGTH
         self._plot._compute_panel_layout()
+        self._regenerate_layout()
+
+    def _gap_mode(self) -> GapMode:
+        """``GapMode.SKIP`` while *Skip Data Gaps* (``toggle_state["skip_gaps"]``) is on, else ``CONNECT``."""
+        return GapMode.SKIP if self._pm.toggle_state.get("skip_gaps", False) else GapMode.CONNECT
+
+    def _get_skip_gaps(self) -> bool:
+        return bool(self._pm.toggle_state.get("skip_gaps", False))
+
+    def _set_skip_gaps(self, value: bool) -> None:
+        """Turn gap skipping on or off and re-render the panels."""
+        value = bool(value)
+        if value == self._get_skip_gaps():
+            return
+        self._pm.toggle_state["skip_gaps"] = value
+        if self._plot is None:
+            return
+        self._plot.gap_mode = self._gap_mode()
         self._regenerate_layout()
 
     # ==================================================================
@@ -357,6 +387,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 figsize=figsize,
                 theme=self._pm.theme,
                 x_scaling=x_scaling,
+                gap_mode=self._gap_mode(),
             )
         else:
             # The composed plot handles all rendering via BasePlot helpers.
@@ -370,6 +401,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 figsize=figsize,
                 theme=self._pm.theme,
                 x_scaling=x_scaling,
+                gap_mode=self._gap_mode(),
             )
         return plot
 
@@ -809,6 +841,18 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 ),
             ),
             "top_bar",
+        )
+
+        #bus.register(self._skip_gaps_field(ToggleField), "top_bar")
+
+    def _skip_gaps_field(self, toggle_field_cls: Any) -> Any:
+        """The *Skip Data Gaps* top-bar toggle (shared with :class:`OpticalDepthView`)."""
+        return toggle_field_cls(
+            "skip_gaps", "Skip Data Gaps",
+            getter=self._get_skip_gaps,
+            setter=self._set_skip_gaps,
+            owner=self,
+            tip=SKIP_GAPS_TIP,
         )
 
     def deactivate(self) -> None:
@@ -1481,7 +1525,8 @@ def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
     Mirrors what the interactive views show: observed-data and summed-model
     visibility, manual Y limits while auto-scaling is off, and otherwise the
     data min / max sync scope (``y_data_sync``, only when set) or the
-    ``"data"`` / ``"model"`` auto-scale source.
+    ``"data"`` / ``"model"`` auto-scale source.  *Skip Data Gaps*
+    (``skip_gaps``) adds ``gap_mode="skip"``.
     """
     ts = toggle_state if isinstance(toggle_state, dict) else {}
     kw: Dict[str, Any] = {
@@ -1489,6 +1534,8 @@ def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
         "show_summed": bool(ts.get("summed", True)),
         "y_autoscale_source": ts.get("y_autoscale_source", "data"),
     }
+    if ts.get("skip_gaps", False):
+        kw["gap_mode"] = GapMode.SKIP.value
     sync = normalize_y_data_sync(ts.get("y_data_sync"))
     if ts.get("y_autoscale", True) and sync is not None:
         kw["y_data_sync"] = sync

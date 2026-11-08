@@ -245,9 +245,6 @@ class SpectralPanel(BasePlot):
         if len(wave) < 2:
             return []
 
-        if threshold is None:
-            threshold = self.gap_threshold if self.gap_threshold is not None else 3.0
-
         gaps: List[Tuple[float, float]] = []
 
         # 1. NaN runs
@@ -269,20 +266,8 @@ class SpectralPanel(BasePlot):
 
         # 2. Large wavelength jumps
         dw = np.diff(wave)
-        median_dw = float(np.nanmedian(dw)) if len(dw) > 0 else 0.0
-        if median_dw > 0:
-            # The step-based threshold must be at least 5 % of the
-            # *panel* span so that small irregular spacing in an
-            # otherwise continuous spectrum isn't misidentified as a
-            # gap.  Using the panel span (xmax - xmin) rather than the
-            # data span prevents false positives when data is clustered
-            # at one end of a wide panel.
-            panel_span = float(self.xmax - self.xmin)
-            data_span = float(wave[-1] - wave[0])
-            reference_span = max(panel_span, data_span)
-            min_gap_width = 0.05 * reference_span
-            step_gap_width = threshold * median_dw
-            effective_gap_width = max(step_gap_width, min_gap_width)
+        effective_gap_width = self._gap_width(wave, threshold)
+        if effective_gap_width is not None:
             big = np.where(dw > effective_gap_width)[0]
             for idx in big:
                 g_start = float(wave[idx])
@@ -297,6 +282,84 @@ class SpectralPanel(BasePlot):
         # Sort by start wavelength
         gaps.sort(key=lambda g: g[0])
         return gaps
+
+    def _gap_width(
+        self,
+        wave: np.ndarray,
+        threshold: Optional[float] = None,
+    ) -> Optional[float]:
+        """Smallest wavelength stretch without data that counts as a gap.
+
+        *threshold* times the median step (default :attr:`gap_threshold`,
+        or ``3.0``), but at least 5 % of the panel span so that small
+        irregular spacing in an otherwise continuous spectrum is not
+        misidentified as a gap.  Using the panel span (xmax - xmin) rather
+        than the data span prevents false positives when data is
+        clustered at one end of a wide panel.  ``None`` when the sampling
+        step is unknown (fewer than two increasing points).
+        """
+        if threshold is None:
+            threshold = self.gap_threshold if self.gap_threshold is not None else 3.0
+        dw = np.diff(wave)
+        median_dw = float(np.nanmedian(dw)) if len(dw) > 0 else 0.0
+        if not median_dw > 0:
+            return None
+        panel_span = float(self.xmax - self.xmin)
+        data_span = float(wave[-1] - wave[0])
+        reference_span = max(panel_span, data_span)
+        return max(threshold * median_dw, 0.05 * reference_span)
+
+    def detect_edge_gaps(
+        self,
+        wave: Optional[np.ndarray] = None,
+        flux: Optional[np.ndarray] = None,
+        threshold: Optional[float] = None,
+    ) -> List[Tuple[float, float]]:
+        """Detect stretches without data at the panel's edges.
+
+        Returns ``(xmin, first_point)`` when the first data point lies
+        further from the left edge than a gap width (see
+        :meth:`detect_gaps`), and ``(last_point, xmax)`` likewise on the
+        right - e.g. where a gap in the spectrum crosses a panel boundary.
+        Arguments as for :meth:`detect_gaps`.
+        """
+        if wave is None or flux is None:
+            mask = self.get_panel_mask()
+            wave = self.wave_data[mask]
+            flux = self.flux_data[mask]
+        if len(wave) < 2:
+            return []
+        width = self._gap_width(wave, threshold)
+        if width is None:
+            return []
+        lo, hi = float(self.xmin), float(self.xmax)
+        first, last = float(np.nanmin(wave)), float(np.nanmax(wave))
+        gaps: List[Tuple[float, float]] = []
+        if first - lo > width:
+            gaps.append((lo, first))
+        if hi - last > width:
+            gaps.append((last, hi))
+        return gaps
+
+    def detect_display_gaps(
+        self,
+        threshold: Optional[float] = None,
+    ) -> List[Tuple[float, float]]:
+        """The gaps :meth:`draw_gap_indicators` marks by default.
+
+        :meth:`detect_gaps` plus :meth:`detect_edge_gaps`, sorted, with
+        touching or overlapping gaps merged (e.g. an empty panel edge
+        followed by NaN flux).
+        """
+        gaps = sorted(self.detect_gaps(threshold=threshold)
+                      + self.detect_edge_gaps(threshold=threshold))
+        merged: List[Tuple[float, float]] = []
+        for g_start, g_end in gaps:
+            if merged and g_start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], g_end))
+            else:
+                merged.append((g_start, g_end))
+        return merged
 
     def get_panel_data_with_gaps(
         self,
@@ -369,20 +432,25 @@ class SpectralPanel(BasePlot):
         showing the skipped wavelength range.
 
         Artists are tagged with :attr:`_GAP_TAG` so they can be removed
-        later with :meth:`remove_gap_indicators`.
+        later with :meth:`remove_gap_indicators`.  Their vertical
+        positions are in axes coordinates, so they stay in place when the
+        Y limits change afterwards.
 
         Parameters
         ----------
         gaps : list[tuple[float, float]], optional
-            Explicit gap list.  Defaults to :meth:`detect_gaps`.
+            Explicit gap list.  Defaults to :meth:`detect_display_gaps`
+            (gaps inside the data plus empty stretches at the panel edges).
         """
         ax = self.ax
         if ax is None:
             return
         if gaps is None:
-            gaps = self.detect_gaps()
+            gaps = self.detect_display_gaps()
         if not gaps:
             return
+        # x in data coordinates, y in axes coordinates (0 = bottom, 1 = top).
+        x_data_y_axes = ax.get_xaxis_transform()
 
         xr_lo, xr_hi = self.xlim
         bg = self._get_theme_value("background", "white")
@@ -397,8 +465,9 @@ class SpectralPanel(BasePlot):
 
         new_lo, new_hi = xr_lo, xr_hi
         edge_annotations: List[Tuple[str, float, str]] = []  # side, wave, label
+        edge_gaps = set()  # indices of gaps removed by tightening
 
-        for g_start, g_end in gaps:
+        for i, (g_start, g_end) in enumerate(gaps):
             if g_end < xr_lo or g_start > xr_hi:
                 continue
             touches_left = (g_start - tol) <= new_lo
@@ -409,11 +478,13 @@ class SpectralPanel(BasePlot):
                 new_lo = max(new_lo, g_end)
                 lbl = f"\u2702 {g_start:.3f}\u2013{g_end:.3f} \u03bcm"
                 edge_annotations.append(("left", new_lo, lbl))
+                edge_gaps.add(i)
             elif touches_right and not touches_left:
                 # Gap at the right edge: pull visible end before the gap
                 new_hi = min(new_hi, g_start)
                 lbl = f"\u2702 {g_start:.3f}\u2013{g_end:.3f} \u03bcm"
                 edge_annotations.append(("right", new_hi, lbl))
+                edge_gaps.add(i)
 
         # Add a small margin so data points don't sit on the axes edge.
         margin = (new_hi - new_lo) * 0.012
@@ -424,12 +495,12 @@ class SpectralPanel(BasePlot):
             ax.set_xlim(new_lo, new_hi)
 
         # Place small annotations at the edges that were tightened.
-        ylo, yhi = ax.get_ylim()
         for side, wave_pos, lbl in edge_annotations:
             ha = "left" if side == "left" else "right"
             x_pos = new_lo if side == "left" else new_hi
             txt = ax.text(
-                x_pos, yhi, lbl,
+                x_pos, 1.0, lbl,
+                transform=x_data_y_axes,
                 fontsize=4.5,
                 color=fg,
                 alpha=0.50,
@@ -444,10 +515,11 @@ class SpectralPanel(BasePlot):
         # Re-read the (potentially updated) xlim.
         vis_lo, vis_hi = ax.get_xlim()
 
-        for g_start, g_end in gaps:
-            # Skip gaps that are now entirely outside the visible range
-            # (including those collapsed by edge-tightening above).
-            if g_end <= vis_lo or g_start >= vis_hi:
+        for i, (g_start, g_end) in enumerate(gaps):
+            # Skip gaps removed by edge-tightening above (only the small
+            # margin of those is still visible) and gaps that are entirely
+            # outside the visible range.
+            if i in edge_gaps or g_end <= vis_lo or g_start >= vis_hi:
                 continue
 
             lo = max(g_start, vis_lo)
@@ -464,17 +536,17 @@ class SpectralPanel(BasePlot):
             )
             setattr(span, self._GAP_TAG, True)
 
-            # 2b. Diagonal break marks at each edge
-            ylo, yhi = ax.get_ylim()
-            y_range = yhi - ylo
+            # 2b. Diagonal break marks at each edge, poking 4 % of the
+            #     axes height out of the top and bottom
             break_width = (hi - lo) * 0.08
-            d = y_range * 0.04
+            d = 0.04
 
             for edge in (lo, hi):
                 bw = break_width if edge == lo else -break_width
                 line, = ax.plot(
                     [edge - bw, edge + bw],
-                    [ylo - d, yhi + d],
+                    [-d, 1.0 + d],
+                    transform=x_data_y_axes,
                     color="gray",
                     linewidth=1.2,
                     alpha=0.7,
@@ -485,10 +557,10 @@ class SpectralPanel(BasePlot):
 
             # 2c. Text annotation showing the skipped range
             mid_x = (lo + hi) / 2.0
-            mid_y = (ylo + yhi) / 2.0
             lbl = f"\u2702 {g_start:.3f}\u2013{g_end:.3f} \u03bcm"
             txt = ax.text(
-                mid_x, mid_y, lbl,
+                mid_x, 0.5, lbl,
+                transform=x_data_y_axes,
                 fontsize=5.5,
                 color=fg,
                 alpha=0.55,

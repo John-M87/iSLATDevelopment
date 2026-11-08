@@ -417,8 +417,9 @@ class TestCompactBar:
         labels = [win.display_menu.entrycget(i, "label")
                   for i in range(win.display_menu.index("end") + 1)
                   if win.display_menu.type(i) == "checkbutton"]
-        assert labels == ["Residuals", "Data Density X-Scale", "Atomic Lines", "Saved Lines",
-                          "Saved Line Labels", "Summed Spectrum", "Show Observed Data", "Legend"]
+        assert labels == ["Residuals", "Data Density X-Scale", "Skip Data Gaps", "Atomic Lines",
+                          "Saved Lines", "Saved Line Labels", "Summed Spectrum", "Show Observed Data",
+                          "Legend"]
         win.display_menu.invoke(labels.index("Show Observed Data") + 1)  # +1 for the separator
         assert win.toggle_state["observed"] is False
         assert not any(a.get_visible() for a in _tagged(win, "_islat_observed"))
@@ -430,6 +431,33 @@ class TestCompactBar:
         assert win.toggle_state["y_autoscale_source"] == "model"
         win.y_menu.invoke(0)
         assert win.toggle_state["y_autoscale"] is False
+
+
+class TestSkipGaps:
+    def test_display_menu_toggle(self, make_window, tmp_path):
+        from iSLAT.Modules.Plotting import GapMode
+        islat = _islat(tmp_path)
+        keep = ~((WAVE > 7.2) & (WAVE < 8.8))                  # no data from 7.2 to 8.8 um
+        islat.wave_data_original, islat.flux_data = WAVE[keep], FLUX[keep]
+        win, _ = make_window(islat)
+        win.n_panels_var.set("8")                              # 0.5 um panels over 6-10 um
+        win.apply_settings()
+        assert sorted(win.view._plot.subplots) == list(range(8))
+        index = next(i for i in range(win.display_menu.index("end") + 1)
+                     if win.display_menu.type(i) == "checkbutton"
+                     and win.display_menu.entrycget(i, "label") == "Skip Data Gaps")
+        win.display_menu.invoke(index)
+        assert win.toggle_state["skip_gaps"] is True
+        assert win.option_vars["skip_gaps"].get() is True
+        assert win.view._plot.gap_mode is GapMode.SKIP
+        assert sorted(win.view._plot.subplots) == [0, 1, 2, 5, 6, 7]   # 7.5-8.5 um left out
+        assert win.view.subplots[2].get_xlim()[1] < 7.3                 # empty right edge cropped
+        win.refresh_plot()
+        assert win.view._plot.gap_mode is GapMode.SKIP
+        win.set_skip_gaps(False)
+        assert win.view._plot.gap_mode is GapMode.CONNECT
+        assert sorted(win.view._plot.subplots) == list(range(8))
+        assert islat.GUI.plot.toggle_state.get("skip_gaps", False) is False   # window-only setting
 
 
 class TestPanelRanges:

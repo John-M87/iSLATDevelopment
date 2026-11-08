@@ -315,7 +315,8 @@ class TestControlsAndInteraction:
         assert isinstance(cp.get_field("n_panels"), EntryField)
         assert any(isinstance(f, DisplayRangeField) for f in cp.fields())
         tb_keys = [f.key for f in tb.fields()]
-        assert tb_keys == ["tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill", "tau_show_flux", "data_density"]
+        assert tb_keys == ["tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill", "tau_show_flux",
+                           "data_density", "skip_gaps"]
         assert all(isinstance(f, ToggleField) for f in tb.fields())
 
         log_field = tb.get_field("tau_log_scale")
@@ -410,6 +411,19 @@ class TestFluxPanels:
         expected = view._plot.compute_flux_ylims()
         for idx, ax in view._plot.get_flux_axes().items():
             assert ax.get_ylim() == pytest.approx(expected[idx])
+
+    def test_skip_gaps_reaches_live_and_exported_plots(self, with_flux):
+        from iSLAT.Modules.Plotting import GapMode
+        view, pm, islat, _mols = with_flux
+        view._set_skip_gaps(True)
+        assert pm.toggle_state["skip_gaps"] is True
+        assert view._plot.gap_mode is GapMode.SKIP
+        assert view._plot.get_flux_axes()                     # still rendered with flux panels
+        assert view._create_plot().gap_mode is GapMode.SKIP
+        wave = islat.wave_data_original
+        assert view._create_standalone_plot(wave, islat.flux_data, wave).gap_mode is GapMode.SKIP
+        view._set_skip_gaps(False)
+        assert view._plot.gap_mode is GapMode.CONNECT
 
     def test_autoscale_to_model(self, with_flux):
         view, pm, *_ = with_flux

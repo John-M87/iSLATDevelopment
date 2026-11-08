@@ -146,6 +146,7 @@ class OpticalDepthView(FullSpectrumView):
             figsize=self._compute_interactive_figsize(wave),
             theme=self._pm.theme,
             x_scaling=self._x_scaling(),
+            gap_mode=self._gap_mode(),
             **self._tau_plot_kwargs(),
         )
 
@@ -324,6 +325,7 @@ class OpticalDepthView(FullSpectrumView):
                     "ON:  equal data-point count per panel (DATA_DENSITY)."
                 ),
             ),
+            #self._skip_gaps_field(ToggleField),
         ], "top_bar")
 
     # ==================================================================
@@ -431,6 +433,7 @@ class OpticalDepthView(FullSpectrumView):
             theme=self._pm.theme,
             xlim_range=xlim_range,
             x_scaling=self._x_scaling(),
+            gap_mode=self._gap_mode(),
             **self._tau_plot_kwargs(),
         )
         if n_panels is not None:

@@ -724,10 +724,12 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
            to the parent by temporarily substituting plain-``Axes`` entries into ``self.subplots``.
         3. Clear and re-render each residual sub-panel with the updated residuals and recomputed y-limits.
 
-        Falls back to a full :meth:`generate_plot` if the subplot dict is empty or structurally mismatched.
+        Falls back to a full :meth:`generate_plot` if the subplot dict is empty or structurally mismatched,
+        and in ``GapMode.SKIP``: the gap markers span both sub-panels and the residual / text clean-up
+        below would remove them.
         """
         n = len(self._panel_edges)
-        if not self.subplots or len(self.subplots) != n:
+        if not self.subplots or len(self.subplots) != n or self.gap_mode is GapMode.SKIP:
             self.generate_plot()
             return
 
