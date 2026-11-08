@@ -17,7 +17,9 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List
 import numpy as np
 
 from .PlotView import PlotView
+from .ArtistTags import has_tagged, remove_molecule_lines
 from .BasePlot import BasePlot
+from .Theming import apply_canvas_theme
 from .SavedLineLabels import labels_visible
 from .ToggleMixin import ToggleMixin
 from .MainPlotGrid import MainPlotGrid
@@ -101,11 +103,8 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
     # Helpers (private, short-hand access to controller state)
     # ------------------------------------------------------------------
     def _has_tagged_artists(self, tag: str) -> bool:
-        """Return True if *ax1* contains any artist with the given tag."""
-        for artist in list(self.ax1.lines) + list(self.ax1.texts):
-            if hasattr(artist, tag):
-                return True
-        return False
+        """Return True if *ax1* contains any line or text with the given tag."""
+        return has_tagged(self.ax1, tag, collections=False, texts=True)
 
     def _ensure_grid(self) -> MainPlotGrid:
         """Return the composed :class:`MainPlotGrid`, creating it lazily.
@@ -220,12 +219,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         self._pm._apply_plot_theming()
 
         # Restyle canvas widget background
-        try:
-            self._canvas.get_tk_widget().configure(
-                bg=theme.get("background", "#181A1B")
-            )
-        except Exception:
-            pass
+        apply_canvas_theme(self._canvas, theme)
 
         self._canvas.draw_idle()
 
@@ -296,9 +290,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
                 self._grid.clear_all_molecule_lines()
             else:
                 # Grid not yet created - clear directly from ax1
-                for line in self._pm.ax1.lines[:]:
-                    if getattr(line, "_molecule_name", None) is not None:
-                        line.remove()
+                remove_molecule_lines(self._pm.ax1)
             self._canvas.draw_idle()
             return
 
@@ -536,9 +528,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         if self._grid is not None:
             self._grid.clear_all_molecule_lines()
         else:
-            for line in self._pm.ax1.lines[:]:
-                if getattr(line, "_molecule_name", None) is not None:
-                    line.remove()
+            remove_molecule_lines(self._pm.ax1)
 
         active_mol = getattr(self._islat, 'active_molecule', None)
         if (active_mol is not None

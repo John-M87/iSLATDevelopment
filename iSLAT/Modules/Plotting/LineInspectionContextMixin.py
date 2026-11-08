@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from .ArtistTags import SUMMED_TAG, iter_tagged
+from .ModelOverlays import draw_summed_fill
+
 class LineInspectionContextMixin:
     """Mixin that supplies the line inspection panel right-click menu.
 
@@ -41,7 +44,7 @@ class LineInspectionContextMixin:
         if insp_ax is None:
             return
 
-        existing = [c for c in insp_ax.collections if hasattr(c, '_islat_summed')]
+        existing = list(iter_tagged(insp_ax, SUMMED_TAG, lines=False))
         currently_visible = any(c.get_visible() for c in existing)
 
         if existing:
@@ -69,10 +72,7 @@ class LineInspectionContextMixin:
                 if hasattr(panel, '_plot_summed_spectrum'):
                     panel._plot_summed_spectrum(insp_ax, s_wave, s_flux, deduplicate=True)
                 else:
-                    fill = insp_ax.fill_between(s_wave, 0, s_flux,
-                                                color='lightgray', alpha=1.0,
-                                                label='Sum', zorder=1)
-                    fill._islat_summed = True
+                    draw_summed_fill(insp_ax, s_wave, s_flux, color='lightgray', zorder=1)
             except Exception:
                 return
 
@@ -181,10 +181,7 @@ class LineInspectionContextMixin:
         def _toggle_total_model():
             self._toggle_inspection_summed(insp_ax)
             # Reflect the new state in the menu label (best-effort).
-            existing = [
-                c for c in (insp_ax.collections if insp_ax is not None else [])
-                if hasattr(c, '_islat_summed')
-            ]
+            existing = [] if insp_ax is None else iter_tagged(insp_ax, SUMMED_TAG, lines=False)
             visible = any(c.get_visible() for c in existing)
             try:
                 idx = menu.index("Show Total Model" if visible else "Hide Total Model")
@@ -199,8 +196,7 @@ class LineInspectionContextMixin:
         menu.add_command(label="Save All Lines in Range", command=_save_all_lines_in_range)
 
         if insp_ax is not None:
-            existing = [c for c in insp_ax.collections if hasattr(c, '_islat_summed')]
-            summed_on = any(c.get_visible() for c in existing)
+            summed_on = any(c.get_visible() for c in iter_tagged(insp_ax, SUMMED_TAG, lines=False))
             menu.add_separator()
             menu.add_command(
                 label="Hide Total Model" if summed_on else "Show Total Model",

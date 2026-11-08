@@ -25,6 +25,7 @@ from .OpticalDepthPanel import (
     FRACTION_YLABEL_SHORT,
 )
 from .BasePlot import BasePlot
+from .ModelOverlays import build_molecule_traces, summed_model_flux
 
 if TYPE_CHECKING:
     from matplotlib.gridspec import SubplotSpec
@@ -231,46 +232,14 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
 
         *getter* is :meth:`BasePlot.get_molecule_tau_data` or
         :meth:`BasePlot.get_molecule_spectrum_data`.  Returns
-        ``(cache, mol_labels, mol_colors)`` where each *cache* entry is
+        ``(cache, mol_labels, mol_colors)`` where each *cache* entry is a
+        :class:`~iSLAT.Modules.Plotting.ModelOverlays.MoleculeTrace`
         ``(wavelengths, values, color, label, name)``.
         """
-        cache: List[tuple] = []
-        labels: List[str] = []
-        colors: List[str] = []
-        if self.molecules is None:
-            return cache, labels, colors
-
-        visible = self.molecules.get_visible_molecules(return_objects=True)
-        labels = [self.get_molecule_display_name(m) for m in visible]
-        colors = [self.get_molecule_color(m) for m in visible]
-
-        use_interp = False
-        target_wave = None
-        ref_wave = getattr(self, "wave_data_obs", self.wave_data)
-        if ref_wave is not None and hasattr(
-            self.molecules, "get_matched_sampling_wavelengths"
-        ):
-            use_interp, target_wave = (
-                self.molecules.get_matched_sampling_wavelengths(ref_wave)
-            )
-            if not use_interp:
-                target_wave = None
-
-        for mol in visible:
-            lam, values = getter(
-                mol, self.wave_data,
-                interpolate_to_input=use_interp,
-                target_wavelengths=target_wave,
-                extend_to_range=True,
-            )
-            if lam is not None and values is not None and len(values) > 0:
-                cache.append((
-                    lam, values,
-                    self.get_molecule_color(mol),
-                    self.get_molecule_display_name(mol),
-                    getattr(mol, "name", "unknown"),
-                ))
-        return cache, labels, colors
+        return build_molecule_traces(
+            self.molecules, self.wave_data, getter,
+            getattr(self, "wave_data_obs", self.wave_data),
+        )
 
     def _build_mol_tau_cache(
         self,
@@ -294,14 +263,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
 
     def _summed_model_flux(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Return the visible molecules' summed model ``(wave, flux)``, or ``(None, None)``."""
-        if self.molecules is None:
-            return None, None
-        try:
-            return self.molecules.get_summed_flux(
-                self.wave_data_obs, visible_only=True, extend_to_global_range=True,
-            )
-        except Exception:
-            return None, None
+        return summed_model_flux(self.molecules, self.wave_data_obs)
 
     # ------------------------------------------------------------------
     # Y-limit functions

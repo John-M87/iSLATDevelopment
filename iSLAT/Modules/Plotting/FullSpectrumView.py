@@ -36,7 +36,13 @@ from .ResidualSpectrumPlot import ResidualSpectrumPlot
 from .SampleStackPlot import (
     SampleStackPlot, normalize_stack_layout, normalize_stack_model_mode,
 )
+from .ArtistTags import (
+    OBSERVED_TAG, SUMMED_TAG,
+    remove_molecule_lines, remove_tagged, set_molecule_visible, set_tagged_visible,
+)
 from .BasePlot import BasePlot
+from .ModelOverlays import draw_summed_fill, plot_molecule_trace
+from .Theming import apply_canvas_theme
 from .ToggleMixin import ToggleMixin
 from .SpectralPanel import GapMode
 
@@ -1243,12 +1249,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
             self._plot.theme = theme
             self._plot.apply_theme_to_figure()
         if self._canvas is not None:
-            try:
-                self._canvas.get_tk_widget().configure(
-                    bg=theme.get("background", "#181A1B")
-                )
-            except Exception:
-                pass
+            apply_canvas_theme(self._canvas, theme)
             self._canvas.draw_idle()
 
     # ==================================================================
@@ -1356,21 +1357,11 @@ class FullSpectrumView(ToggleMixin, PlotView):
 
         Returns ``True`` if at least one artist was found and toggled.
         """
-        found = False
-        for line in ax.lines:
-            if getattr(line, "_molecule_name", None) == molecule_name:
-                line.set_visible(is_visible)
-                found = True
-        return found
+        return set_molecule_visible(ax, molecule_name, is_visible)
 
     def _remove_molecule_lines(self, molecule_name: str, ax: "Axes") -> None:
         """Remove all Line2D artists tagged with *molecule_name* from *ax*."""
-        to_remove = [
-            line for line in ax.lines
-            if getattr(line, "_molecule_name", None) == molecule_name
-        ]
-        for line in to_remove:
-            line.remove()
+        remove_molecule_lines(ax, molecule_name)
 
     def _render_molecule_spectrum(
         self, molecule: "Molecule", wave_data: "np.ndarray", ax: "Axes"
@@ -1383,34 +1374,27 @@ class FullSpectrumView(ToggleMixin, PlotView):
             return
         # Delegate to FullSpectrumPlot's mol-cache helper so color/style
         # stays consistent with the rest of the composed plot.
-        # _build_mol_cache returns a list of (lam, flux, color, label, name) tuples;
-        # convert to a dict keyed by name for O(1) lookup.
+        # _build_mol_cache returns (lam, flux, color, label, name) traces;
+        # key them by name for O(1) lookup.
         mol_cache_list, _labels, _colors = self._plot._build_mol_cache()
-        mol_cache = {tup[4]: tup[:4] for tup in mol_cache_list}
-        entry = mol_cache.get(getattr(molecule, "name", None))
-        if entry is None:
+        mol_cache = {trace[4]: trace for trace in mol_cache_list}
+        trace = mol_cache.get(getattr(molecule, "name", None))
+        if trace is None:
             # Molecule not in cache - trigger a full inplace refresh instead.
             self._plot.update_panels_inplace()
             self._reapply_display_state(self._pm.toggle_state)
             if self._canvas is not None:
                 self._canvas.draw_idle()
             return
-        m_lam, m_flux, m_color, m_label = entry
-        xlim = ax.get_xlim()
-        m_mask = (m_lam >= xlim[0]) & (m_lam <= xlim[1])
-        if np.any(m_mask):
-            line, = ax.plot(
-                m_lam[m_mask], m_flux[m_mask],
-                linestyle="--", color=m_color,
-                alpha=self._plot._get_theme_value("full_spectrum_model_alpha", 0.8),
-                linewidth=self._plot.get_molecule_linewidth(
-                    molecule,
-                    self._plot._get_theme_value("full_spectrum_model_linewidth", 0.8),
-                ),
-                label=m_label,
-                zorder=self._plot._get_theme_value("zorder_model", 3),
-            )
-            line._molecule_name = getattr(molecule, "name", None)
+        plot_molecule_trace(
+            ax, trace, ax.get_xlim(),
+            linewidth=self._plot.get_molecule_linewidth(
+                molecule,
+                self._plot._get_theme_value("full_spectrum_model_linewidth", 0.8),
+            ),
+            alpha=self._plot._get_theme_value("full_spectrum_model_alpha", 0.8),
+            zorder=self._plot._get_theme_value("zorder_model", 3),
+        )
 
     # ------------------------------------------------------------------
     def on_molecule_visibility_changed(
@@ -1492,19 +1476,14 @@ class FullSpectrumView(ToggleMixin, PlotView):
             )
 
             for ax in primary_axes:
-                for coll in ax.collections[:]:
-                    if hasattr(coll, "_islat_summed"):
-                        coll.remove()
-                xlim = ax.get_xlim()
-                mask = (summed_wavelengths >= xlim[0]) & (summed_wavelengths <= xlim[1])
-                if np.any(mask) and np.any(summed_flux[mask] > 0):
-                    fill = ax.fill_between(
-                        summed_wavelengths[mask], 0, summed_flux[mask],
-                        color=self._plot._get_theme_value("summed_spectra_color", "lightgray"),
-                        alpha=1.0, label="Sum",
-                        zorder=self._plot._get_theme_value("zorder_summed", 1),
-                    )
-                    fill._islat_summed = True
+                remove_tagged(ax, SUMMED_TAG, lines=False)
+                fill = draw_summed_fill(
+                    ax, summed_wavelengths, summed_flux,
+                    color=self._plot._get_theme_value("summed_spectra_color", "lightgray"),
+                    zorder=self._plot._get_theme_value("zorder_summed", 1),
+                    xr=ax.get_xlim(),
+                )
+                if fill is not None:
                     fill.set_visible(summed_visible)
 
         # 3. Rebuild legend
@@ -1759,14 +1738,12 @@ class FullSpectrumView(ToggleMixin, PlotView):
         # Safety net for factory overrides whose plot ignores display_options:
         # hide toggled-off artists on every axes (idempotent for FullSpectrumPlot).
         hidden_tags = [
-            tag for tag, key in (("_islat_summed", "summed"), ("_islat_observed", "observed"))
+            tag for tag, key in ((SUMMED_TAG, "summed"), (OBSERVED_TAG, "observed"))
             if not ts.get(key, True)
         ]
         if hidden_tags:
             for ax in standalone.fig.axes:
-                for art in list(ax.lines) + list(ax.collections):
-                    if any(hasattr(art, tag) for tag in hidden_tags):
-                        art.set_visible(False)
+                set_tagged_visible(ax, hidden_tags, False)
 
         if rasterized:
             for ax in standalone.fig.axes:

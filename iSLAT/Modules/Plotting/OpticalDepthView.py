@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
+from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_tagged, set_tagged_visible
 from .FullSpectrumView import FullSpectrumView, draw_toggle_state_markers
 from .PlotView import (
     PlotView, data_synced_y_limits, fit_y_limits_to_data, fit_y_limits_to_model,
@@ -221,9 +222,7 @@ class OpticalDepthView(FullSpectrumView):
         """*Total Model* shows / hides the "Total τ" line and the flux sub-panels' summed fill."""
         super()._set_summed_visibility(visible)
         for ax in self._iter_toggle_axes():
-            for line in ax.lines:
-                if hasattr(line, TOTAL_TAU_TAG):
-                    line.set_visible(visible)
+            set_tagged_visible(ax, TOTAL_TAU_TAG, visible, collections=False)
 
     def toggle_residuals(self, show: bool) -> None:
         """No-op - residuals belong to the flux spectrum."""
@@ -410,9 +409,8 @@ class OpticalDepthView(FullSpectrumView):
             return
         fg = theme.get("foreground", "black")
         for ax in self._iter_all_axes():
-            for line in ax.lines:
-                if hasattr(line, TOTAL_TAU_TAG):
-                    line.set_color(fg)
+            for line in iter_tagged(ax, TOTAL_TAU_TAG, collections=False):
+                line.set_color(fg)
 
     # ==================================================================
     # File output
@@ -458,9 +456,7 @@ class OpticalDepthView(FullSpectrumView):
             return
         if not ts.get("observed", True):
             for ax in flux_axes:
-                for art in list(ax.lines) + list(ax.collections):
-                    if hasattr(art, "_islat_observed"):
-                        art.set_visible(False)
+                set_tagged_visible(ax, OBSERVED_TAG, False)
         manual = ts.get("y_limits")
         sync = normalize_y_data_sync(ts.get("y_data_sync"))
         if not ts.get("y_autoscale", True):
@@ -525,9 +521,7 @@ class OpticalDepthView(FullSpectrumView):
 
             if not ts.get("summed", True):
                 for ax in standalone.fig.axes:
-                    for art in list(ax.lines) + list(ax.collections):
-                        if hasattr(art, TOTAL_TAU_TAG) or hasattr(art, "_islat_summed"):
-                            art.set_visible(False)
+                    set_tagged_visible(ax, (TOTAL_TAU_TAG, SUMMED_TAG), False)
             self._apply_flux_display_state(standalone, ts)
             if not ts.get("legend", True) and standalone._legend_axes is not None:
                 standalone.legend_strategy.update_visibility(standalone._legend_axes, False)

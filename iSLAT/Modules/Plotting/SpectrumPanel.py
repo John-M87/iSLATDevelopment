@@ -12,6 +12,7 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 
 from .SpectralPanel import SpectralPanel, GapMode
+from .ModelOverlays import draw_molecule_traces, draw_summed_fill
 
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
@@ -105,28 +106,12 @@ class SpectrumPanel(SpectralPanel):
 
         # -- Molecule models (slice pre-computed cache) -----------------
         base_model_linewidth = kwargs.get("model_linewidth", self._get_theme_value("model_linewidth", 1.2))
-        for m_lam, m_flux, m_color, m_label, m_name in self.mol_cache:
-            m_mask = (m_lam >= xr[0]) & (m_lam <= xr[1])
-            if np.any(m_mask):
-                (line,) = ax.plot(
-                    m_lam[m_mask],
-                    m_flux[m_mask],
-                    linestyle="--",
-                    color=m_color,
-                    alpha = kwargs.get("model_alpha", self._get_theme_value("model_alpha", 1.0)),
-                    linewidth=self.get_molecule_linewidth_by_name(m_name, base_model_linewidth),
-                    #alpha=self._get_theme_value(
-                    #    #"full_spectrum_model_alpha", 0.8
-                    #    "model_alpha", 1.0
-                    #),
-                    #linewidth=self._get_theme_value(
-                    #    #"full_spectrum_model_linewidth", 0.8
-                    #    "model_linewidth", 1.2
-                    #),
-                    label=m_label,
-                    zorder=self._get_theme_value("zorder_model", 3),
-                )
-                line._molecule_name = m_name
+        draw_molecule_traces(
+            ax, self.mol_cache, xr,
+            alpha=kwargs.get("model_alpha", self._get_theme_value("model_alpha", 1.0)),
+            zorder=self._get_theme_value("zorder_model", 3),
+            linewidth_for=lambda name: self.get_molecule_linewidth_by_name(name, base_model_linewidth),
+        )
 
         # -- Summed spectrum fill ---------------------------------------
         if self.summed_wave is not None and self.summed_flux is not None:
@@ -223,20 +208,13 @@ class SpectrumPanel(SpectralPanel):
             When *True*, remove any existing ``_islat_summed``-tagged
             collections before plotting a new fill.
         """
-        from .BasePlot import BasePlot
-        if summed_flux is None or len(summed_flux) == 0:
-            return
-        if not np.any(summed_flux > 0):
-            return
-        if deduplicate:
-            BasePlot._clear_tagged_artists(ax, "_islat_summed", lines=False)
-        fill_color = color or self._get_theme_value("summed_spectra_color", "lightgray")
-        fill = ax.fill_between(
-            wave_data, 0, summed_flux,
-            color=fill_color, alpha=1.0, label=label,
+        draw_summed_fill(
+            ax, wave_data, summed_flux,
+            color=color or self._get_theme_value("summed_spectra_color", "lightgray"),
             zorder=self._get_theme_value("zorder_summed", 1),
+            label=label,
+            replace=deduplicate,
         )
-        fill._islat_summed = True
 
     def _plot_molecule_spectrum(
         self,

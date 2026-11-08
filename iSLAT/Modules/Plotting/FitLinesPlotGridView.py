@@ -21,10 +21,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .PlotView import PlotView
+from .ArtistTags import MOLECULE_TAG, SUMMED_TAG, iter_tagged, set_tagged_visible
 from .BasePlot import BasePlot
+from .ModelOverlays import MoleculeTrace, plot_molecule_trace
 from .SavedLineLabels import labels_visible
+from .Theming import apply_figure_theme
 from .FitLinesPlotGrid import FitLinesPlotGrid
 
 if TYPE_CHECKING:
@@ -234,19 +238,7 @@ class FitLinesPlotGridView(PlotView):
 
     def _apply_theme_to_fig(self, fig: "Figure") -> None:
         """Apply the controller's current theme to *fig*."""
-        theme = self._pm.theme
-        bg = theme.get("background", "#181A1B")
-        fg = theme.get("foreground", "#F0F0F0")
-
-        fig.patch.set_facecolor(bg)
-        for ax in fig.axes:
-            ax.set_facecolor(theme.get("axes_background", bg))
-            ax.tick_params(colors=fg)
-            ax.xaxis.label.set_color(fg)
-            ax.yaxis.label.set_color(fg)
-            ax.title.set_color(fg)
-            for spine in ax.spines.values():
-                spine.set_edgecolor(fg)
+        apply_figure_theme(fig, self._pm.theme)
 
     def _teardown_display(self) -> None:
         """Destroy all Tk widgets owned by this view."""
@@ -511,8 +503,6 @@ class FitLinesPlotGridView(PlotView):
         Mirrors the ``mol_cache`` rendering loop inside :meth:`SpectrumPanel.generate_plot` so that overlays are consistent in style.
         Each plotted artist is tagged with ``._molecule_name`` so it can be found by :meth:`_remove_model_line_overlays`.
         """
-        import numpy as np
-
         mols_dict = getattr(self._islat, "molecules_dict", None)
         if mols_dict is None:
             return
@@ -528,7 +518,6 @@ class FitLinesPlotGridView(PlotView):
                 xlim = getattr(panel, "xlim", None)
                 if xlim is None:
                     continue
-                xmin, xmax = xlim
                 for mol_name in visible_names:
                     mol = mols_dict.get(mol_name)
                     if mol is None:
@@ -537,20 +526,15 @@ class FitLinesPlotGridView(PlotView):
                         lam, flux = mol.get_flux(return_wavelengths=True)
                     except Exception:
                         continue
-                    mask = (lam >= xmin) & (lam <= xmax)
-                    if not np.any(mask):
-                        continue
-                    (line,) = ax.plot(
-                        lam[mask],
-                        flux[mask],
-                        linestyle="--",
-                        color=getattr(mol, "color", None),
-                        alpha=0.8,
-                        linewidth=BasePlot.get_molecule_linewidth(mol, 0.8),
-                        label=getattr(mol, "displaylabel", mol_name),
-                        zorder=3,
+                    trace = MoleculeTrace(
+                        lam, flux, getattr(mol, "color", None),
+                        getattr(mol, "displaylabel", mol_name), mol_name,
                     )
-                    line._molecule_name = mol_name  # type: ignore[attr-defined]
+                    plot_molecule_trace(
+                        ax, trace, xlim,
+                        linewidth=BasePlot.get_molecule_linewidth(mol, 0.8),
+                        alpha=0.8, zorder=3,
+                    )
 
     def _remove_model_line_overlays(self) -> None:
         """Remove all molecule model line artists previously added by
@@ -560,11 +544,7 @@ class FitLinesPlotGridView(PlotView):
                 ax = getattr(panel, "ax", None)
                 if ax is None:
                     continue
-                to_remove = [
-                    line for line in ax.lines
-                    if hasattr(line, "_molecule_name")
-                ]
-                for line in to_remove:
+                for line in iter_tagged(ax, MOLECULE_TAG, collections=False):
                     try:
                         line.remove()
                     except Exception:
@@ -982,7 +962,6 @@ class FitLinesPlotGridView(PlotView):
 
     def toggle_summed_spectrum(self, visible: bool) -> None:
         """Show or hide the summed model fill on all fit-lines panel axes."""
-        import numpy as _np
         if not self._plot_grids:
             return
 
@@ -1009,11 +988,9 @@ class FitLinesPlotGridView(PlotView):
                     )
 
             for ax, panel in all_axes:
-                existing = [c for c in ax.collections if hasattr(c, "_islat_summed")]
-                if existing:
-                    for coll in existing:
-                        coll.set_visible(True)
-                elif s_wave is not None and s_flux is not None:
+                if set_tagged_visible(ax, SUMMED_TAG, True, lines=False):
+                    continue
+                if s_wave is not None and s_flux is not None:
                     # Render the fill into this panel's range
                     xlim = getattr(panel, "xlim", None)
                     if xlim is None:
@@ -1022,7 +999,7 @@ class FitLinesPlotGridView(PlotView):
                             xlim = (float(xdata[0]), float(xdata[-1]))
                     if xlim is not None:
                         mask = (s_wave >= xlim[0]) & (s_wave <= xlim[1])
-                        if _np.any(mask):
+                        if np.any(mask):
                             try:
                                 panel._plot_summed_spectrum(
                                     ax, s_wave[mask], s_flux[mask], deduplicate=True
@@ -1034,9 +1011,7 @@ class FitLinesPlotGridView(PlotView):
                                 )
         else:
             for ax, _ in all_axes:
-                for coll in ax.collections:
-                    if hasattr(coll, "_islat_summed"):
-                        coll.set_visible(False)
+                set_tagged_visible(ax, SUMMED_TAG, False, lines=False)
 
         self.draw()
 
@@ -1061,7 +1036,7 @@ class FitLinesPlotGridView(PlotView):
                 ax = getattr(panel, "ax", None)
                 if ax is None:
                     continue
-                for coll in [c for c in ax.collections if hasattr(c, "_islat_summed")]:
+                for coll in iter_tagged(ax, SUMMED_TAG, lines=False):
                     try:
                         coll.remove()
                     except Exception:

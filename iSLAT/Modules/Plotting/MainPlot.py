@@ -10,8 +10,9 @@ from typing import Optional, List, Tuple, Any, TYPE_CHECKING
 
 import iSLAT.Constants as c
 
-from .BasePlot import BasePlot
+from .LegendStrategy import StandardLegend
 from .MainPlotGrid import MainPlotGrid
+from .Theming import apply_canvas_theme, apply_figure_theme
 from .PlotView import (
     PlotView, WavelengthMarkerStoreMixin, data_synced_y_limits, data_y_range,
     fit_y_limits_to_data, normalize_y_data_sync,
@@ -287,25 +288,18 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         """Apply theme colors to matplotlib figure, axes, data artists, and toolbar.
 
         Delegates figure/axes background and data-artist re-coloring to
-        :meth:`BasePlot.apply_theme_to_figure` via the three-panel-view's
-        grid (if available) and adds GUI-specific extras on top:
-        canvas widget background, toolbar, legend frame coloring, grid
-        lines, and ``axis_text_label_color`` support.
+        :func:`~iSLAT.Modules.Plotting.Theming.apply_figure_theme` (with the
+        three-panel-view's grid legend strategy when the grid exists) and
+        adds GUI-specific extras on top: canvas widget background, toolbar,
+        legend frame coloring, grid lines, and ``axis_text_label_color`` support.
         """
         try:
-            # --- Common figure/axes/artist theming via BasePlot ----------
-            # Obtain a BasePlot-capable object to call apply_theme_to_figure.
-            # Prefer the grid (already themed) to avoid creating a proxy.
+            # --- Common figure/axes/artist theming -----------------------
             grid = getattr(self._three_panel_view, '_grid', None)
             if grid is not None:
                 grid.theme = self.theme
-                grid.apply_theme_to_figure(self.fig)
-            else:
-                # Grid not yet created - use a lightweight proxy.
-                class _ThemeProxy(BasePlot):
-                    def generate_plot(self, **kw): pass
-                proxy = _ThemeProxy(fig=self.fig, theme=self.theme)
-                proxy.apply_theme_to_figure(self.fig)
+            legend_strategy = grid.legend_strategy if grid is not None else StandardLegend()
+            apply_figure_theme(self.fig, self.theme, legend_strategy)
 
             # --- GUI-specific extras ------------------------------------
             # Some GUI themes define 'axis_text_label_color' which is
@@ -329,11 +323,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
                     ax.grid(True, color=label_color, alpha=0.3, linestyle='-', linewidth=0.5)
 
             # Canvas widget background
-            if hasattr(self.canvas.get_tk_widget(), 'configure'):
-                try:
-                    self.canvas.get_tk_widget().configure(bg=self.theme.get("background", "#181A1B"))
-                except Exception:
-                    pass
+            apply_canvas_theme(self.canvas, self.theme)
 
             # Legend frame / text coloring
             for ax in [self.ax1, self.ax2, self.ax3]:

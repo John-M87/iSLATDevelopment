@@ -22,7 +22,29 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure as MplFigure
 
+from .ArtistTags import remove_tagged
 from .BasePlot import BasePlot
+
+#: Lower y limit of a spectrum panel (a little below zero flux).
+PANEL_YMIN: float = -0.005
+#: Y limits of a spectrum panel without finite data.
+EMPTY_PANEL_YLIM: Tuple[float, float] = (PANEL_YMIN, 0.1)
+
+
+def peak_ylim(flux: np.ndarray, ymax_factor: float = 0.2) -> Tuple[float, float]:
+    """Default spectrum-panel y limits: just below zero up to the peak plus headroom.
+
+    *flux* are the values in the panel; non-finite ones are ignored.  The
+    top is ``peak * (1 + ymax_factor)``.  Without finite values the limits
+    are :data:`EMPTY_PANEL_YLIM`.
+    """
+    flux = np.asarray(flux)
+    finite = flux[np.isfinite(flux)]
+    if finite.size == 0:
+        return EMPTY_PANEL_YLIM
+    peak = float(np.max(finite))
+    return (PANEL_YMIN, peak + peak * ymax_factor)
+
 
 class GapMode(Enum):
     """Strategy for handling gaps in observed wavelength/flux data.
@@ -200,13 +222,7 @@ class SpectralPanel(BasePlot):
         -------
         tuple[float, float]
         """
-        mask = self.get_panel_mask()
-        if np.any(mask):
-            finite = np.isfinite(self.flux_data[mask])
-            if np.any(finite):
-                peak = float(np.nanmax(self.flux_data[mask][finite]))
-                return (-0.005, peak + peak * ymax_factor)
-        return (-0.005, 0.1)
+        return peak_ylim(self.flux_data[self.get_panel_mask()], ymax_factor)
 
     # ------------------------------------------------------------------
     # Gap detection and handling
@@ -585,12 +601,7 @@ class SpectralPanel(BasePlot):
             return
         # The gap indicators include patches (axvspan), lines (break
         # marks), and texts (wavelength annotations).
-        self._clear_tagged_artists(
-            ax, self._GAP_TAG, lines=True, collections=True, texts=True,
-        )
-        for artist in ax.patches[:]:
-            if hasattr(artist, self._GAP_TAG):
-                artist.remove()
+        remove_tagged(ax, self._GAP_TAG, texts=True, patches=True)
 
     # ------------------------------------------------------------------
     # Post-render annotation helpers

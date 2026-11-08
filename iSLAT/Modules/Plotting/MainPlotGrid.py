@@ -17,8 +17,14 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
+from .ArtistTags import (
+    SUMMED_TAG, iter_molecule_lines, remove_molecule_lines, remove_tagged, set_molecule_visible,
+)
 from .BasePlot import BasePlot
 from .CompositePlot import CompositePlot
+from .ModelOverlays import (
+    build_molecule_traces, draw_summed_fill, resolve_matched_sampling, summed_model_flux,
+)
 from .LineInspectionPlot import LineInspectionPlot
 from .PopulationDiagramPlot import PopulationDiagramPlot
 from .SpectrumPanel import SpectrumPanel
@@ -305,47 +311,13 @@ class MainPlotGrid(CompositePlot):
 
         # Build the molecule cache (list of pre-computed spectra) so that
         # SpectrumPanel can slice into it without recomputing molecule data.
-        mol_cache: List[tuple] = []
-        summed_wave: Optional[np.ndarray] = None
-        summed_flux: Optional[np.ndarray] = None
-        if self.molecules is not None:
-            # Resolve the "match spectral sampling" (pixel-res) toggle the
-            # same way FullSpectrumPlot._build_mol_cache() does, so that
-            # individual molecule lines honor it just like the summed fill
-            # (get_summed_flux already applies this internally).
-            use_interp = False
-            target_wave = None
-            ref_wave = self.wave_data_obs if self.wave_data_obs is not None else self.wave_data
-            if ref_wave is not None and hasattr(self.molecules, 'get_matched_sampling_wavelengths'):
-                use_interp, target_wave = self.molecules.get_matched_sampling_wavelengths(ref_wave)
-                if not use_interp:
-                    target_wave = None
-
-            for mol in self.molecules.get_visible_molecules(return_objects=True):
-                try:
-                    lam, flux = self.get_molecule_spectrum_data(
-                        mol, self.wave_data,
-                        interpolate_to_input=use_interp,
-                        target_wavelengths=target_wave,
-                        extend_to_range=True,
-                    )
-                    if lam is not None and flux is not None and len(flux) > 0:
-                        mol_cache.append((
-                            np.asarray(lam),
-                            np.asarray(flux),
-                            self.get_molecule_color(mol),
-                            self.get_molecule_display_name(mol),
-                            getattr(mol, "name", "unknown"),
-                        ))
-                except Exception:
-                    pass
-            try:
-                summed_wave, summed_flux = self.molecules.get_summed_flux(
-                    self.wave_data_obs, visible_only=True,
-                    extend_to_global_range=True,
-                )
-            except Exception:
-                pass
+        # The individual molecule lines honor "match spectral sampling" just
+        # like the summed fill (get_summed_flux applies it internally).
+        mol_cache, _labels, _colors = build_molecule_traces(
+            self.molecules, self.wave_data, self.get_molecule_spectrum_data,
+            self.wave_data_obs, skip_errors=True,
+        )
+        summed_wave, summed_flux = summed_model_flux(self.molecules, self.wave_data_obs)
 
         # Create the SpectrumPanel on the first call; on subsequent calls
         # mutate its data attributes so no artists are rebuilt from scratch.
@@ -671,12 +643,7 @@ class MainPlotGrid(CompositePlot):
         target = ax if ax is not None else self.ax_spectrum
         if target is None:
             return False
-        found = False
-        for line in target.lines:
-            if getattr(line, "_molecule_name", None) == molecule_name:
-                line.set_visible(visible)
-                found = True
-        return found
+        return set_molecule_visible(target, molecule_name, visible)
 
     def remove_molecule_lines(
         self,
@@ -695,9 +662,7 @@ class MainPlotGrid(CompositePlot):
         target = ax if ax is not None else self.ax_spectrum
         if target is None:
             return
-        for line in target.lines[:]:
-            if getattr(line, "_molecule_name", None) == molecule_name:
-                line.remove()
+        remove_molecule_lines(target, molecule_name)
 
     def clear_all_molecule_lines(self, ax: Optional[Axes] = None) -> None:
         """Remove every molecule-tagged ``Line2D`` from *ax*.
@@ -710,9 +675,7 @@ class MainPlotGrid(CompositePlot):
         target = ax if ax is not None else self.ax_spectrum
         if target is None:
             return
-        for line in target.lines[:]:
-            if getattr(line, "_molecule_name", None) is not None:
-                line.remove()
+        remove_molecule_lines(target)
 
     @property
     def _pdp(self) -> Optional["PopulationDiagramPlot"]:
@@ -771,9 +734,8 @@ class MainPlotGrid(CompositePlot):
                 getattr(m, "name", None)
                 for m in self.molecules.get_visible_molecules(return_objects=True)
             }
-            for line in ax.lines[:]:
-                name = getattr(line, "_molecule_name", None)
-                if name is not None and name not in visible_names:
+            for line in iter_molecule_lines(ax):
+                if line._molecule_name not in visible_names:
                     line.remove()
 
         # Rebuild legend
@@ -789,32 +751,24 @@ class MainPlotGrid(CompositePlot):
         if ax is None:
             return
 
-        # Remove old summed fill via BasePlot static helper
-        from .BasePlot import BasePlot
-        BasePlot._clear_tagged_artists(ax, "_islat_summed", lines=False)
+        remove_tagged(ax, SUMMED_TAG, lines=False)
 
         if self.molecules is None:
             return
+        s_wave, s_flux = summed_model_flux(self.molecules, self.wave_data_obs)
         try:
-            s_wave, s_flux = self.molecules.get_summed_flux(
-                self.wave_data_obs, visible_only=True,
-                extend_to_global_range=True,
-            )
-            if s_wave is not None and len(s_flux) > 0 and np.any(s_flux > 0):
-                # Delegate to SpectrumPanel which owns _plot_summed_spectrum
-                if self.spectrum_panel is not None:
-                    self.spectrum_panel._plot_summed_spectrum(
-                        ax, s_wave, s_flux, deduplicate=True,
-                    )
-                else:
-                    # Fallback: minimal inline fill (spectrum_panel not yet created)
-                    fill_color = self._get_theme_value("summed_spectra_color", "lightgray")
-                    fill = ax.fill_between(
-                        s_wave, 0, s_flux,
-                        color=fill_color, alpha=1.0, label="Sum",
-                        zorder=self._get_theme_value("zorder_summed", 1),
-                    )
-                    fill._islat_summed = True
+            if self.spectrum_panel is not None:
+                # SpectrumPanel owns the summed-fill styling.
+                self.spectrum_panel._plot_summed_spectrum(
+                    ax, s_wave, s_flux, deduplicate=True,
+                )
+            else:
+                # spectrum_panel not created yet: style from this grid's theme.
+                draw_summed_fill(
+                    ax, s_wave, s_flux,
+                    color=self._get_theme_value("summed_spectra_color", "lightgray"),
+                    zorder=self._get_theme_value("zorder_summed", 1),
+                )
         except Exception:
             pass
 
@@ -960,14 +914,9 @@ class MainPlotGrid(CompositePlot):
 
         # Overlay additional (comparison) molecules in their own colors
         if additional_molecules:
-            use_interp = False
-            target_wave = None
-            if molecules is not None and hasattr(molecules, 'get_matched_sampling_wavelengths'):
-                use_interp, target_wave = molecules.get_matched_sampling_wavelengths(
-                    wave_data_obs if wave_data_obs is not None else wave_data
-                )
-                if not use_interp:
-                    target_wave = None
+            use_interp, target_wave = resolve_matched_sampling(
+                molecules, wave_data_obs if wave_data_obs is not None else wave_data,
+            )
             for mol in additional_molecules:
                 if mol is not None:
                     self.inspection_panel._overlay_molecule(ax, mol, use_interp, target_wave)

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 
+from .ArtistTags import SUMMED_TAG, iter_tagged, remove_tagged
 from .SpectrumPanelView import SpectrumPanelView
 from .LineInspectionPlot import LineInspectionPlot
 from .LineInspectionContextMixin import LineInspectionContextMixin
@@ -216,8 +217,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         if mols is None or wave is None or len(wave) == 0:
             return
         try:
-            from .BasePlot import BasePlot
-            BasePlot._clear_tagged_artists(ax, "_islat_summed", lines=False)
+            remove_tagged(ax, SUMMED_TAG, lines=False)
             import numpy as _np
             s_wave, s_flux = mols.get_summed_flux(wave)
             if s_wave is not None and len(s_wave) > 0:
@@ -239,7 +239,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         if ax is None:
             return
         # Check if we already have the fill rendered
-        existing = [c for c in ax.collections if hasattr(c, '_islat_summed')]
+        existing = list(iter_tagged(ax, SUMMED_TAG, lines=False))
         if visible and not existing:
             # Need to render it first
             self._render_summed_overlay()

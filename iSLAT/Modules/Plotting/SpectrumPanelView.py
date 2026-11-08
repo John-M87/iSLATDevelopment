@@ -19,6 +19,7 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 from .PlotView import PlotView
+from .Theming import apply_canvas_theme, apply_figure_theme
 
 if TYPE_CHECKING:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -123,28 +124,10 @@ class SpectrumPanelView(PlotView):
 
     def _apply_theme_to_fig(self) -> None:
         """Apply ``self._pm.theme`` to the owned figure and canvas widget."""
-        theme = self._pm.theme
-        bg = theme.get("background", "#181A1B")
-        fg = theme.get("foreground", "#F0F0F0")
-
         if self._fig is None:
             return
-
-        self._fig.patch.set_facecolor(bg)
-        for ax in self._fig.axes:
-            ax.set_facecolor(theme.get("axes_background", bg))
-            ax.tick_params(colors=fg)
-            ax.xaxis.label.set_color(fg)
-            ax.yaxis.label.set_color(fg)
-            ax.title.set_color(fg)
-            for spine in ax.spines.values():
-                spine.set_edgecolor(fg)
-
-        if self._canvas is not None:
-            try:
-                self._canvas.get_tk_widget().configure(bg=bg)
-            except Exception:
-                pass
+        apply_figure_theme(self._fig, self._pm.theme)
+        apply_canvas_theme(self._canvas, self._pm.theme)
 
     def _on_canvas_button_press(self, event: Any) -> None:
         """Route right-click events to :meth:`build_context_menu`."""

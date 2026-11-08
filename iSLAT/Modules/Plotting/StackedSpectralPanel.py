@@ -41,15 +41,66 @@ from matplotlib.figure import Figure as MplFigure
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 from matplotlib.ticker import MaxNLocator
 
+from .ArtistTags import tag_artist
 from .BasePlot import BasePlot
 from .CompositePlot import CompositePlot
-from .SpectralPanel import SpectralPanel, GapMode, XScaling
+from .ModelOverlays import summed_model_flux
+from .SpectralPanel import SpectralPanel, GapMode, XScaling, peak_ylim
 from .LegendStrategy import LegendStrategy, MoleculeColorLegend
 
 if TYPE_CHECKING:
     from matplotlib.gridspec import SubplotSpec
+    from matplotlib.text import Text
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from .CompositeStackedPanel import CompositeStackedPanel
+
+
+def draw_boxed_label(
+    ax: Axes,
+    x: float,
+    y: float,
+    text: str,
+    *,
+    color: Any,
+    box_color: Any,
+    transform: Any = None,
+    fontsize: float = 7,
+    fontweight: str = "bold",
+    ha: str = "left",
+    va: str = "top",
+    pad: float = 0.2,
+    box_alpha: float = 0.6,
+    zorder: float = 100,
+    tag: Optional[str] = None,
+    **text_kw: Any,
+) -> "Text":
+    """Draw *text* on a rounded, borderless box, e.g. a panel or spectrum name.
+
+    *x*, *y* are in axes coordinates unless a *transform* is given.  The
+    text is stamped with *tag* when one is given; other keywords go to
+    ``ax.text``.
+    """
+    txt = ax.text(
+        x, y, text,
+        transform=ax.transAxes if transform is None else transform,
+        fontsize=fontsize,
+        fontweight=fontweight,
+        color=color,
+        ha=ha,
+        va=va,
+        bbox=dict(
+            boxstyle=f"round,pad={pad}",
+            facecolor=box_color,
+            edgecolor="none",
+            alpha=box_alpha,
+        ),
+        zorder=zorder,
+        **text_kw,
+    )
+    if tag is not None:
+        tag_artist(txt, tag)
+    return txt
+
 
 class StackedSpectralPanel(CompositePlot):
     """
@@ -474,13 +525,8 @@ class StackedSpectralPanel(CompositePlot):
         mask: np.ndarray,
         ymax_factor: float = 0.2,
     ) -> Tuple[float, float]:
-        """Compute default ``(ymin, ymax)`` from observed flux."""
-        if np.any(mask):
-            finite = np.isfinite(flux_data[mask])
-            if np.any(finite):
-                peak = float(np.nanmax(flux_data[mask][finite]))
-                return (-0.005, peak + peak * ymax_factor)
-        return (-0.005, 0.1)
+        """Compute default ``(ymin, ymax)`` from observed flux (see :func:`peak_ylim`)."""
+        return peak_ylim(flux_data[mask], ymax_factor)
 
     def _compute_panel_ylims(
         self,
@@ -632,74 +678,37 @@ class StackedSpectralPanel(CompositePlot):
         labels: Dict[int, str],
     ) -> None:
         """Render cell labels on the first panel of each labelled cell."""
-        fg = self._get_theme_value("foreground", "black")
         for cell_idx, lbl in labels.items():
             cell_panels = self.panels.get(cell_idx)
             if not cell_panels or not lbl:
                 continue
-            ax = cell_panels[0].ax
-            if ax is None:
-                continue
-            # Remove any existing label for this cell.
-            tag = f"{self._LABEL_TAG}_{cell_idx}"
-            self._clear_tagged_artists(
-                ax, tag,
-                lines=False, collections=False, texts=True,
-            )
-            txt = ax.text(
-                0.01, 0.97, lbl,
-                transform=ax.transAxes,
-                fontsize=7,
-                fontweight="bold",
-                color=fg,
-                alpha=0.75,
-                va="top",
-                ha="left",
-                bbox=dict(
-                    boxstyle="round,pad=0.2",
-                    facecolor=self._get_theme_value("background", "white"),
-                    edgecolor="none",
-                    alpha=0.6,
-                ),
-                zorder=100,
-            )
-            setattr(txt, tag, True)
+            self._draw_corner_label(cell_panels[0].ax, lbl, f"{self._LABEL_TAG}_{cell_idx}")
 
     def _apply_panel_labels(
         self,
         labels: Dict[Tuple[int, int], str],
     ) -> None:
         """Render labels on individual sub-panels."""
-        fg = self._get_theme_value("foreground", "black")
         for (cell_idx, panel_idx), lbl in labels.items():
             cell_panels = self.panels.get(cell_idx)
             if not cell_panels or panel_idx >= len(cell_panels) or not lbl:
                 continue
-            ax = cell_panels[panel_idx].ax
-            if ax is None:
-                continue
-            tag = f"{self._LABEL_TAG}_{cell_idx}_{panel_idx}"
-            self._clear_tagged_artists(
-                ax, tag, lines=False, collections=False, texts=True,
+            self._draw_corner_label(
+                cell_panels[panel_idx].ax, lbl, f"{self._LABEL_TAG}_{cell_idx}_{panel_idx}",
             )
-            txt = ax.text(
-                0.01, 0.97, lbl,
-                transform=ax.transAxes,
-                fontsize=7,
-                fontweight="bold",
-                color=fg,
-                alpha=0.75,
-                va="top",
-                ha="left",
-                bbox=dict(
-                    boxstyle="round,pad=0.2",
-                    facecolor=self._get_theme_value("background", "white"),
-                    edgecolor="none",
-                    alpha=0.6,
-                ),
-                zorder=100,
-            )
-            setattr(txt, tag, True)
+
+    def _draw_corner_label(self, ax: Optional[Axes], lbl: str, tag: str) -> None:
+        """Replace the label tagged *tag* on *ax* with *lbl*, in the top-left corner."""
+        if ax is None:
+            return
+        self._clear_tagged_artists(ax, tag, lines=False, collections=False, texts=True)
+        draw_boxed_label(
+            ax, 0.01, 0.97, lbl,
+            color=self._get_theme_value("foreground", "black"),
+            box_color=self._get_theme_value("background", "white"),
+            alpha=0.75,
+            tag=tag,
+        )
 
     def clear_cell_labels(self) -> None:
         """Remove all cell / panel labels from every panel."""
@@ -1013,15 +1022,9 @@ def _extract_cell_kwargs(ssp: StackedSpectralPanel) -> Dict[str, Any]:
         mol_cache, _labels, _colors = ssp._build_mol_cache()
         kw["mol_cache"] = mol_cache
 
-    if hasattr(ssp, "molecules") and ssp.molecules is not None:
-        try:
-            wave_obs = getattr(ssp, "wave_data_obs", ssp.wave_data)
-            sw, sf = ssp.molecules.get_summed_flux(
-                wave_obs, visible_only=True, extend_to_global_range=True,
-            )
-            kw["summed_wave"] = sw
-            kw["summed_flux"] = sf
-        except Exception:
-            pass
+    if getattr(ssp, "molecules", None) is not None:
+        kw["summed_wave"], kw["summed_flux"] = summed_model_flux(
+            ssp.molecules, getattr(ssp, "wave_data_obs", ssp.wave_data),
+        )
 
     return kw

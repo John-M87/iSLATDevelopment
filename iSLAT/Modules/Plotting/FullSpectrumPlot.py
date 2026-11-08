@@ -20,9 +20,15 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
 from .StackedSpectralPanel import StackedSpectralPanel
-from .SpectralPanel import SpectralPanel, GapMode
+from .SpectralPanel import SpectralPanel, GapMode, peak_ylim
 from .SpectrumPanel import SpectrumPanel
-from .BasePlot import BasePlot
+from .ArtistTags import (
+    MOLECULE_TAG, OBSERVED_TAG, SUMMED_TAG,
+    iter_tagged, remove_tagged, set_tagged_visible,
+)
+from .ModelOverlays import (
+    build_molecule_traces, draw_summed_fill, plot_molecule_trace, summed_model_flux,
+)
 
 if TYPE_CHECKING:
     from matplotlib.gridspec import SubplotSpec
@@ -231,41 +237,16 @@ class FullSpectrumPlot(StackedSpectralPanel):
 
         *wave_data* are the display (rest-frame) wavelengths and
         *wave_data_obs* the observer-frame ones used for matched spectral
-        sampling (default: *wave_data*).
+        sampling (default: *wave_data*).  The cache entries are
+        :class:`~iSLAT.Modules.Plotting.ModelOverlays.MoleculeTrace` tuples.
         """
-        mol_cache: List[tuple] = []
-        mol_labels: List[str] = []
-        mol_colors: List[str] = []
-        if molecules is not None:
-            visible = molecules.get_visible_molecules(return_objects=True)
-            mol_labels = [cls.get_molecule_display_name(m) for m in visible]
-            mol_colors = [cls.get_molecule_color(m) for m in visible]
+        return build_molecule_traces(
+            molecules, wave_data, cls.get_molecule_spectrum_data, wave_data_obs,
+        )
 
-            use_interp = False
-            target_wave = None
-            ref_wave = wave_data_obs if wave_data_obs is not None else wave_data
-            if ref_wave is not None and hasattr(molecules, 'get_matched_sampling_wavelengths'):
-                use_interp, target_wave = (
-                    molecules.get_matched_sampling_wavelengths(ref_wave)
-                )
-                if not use_interp:
-                    target_wave = None
-
-            for mol in visible:
-                lam, flux = cls.get_molecule_spectrum_data(
-                    mol, wave_data,
-                    interpolate_to_input=use_interp,
-                    target_wavelengths=target_wave,
-                    extend_to_range=True,
-                )
-                if lam is not None and flux is not None and len(flux) > 0:
-                    mol_cache.append((
-                        lam, flux,
-                        cls.get_molecule_color(mol),
-                        cls.get_molecule_display_name(mol),
-                        getattr(mol, "name", "unknown"),
-                    ))
-        return mol_cache, mol_labels, mol_colors
+    def _summed_model_flux(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """The visible molecules' summed model ``(wave, flux)``, or ``(None, None)``."""
+        return summed_model_flux(self.molecules, self.wave_data_obs)
 
     # ------------------------------------------------------------------
     def _spectrum_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
@@ -282,13 +263,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
         tuple[float, float]
             ``(ymin, ymax)`` for the panel.
         """
-        if np.any(mask):
-            finite = np.isfinite(self.flux_data[mask])
-            if np.any(finite):
-                _ymax = float(np.nanmax(self.flux_data[mask][finite]))
-                _ymax += _ymax * self.ymax_factor
-                return (-0.005, _ymax)
-        return (-0.005, 0.1)
+        return peak_ylim(self.flux_data[mask], self.ymax_factor)
 
     # ------------------------------------------------------------------
     # StackedSpectralPanel factory
@@ -337,13 +312,10 @@ class FullSpectrumPlot(StackedSpectralPanel):
 
         Only ever hides, so the defaults leave artists exactly as drawn.
         """
-        if self.show_observed and self.show_summed:
-            return
-        for art in list(ax.lines) + list(ax.collections):
-            if not self.show_observed and hasattr(art, "_islat_observed"):
-                art.set_visible(False)
-            elif not self.show_summed and hasattr(art, "_islat_summed"):
-                art.set_visible(False)
+        if not self.show_observed:
+            set_tagged_visible(ax, OBSERVED_TAG, False)
+        if not self.show_summed:
+            set_tagged_visible(ax, SUMMED_TAG, False)
 
     def _resolve_panel_ylim(
         self,
@@ -448,16 +420,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
         self.subplots.clear()
 
         # Compute summed flux once (if molecules are available)
-        summed_wave: Optional[np.ndarray] = None
-        summed_flux: Optional[np.ndarray] = None
-        if self.molecules is not None:
-            try:
-                summed_wave, summed_flux = self.molecules.get_summed_flux(
-                    self.wave_data_obs, visible_only=True,
-                    extend_to_global_range=True,
-                )
-            except Exception:
-                pass
+        summed_wave, summed_flux = self._summed_model_flux()
 
         # Pre-compute molecule data via shared helper
         mol_cache, mol_labels, mol_colors = self._build_mol_cache()
@@ -506,13 +469,10 @@ class FullSpectrumPlot(StackedSpectralPanel):
         Every tagged artist is therefore removed and the spectrum is re-drawn through the row's :class:`SpectrumPanel`, which also keeps that panel's data arrays in sync and honours its gap mode.
         The visibility of the replaced artists (observed-data toggle) is carried over to the new ones.
         """
-        was_visible = True
-        for art in list(ax.lines) + list(ax.collections):
-            if hasattr(art, "_islat_observed"):
-                was_visible = bool(art.get_visible())
-                break
+        first_observed = next(iter_tagged(ax, OBSERVED_TAG), None)
+        was_visible = True if first_observed is None else bool(first_observed.get_visible())
 
-        BasePlot._clear_tagged_artists(ax, "_islat_observed")
+        remove_tagged(ax, OBSERVED_TAG)
 
         panel = self._spectrum_panel_for_row(idx)
         if panel is not None:
@@ -537,9 +497,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
             line._islat_observed = True
 
         if not was_visible:
-            for art in list(ax.lines) + list(ax.collections):
-                if hasattr(art, "_islat_observed"):
-                    art.set_visible(False)
+            set_tagged_visible(ax, OBSERVED_TAG, False)
 
     def _refresh_gap_indicators(
         self,
@@ -577,16 +535,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
             return
 
         # --- Pre-compute molecule data via shared helper -----------------
-        summed_wave: Optional[np.ndarray] = None
-        summed_flux: Optional[np.ndarray] = None
-        if self.molecules is not None:
-            try:
-                summed_wave, summed_flux = self.molecules.get_summed_flux(
-                    self.wave_data_obs, visible_only=True,
-                    extend_to_global_range=True,
-                )
-            except Exception:
-                pass
+        summed_wave, summed_flux = self._summed_model_flux()
 
         mol_cache, _labels, _colors = self._build_mol_cache()
 
@@ -613,18 +562,19 @@ class FullSpectrumPlot(StackedSpectralPanel):
                 self._refresh_gap_indicators(idx, ax, xr)
 
             # Update molecule lines in place
-            existing_mol_lines = {}
-            for art in ax.lines[:]:
-                if hasattr(art, "_molecule_name"):
-                    existing_mol_lines[art._molecule_name] = art
+            existing_mol_lines = {
+                art._molecule_name: art
+                for art in iter_tagged(ax, MOLECULE_TAG, collections=False)
+            }
 
             rendered_names = set()
             base_model_linewidth = self._get_theme_value("full_spectrum_model_linewidth", 0.8)
-            for m_lam, m_flux, m_color, m_label, m_name in mol_cache:
-                m_mask = (m_lam >= xr[0]) & (m_lam <= xr[1])
+            for trace in mol_cache:
+                m_lam, m_flux, m_color, m_label, m_name = trace[:5]
                 rendered_names.add(m_name)
                 m_linewidth = self.get_molecule_linewidth_by_name(m_name, base_model_linewidth)
                 if m_name in existing_mol_lines:
+                    m_mask = (m_lam >= xr[0]) & (m_lam <= xr[1])
                     line = existing_mol_lines[m_name]
                     if np.any(m_mask):
                         line.set_data(m_lam[m_mask], m_flux[m_mask])
@@ -634,16 +584,12 @@ class FullSpectrumPlot(StackedSpectralPanel):
                     else:
                         line.set_data([], [])
                 else:
-                    if np.any(m_mask):
-                        new_line, = ax.plot(
-                            m_lam[m_mask], m_flux[m_mask],
-                            linestyle="--", color=m_color,
-                            alpha=self._get_theme_value("full_spectrum_model_alpha", 0.8),
-                            linewidth=m_linewidth,
-                            label=m_label,
-                            zorder=self._get_theme_value("zorder_model", 3),
-                        )
-                        new_line._molecule_name = m_name
+                    plot_molecule_trace(
+                        ax, trace, xr,
+                        linewidth=m_linewidth,
+                        alpha=self._get_theme_value("full_spectrum_model_alpha", 0.8),
+                        zorder=self._get_theme_value("zorder_model", 3),
+                    )
 
             # Remove stale molecule lines (molecule deleted or hidden)
             for m_name, art in existing_mol_lines.items():
@@ -651,9 +597,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
                     art.remove()
 
             # Update summed spectrum fill
-            for coll in ax.collections[:]:
-                if hasattr(coll, "_islat_summed"):
-                    coll.remove()
+            remove_tagged(ax, SUMMED_TAG, lines=False)
             if summed_wave is not None and summed_flux is not None:
                 s_mask = (summed_wave >= xr[0]) & (summed_wave <= xr[1])
                 if np.any(s_mask):
@@ -687,20 +631,13 @@ class FullSpectrumPlot(StackedSpectralPanel):
         deduplicate: bool = False,
     ) -> None:
         """Plot the summed model spectrum as a filled area on *ax*."""
-        from .BasePlot import BasePlot
-        if summed_flux is None or len(summed_flux) == 0:
-            return
-        if not np.any(summed_flux > 0):
-            return
-        if deduplicate:
-            BasePlot._clear_tagged_artists(ax, "_islat_summed", lines=False)
-        fill_color = color or self._get_theme_value("summed_spectra_color", "lightgray")
-        fill = ax.fill_between(
-            wave_data, 0, summed_flux,
-            color=fill_color, alpha=1.0, label=label,
+        draw_summed_fill(
+            ax, wave_data, summed_flux,
+            color=color or self._get_theme_value("summed_spectra_color", "lightgray"),
             zorder=self._get_theme_value("zorder_summed", 1),
+            label=label,
+            replace=deduplicate,
         )
-        fill._islat_summed = True
 
     @property
     def _legend_axes(self) -> Optional["Axes"]:

@@ -12,6 +12,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from .SpectrumPanel import SpectrumPanel
+from .ModelOverlays import resolve_matched_sampling
 
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
@@ -111,12 +112,7 @@ class LineInspectionPlot(SpectrumPanel):
         # -- molecule model(s) ------------------------------------------
         # Determine matched spectral sampling settings (same logic as FullSpectrumPlot)
         # so the line inspection plot honours the "Match Pix. Sampling" toggle.
-        use_interp = False
-        target_wave = None
-        if self.molecules is not None and hasattr(self.molecules, 'get_matched_sampling_wavelengths'):
-            use_interp, target_wave = self.molecules.get_matched_sampling_wavelengths(self.wave_data_obs)
-            if not use_interp:
-                target_wave = None
+        use_interp, target_wave = resolve_matched_sampling(self.molecules, self.wave_data_obs)
 
         if self.molecules is not None and self.render_all_visible:
             # Standalone / notebook mode: render every visible molecule.

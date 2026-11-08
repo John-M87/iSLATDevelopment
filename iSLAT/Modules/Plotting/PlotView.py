@@ -10,6 +10,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
+from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_molecule_lines, iter_tagged, set_tagged_visible
+
 if TYPE_CHECKING:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
@@ -240,8 +242,8 @@ def fit_y_limits_to_model(ax: Any) -> Optional[Tuple[float, float]]:
     wmin, wmax = ax.get_xlim()
     top = -np.inf
     bottom = np.inf
-    for line in ax.lines:
-        if getattr(line, "_molecule_name", None) is None or not line.get_visible():
+    for line in iter_molecule_lines(ax):
+        if not line.get_visible():
             continue
         x, y = line.get_data()
         x = np.asarray(x, dtype=float)
@@ -250,8 +252,8 @@ def fit_y_limits_to_model(ax: Any) -> Optional[Tuple[float, float]]:
         if np.any(sel):
             top = max(top, float(y[sel].max()))
             bottom = min(bottom, float(y[sel].min()))
-    for coll in ax.collections:
-        if not hasattr(coll, "_islat_summed") or not coll.get_visible():
+    for coll in iter_tagged(ax, SUMMED_TAG, lines=False):
+        if not coll.get_visible():
             continue
         for path in coll.get_paths():
             v = np.asarray(path.vertices, dtype=float)
@@ -562,10 +564,8 @@ class PlotView(ABC):
         """
         found = False
         for ax in (axes if axes is not None else self._iter_observed_axes()):
-            for artist in list(ax.lines) + list(ax.collections):
-                if hasattr(artist, "_islat_observed"):
-                    artist.set_visible(visible)
-                    found = True
+            if set_tagged_visible(ax, OBSERVED_TAG, visible):
+                found = True
         return found
 
     def toggle_observed_data(self, visible: bool) -> None:

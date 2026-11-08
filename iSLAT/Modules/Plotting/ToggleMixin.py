@@ -47,6 +47,8 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Any, Optional
 
+from .ArtistTags import SUMMED_TAG, set_tagged_visible
+
 class ToggleMixin:
     """Mixin providing toggle-state reconciliation for :class:`PlotView` subclasses."""
 
@@ -94,9 +96,7 @@ class ToggleMixin:
     def _set_summed_visibility(self, visible: bool) -> None:
         """Show / hide the summed-spectrum fill on all toggle axes."""
         for ax in self._iter_toggle_axes():
-            for coll in ax.collections[:]:
-                if hasattr(coll, "_islat_summed"):
-                    coll.set_visible(visible)
+            set_tagged_visible(ax, SUMMED_TAG, visible, lines=False)
 
     # Observed-data / Y-policy hooks (see PlotView): every toggle axis takes part.
     def _iter_observed_axes(self):

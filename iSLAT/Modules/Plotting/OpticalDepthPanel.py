@@ -21,6 +21,7 @@ from matplotlib.axes import Axes
 
 from .SpectralPanel import SpectralPanel, GapMode
 from .BasePlot import BasePlot
+from .ArtistTags import iter_tagged
 
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
@@ -371,9 +372,7 @@ class OpticalDepthPanel(SpectralPanel):
         if ax is None:
             return 0.0
         peak = 0.0
-        for coll in ax.collections:
-            if not hasattr(coll, TAU_STEM_TAG):
-                continue
+        for coll in iter_tagged(ax, TAU_STEM_TAG, lines=False):
             for seg in coll.get_segments():
                 if len(seg):
                     top = float(np.nanmax(seg[:, 1]))

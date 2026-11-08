@@ -23,6 +23,13 @@ from iSLAT.Modules.Plotting.LegendStrategy import (
     MoleculeColorLegend,
     StandardLegend,
 )
+from iSLAT.Modules.Plotting.ArtistTags import remove_tagged
+from iSLAT.Modules.Plotting.ModelOverlays import (
+    molecule_color,
+    molecule_display_name,
+    resolve_matched_sampling,
+)
+from iSLAT.Modules.Plotting.Theming import apply_figure_theme
 
 # Import display config to ensure rcParams are set early and to access the savefig DPI default.
 try:
@@ -147,34 +154,7 @@ class BasePlot(ABC):
             The figure to style.  Defaults to ``self.fig``.
         """
         target = fig if fig is not None else self.fig
-        if target is None:
-            return
-        fg = self._get_theme_value("foreground", "black")
-        bg = self._get_theme_value("background", "white")
-        graph_bg = self._get_theme_value("graph_fill_color", bg)
-
-        target.set_facecolor(bg)
-        for ax in target.axes:
-            ax.set_facecolor(graph_bg)
-            ax.tick_params(colors=fg, which="both")
-            ax.xaxis.label.set_color(fg)
-            ax.yaxis.label.set_color(fg)
-            ax.title.set_color(fg)
-            for spine in ax.spines.values():
-                spine.set_color(fg)
-
-            # Recolor tagged data artists so they match the new theme
-            summed_color = self._get_theme_value("summed_spectra_color", "lightgray")
-            for artist in ax.lines:
-                if getattr(artist, '_islat_observed', False):
-                    artist.set_color(fg)
-            for artist in ax.collections:
-                if getattr(artist, '_islat_summed', False):
-                    artist.set_facecolor(summed_color)
-                    artist.set_edgecolor(summed_color)
-
-            # Theme the legend via the strategy if one exists
-            self.legend_strategy.apply_theme(ax, self.theme)
+        apply_figure_theme(target, self.theme, self.legend_strategy)
 
     @staticmethod
     def load_theme(name: str = "auto") -> Dict[str, Any]:
@@ -213,13 +193,12 @@ class BasePlot(ABC):
     @staticmethod
     def get_molecule_display_name(molecule: "Molecule") -> str:
         """Return the user-facing label for a molecule."""
-        return getattr(molecule, "displaylabel", getattr(molecule, "name", "unknown"))
+        return molecule_display_name(molecule)
 
     @staticmethod
     def get_molecule_color(molecule: "Molecule") -> str:
         """Return the color associated with a molecule."""
-        color = getattr(molecule, "color", None)
-        return color if color else "blue"
+        return molecule_color(molecule)
 
     #: Multiplier applied to the base model line width when a molecule is bold.
     BOLD_LINEWIDTH_FACTOR: float = 2.5
@@ -565,12 +544,7 @@ class BasePlot(ABC):
         """
         # get_matched_sampling_wavelengths expects observer-frame input.
         obs = wave_data_obs if wave_data_obs is not None else wave_data
-        use_interp = False
-        target_wave = None
-        if obs is not None and hasattr(molecules, 'get_matched_sampling_wavelengths'):
-            use_interp, target_wave = molecules.get_matched_sampling_wavelengths(obs)
-            if not use_interp:
-                target_wave = None  # don't pass target wavelengths when not interpolating
+        use_interp, target_wave = resolve_matched_sampling(molecules, obs)
 
         visible = molecules.get_visible_molecules(return_objects=True)
         for mol in visible:
@@ -617,18 +591,7 @@ class BasePlot(ABC):
         texts : bool
             Search ``ax.texts``.
         """
-        if lines:
-            for artist in ax.lines[:]:
-                if hasattr(artist, tag):
-                    artist.remove()
-        if collections:
-            for artist in ax.collections[:]:
-                if hasattr(artist, tag):
-                    artist.remove()
-        if texts:
-            for artist in ax.texts[:]:
-                if hasattr(artist, tag):
-                    artist.remove()
+        remove_tagged(ax, tag, lines=lines, collections=collections, texts=texts)
 
     @staticmethod
     def _plot_line_annotations(

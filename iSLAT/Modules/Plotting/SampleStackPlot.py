@@ -40,8 +40,9 @@ from matplotlib.gridspec import GridSpecFromSubplotSpec
 from matplotlib.ticker import MaxNLocator
 
 from .FullSpectrumPlot import FullSpectrumPlot
-from .StackedSpectralPanel import StackedSpectralPanel
-from .SpectralPanel import SpectralPanel, GapMode
+from .ModelOverlays import draw_molecule_traces, draw_summed_fill
+from .StackedSpectralPanel import StackedSpectralPanel, draw_boxed_label
+from .SpectralPanel import SpectralPanel, GapMode, peak_ylim
 from .SpectrumPanel import SpectrumPanel
 
 if TYPE_CHECKING:
@@ -272,43 +273,33 @@ class SampleOffsetPanel(StackSpectrumPanel):
             off = self.offsets[i]
             if len(flux) > 0:
                 self._plot_observed_spectrum(ax, wave, np.asarray(flux, dtype=float) + off, err)
-            for m_lam, m_flux, m_color, m_label, m_name in models.mol_cache:
-                mask = _in_range(np.asarray(m_lam), xr)
-                if np.any(mask):
-                    (line,) = ax.plot(
-                        np.asarray(m_lam)[mask], np.asarray(m_flux)[mask] + off,
-                        linestyle="--", color=m_color, alpha=alpha,
-                        linewidth=self.get_molecule_linewidth_by_name(m_name, base_lw),
-                        label=m_label, zorder=self._get_theme_value("zorder_model", 3),
-                    )
-                    line._molecule_name = m_name
-            if models.summed_wave is not None and models.summed_flux is not None:
-                mask = _in_range(models.summed_wave, xr)
-                if np.any(mask) and np.any(models.summed_flux[mask] > 0):
-                    fill = ax.fill_between(
-                        models.summed_wave[mask], off, models.summed_flux[mask] + off,
-                        color=summed_color, alpha=1.0, label="Sum",
-                        zorder=self._get_theme_value("zorder_summed", 1),
-                    )
-                    fill._islat_summed = True
+            draw_molecule_traces(
+                ax, models.mol_cache, xr,
+                alpha=alpha,
+                zorder=self._get_theme_value("zorder_model", 3),
+                linewidth_for=lambda name: self.get_molecule_linewidth_by_name(name, base_lw),
+                offset=off,
+            )
+            draw_summed_fill(
+                ax, models.summed_wave, models.summed_flux,
+                color=summed_color,
+                zorder=self._get_theme_value("zorder_summed", 1),
+                xr=xr,
+                baseline=off,
+            )
             self._draw_label(ax, spectrum, off)
         ax.set_xlim(*xr)
 
     def _draw_label(self, ax: Axes, spectrum: "SampleSpectrum", baseline: float) -> None:
-        fg = self._get_theme_value("foreground", "black")
-        txt = ax.text(
-            0.004, baseline, spectrum.name,
+        draw_boxed_label(
+            ax, 0.004, baseline, spectrum.name,
             transform=transforms.blended_transform_factory(ax.transAxes, ax.transData),
-            fontsize=6, color=fg, ha="left", va="bottom",
+            color=self._get_theme_value("foreground", "black"),
+            box_color=self._get_theme_value("background", "white"),
+            fontsize=6, va="bottom", pad=0.15,
             fontweight="bold" if getattr(spectrum, "is_active", False) else "normal",
-            bbox=dict(
-                boxstyle="round,pad=0.15",
-                facecolor=self._get_theme_value("background", "white"),
-                edgecolor="none", alpha=0.6,
-            ),
-            zorder=100, clip_on=True,
+            tag=STACK_LABEL_TAG, clip_on=True,
         )
-        setattr(txt, STACK_LABEL_TAG, True)
 
 
 # ======================================================================
@@ -543,19 +534,14 @@ class SampleStackPlot(FullSpectrumPlot):
     def _draw_row_label(self, ax: Axes, spectrum: Optional["SampleSpectrum"]) -> None:
         if spectrum is None:
             return
-        txt = ax.text(
-            0.004, 0.94, spectrum.name,
-            transform=ax.transAxes, fontsize=6, ha="left", va="top",
+        draw_boxed_label(
+            ax, 0.004, 0.94, spectrum.name,
             color=self._get_theme_value("foreground", "black"),
+            box_color=self._get_theme_value("background", "white"),
+            fontsize=6, pad=0.15,
             fontweight="bold" if getattr(spectrum, "is_active", False) else "normal",
-            bbox=dict(
-                boxstyle="round,pad=0.15",
-                facecolor=self._get_theme_value("background", "white"),
-                edgecolor="none", alpha=0.6,
-            ),
-            zorder=100,
+            tag=STACK_LABEL_TAG,
         )
-        setattr(txt, STACK_LABEL_TAG, True)
 
     # ------------------------------------------------------------------
     # Y limits
@@ -596,11 +582,7 @@ class SampleStackPlot(FullSpectrumPlot):
                 return lims
         xr = ax.get_xlim()
         flux = np.asarray(spectrum.flux, dtype=float)[_in_range(np.asarray(spectrum.wave), xr)]
-        flux = flux[np.isfinite(flux)]
-        if flux.size == 0:
-            return (-0.005, 0.1)
-        peak = float(flux.max())
-        return (-0.005, peak + peak * self.ymax_factor)
+        return peak_ylim(flux, self.ymax_factor)
 
     def stack_ylims(self) -> List[Tuple[Axes, Optional[Tuple[float, float]]]]:
         """``(axes, limits)`` for every axes, recomputed with the current options."""
