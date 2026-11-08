@@ -5,79 +5,87 @@ by both :class:`~iSLAT.Modules.DataTypes.Molecule.Molecule` and
 :class:`~iSLAT.Modules.DataTypes.Spectrum.Spectrum`.  Having a single
 canonical implementation avoids duplication and makes updates easier.
 """
-
 from __future__ import annotations
-
-from typing import Tuple
+from typing import Optional, Tuple
 import warnings
-
 import numpy as np
-
+from numpy.typing import ArrayLike, NDArray
 import iSLAT.Constants as c
 
-def make_bins(wavs: np.ndarray):
+def make_bins(wavs: ArrayLike) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Given a series of wavelength points, find the edges and widths
     of corresponding wavelength bins.
 
+    Inner edges are the midpoints between neighbouring wavelengths; the two
+    outer edges lie half a spacing beyond the first and last point.
+
     Parameters
     ----------
-    wavs : np.ndarray
-        1-D array of wavelength centers (must be sorted, length ≥ 2).
+    wavs : array_like
+        1-D wavelength centers, sorted ascending, at least two points.
 
     Returns
     -------
-    edges : np.ndarray
+    edges : numpy.ndarray
         Bin edges (length ``len(wavs) + 1``).
-    widths : np.ndarray
-        Bin widths (same length as *wavs*).
+    widths : numpy.ndarray
+        Bin widths, ``numpy.diff(edges)`` (same length as *wavs*).
     """
-    edges = np.zeros(wavs.shape[0] + 1)
-    widths = np.zeros(wavs.shape[0])
-    edges[0] = wavs[0] - (wavs[1] - wavs[0]) / 2
-    widths[-1] = (wavs[-1] - wavs[-2])
-    edges[-1] = wavs[-1] + (wavs[-1] - wavs[-2]) / 2
+    wavs = np.asarray(wavs, dtype=np.float64)
+    edges = np.empty(wavs.shape[0] + 1)
     edges[1:-1] = (wavs[1:] + wavs[:-1]) / 2
-    widths[:-1] = edges[1:-1] - edges[:-2]
-    return edges, widths
-
+    edges[0] = wavs[0] - (wavs[1] - wavs[0]) / 2
+    edges[-1] = wavs[-1] + (wavs[-1] - wavs[-2]) / 2
+    return edges, np.diff(edges)
 
 def spectres(
-    new_wavs: np.ndarray,
-    spec_wavs: np.ndarray,
-    spec_fluxes: np.ndarray,
+    new_wavs: ArrayLike,
+    spec_wavs: ArrayLike,
+    spec_fluxes: ArrayLike,
     fill: float = 0.0,
     verbose: bool = False,
-) -> np.ndarray:
+) -> NDArray[np.float64]:
     """Flux-conserving spectral resampling onto a new wavelength basis.
 
-    Vectorized implementation using ``np.searchsorted`` to map new bin edges
-    onto the old wavelength grid in *O(n log m)* time.
+    Each new bin gets the mean of the old spectrum over the bin, with the old
+    spectrum taken as constant across each old bin (the SpectRes algorithm,
+    Carnall 2017).  Old bins only partly inside a new bin count with the
+    fraction of their width that is inside it.
+
+    Fully vectorized: the new bin edges are located on the old grid with
+    ``numpy.searchsorted`` and the old bins between them are summed per new
+    bin with ``numpy.add.reduceat``.  Each sum covers only that bin's own old
+    pixels, so a NaN affects only the new bins that contain it and faint bins
+    keep full precision next to bright lines (a running cumulative sum would
+    spread a NaN to every later bin and lose precision after a bright line).
 
     Parameters
     ----------
-    new_wavs : numpy.ndarray
-        Array containing the new wavelength sampling desired.
-    spec_wavs : numpy.ndarray
-        1-D array containing the current wavelength sampling.
-    spec_fluxes : numpy.ndarray
-        Array containing spectral fluxes at the wavelengths in *spec_wavs*.
+    new_wavs : array_like
+        The new wavelength sampling, sorted ascending.
+    spec_wavs : array_like
+        1-D current wavelength sampling, sorted ascending.
+    spec_fluxes : array_like
+        Spectral fluxes at the wavelengths in *spec_wavs*.
     fill : float, optional
-        Value to use where *new_wavs* extends outside *spec_wavs* range.
+        Value for new bins that are not entirely inside the range of
+        *spec_wavs*.
     verbose : bool, optional
-        If *True*, warn when fill values are used.
+        If *True*, warn when no new bin is inside the range of *spec_wavs*.
 
     Returns
     -------
     new_fluxes : numpy.ndarray
-        Array of resampled flux values with same length as *new_wavs*.
+        Resampled float64 fluxes, same length as *new_wavs*.
     """
+    new_wavs = np.asarray(new_wavs, dtype=np.float64)
+    spec_wavs = np.asarray(spec_wavs, dtype=np.float64)
+    spec_fluxes = np.asarray(spec_fluxes, dtype=np.float64)
     old_edges, old_widths = make_bins(spec_wavs)
     new_edges, _ = make_bins(new_wavs)
+    new_fluxes = np.full(new_wavs.shape[0], fill, dtype=np.float64)
 
-    n_new = new_wavs.shape[0]
-    new_fluxes = np.full(n_new, fill, dtype=np.float64)
-
-    # Identify new bins that fall entirely within the old grid
+    # Only new bins entirely inside the old grid are resampled; the rest keep *fill*.
     valid = (new_edges[:-1] >= old_edges[0]) & (new_edges[1:] <= old_edges[-1])
     if not np.any(valid):
         if verbose:
@@ -87,55 +95,50 @@ def spectres(
                 category=RuntimeWarning,
             )
         return new_fluxes
+    idx = np.flatnonzero(valid)
+    left = new_edges[idx]
+    right = new_edges[idx + 1]
 
-    valid_idx = np.where(valid)[0]
+    # Old bins holding each new bin's left and right edge.
+    last = spec_wavs.shape[0] - 1
+    start = np.clip(np.searchsorted(old_edges, left, side="right") - 1, 0, last)
+    stop = np.clip(np.searchsorted(old_edges, right, side="left") - 1, 0, last)
 
-    # Map new bin edges onto old bin edges via searchsorted.
-    left_edges = new_edges[valid_idx]
-    right_edges = new_edges[valid_idx + 1]
+    # New bin inside a single old bin: that bin's flux.
+    single = start == stop
+    new_fluxes[idx[single]] = spec_fluxes[start[single]]
 
-    start_idx = np.searchsorted(old_edges, left_edges, side="right") - 1
-    stop_idx = np.searchsorted(old_edges, right_edges, side="left") - 1
-
-    # Clip to valid bin range
-    n_old = spec_wavs.shape[0]
-    np.clip(start_idx, 0, n_old - 1, out=start_idx)
-    np.clip(stop_idx, 0, n_old - 1, out=stop_idx)
-
-    # Fast path: bins where start == stop (new bin is entirely inside one old bin)
-    same = start_idx == stop_idx
-    if np.any(same):
-        new_fluxes[valid_idx[same]] = spec_fluxes[start_idx[same]]
-
-    # Handle bins that span multiple old bins
-    diff_mask = ~same
-    if np.any(diff_mask):
-        diff_idx = valid_idx[diff_mask]
-        d_start = start_idx[diff_mask]
-        d_stop = stop_idx[diff_mask]
-        d_left = left_edges[diff_mask]
-        d_right = right_edges[diff_mask]
-
-        start_factor = (
-            (old_edges[d_start + 1] - d_left)
-            / (old_edges[d_start + 1] - old_edges[d_start])
-        )
-        end_factor = (
-            (d_right - old_edges[d_stop])
-            / (old_edges[d_stop + 1] - old_edges[d_stop])
-        )
-
-        for k in range(len(diff_idx)):
-            s = d_start[k]
-            e = d_stop[k]
-            sl = slice(s, e + 1)
-            w = old_widths[sl].copy()
-            w[0] *= start_factor[k]
-            w[-1] *= end_factor[k]
-            fw = w * spec_fluxes[sl]
-            new_fluxes[diff_idx[k]] = fw.sum() / w.sum()
+    # New bin across several old bins: width-weighted mean flux, with the
+    # first and last old bin weighted by the fraction of them inside it.
+    multi = ~single
+    if np.any(multi):
+        idx, left, right = idx[multi], left[multi], right[multi]
+        start, stop = start[multi], stop[multi]
+        start_factor = (old_edges[start + 1] - left) / (old_edges[start + 1] - old_edges[start])
+        end_factor = (right - old_edges[stop]) / (old_edges[stop + 1] - old_edges[stop])
+        w_start = old_widths[start] * start_factor
+        w_stop = old_widths[stop] * end_factor
+        # Old bins strictly between the first and last one (none when they are neighbours).
+        inner_w = _segment_sums(old_widths, start + 1, stop)
+        inner_fw = _segment_sums(old_widths * spec_fluxes, start + 1, stop)
+        numerator = w_start * spec_fluxes[start] + inner_fw + w_stop * spec_fluxes[stop]
+        new_fluxes[idx] = numerator / (w_start + inner_w + w_stop)
 
     return new_fluxes
+
+def _segment_sums(values: NDArray[np.float64], begin: NDArray[np.intp], end: NDArray[np.intp]) -> NDArray[np.float64]:
+    """``values[begin[i]:end[i]].sum()`` for every *i*, 0 for empty segments.
+
+    Requires ``begin <= end < len(values)`` wherever ``begin < end``.
+    """
+    sums = np.zeros(begin.shape[0])
+    nonempty = end > begin
+    if np.any(nonempty):
+        # reduceat sums values[i0:i1], values[i1:i2], ...; with (begin, end)
+        # pairs interleaved, every other result is one segment's sum.
+        bounds = np.column_stack((begin[nonempty], end[nonempty])).ravel()
+        sums[nonempty] = np.add.reduceat(values, bounds)[::2]
+    return sums
 
 def extend_grid_to_range(grid: np.ndarray, lo: float, hi: float) -> np.ndarray:
     """Pad a sorted wavelength *grid* so it covers ``[lo, hi]``.
@@ -167,18 +170,23 @@ def extend_grid_to_range(grid: np.ndarray, lo: float, hi: float) -> np.ndarray:
         return grid
     return np.concatenate(parts)
 
-
-def flux_integral(lam, flux, err, lam_min, lam_max) -> Tuple[float, float]:
+def flux_integral(
+    lam: ArrayLike,
+    flux: ArrayLike,
+    err: Optional[ArrayLike],
+    lam_min: float,
+    lam_max: float,
+) -> Tuple[float, float]:
     """Integrate a flux density over ``[lam_min, lam_max]``.
 
     Parameters
     ----------
-    lam : np.ndarray
-        Wavelengths in um.
-    flux : np.ndarray
+    lam : array_like
+        Wavelengths in um, in any order.
+    flux : array_like
         Flux density F_nu in Jy at *lam*.
-    err : np.ndarray or None
-        Flux uncertainties in Jy (integrated the same way as *flux*).
+    err : array_like or None
+        Flux uncertainties in Jy at *lam* (integrated the same way as *flux*).
     lam_min, lam_max : float
         Wavelength range in um.
 
@@ -219,8 +227,7 @@ def flux_integral(lam, flux, err, lam_min, lam_max) -> Tuple[float, float]:
 
     return line_flux_meas, line_err_meas
 
-
-def opacity_integral(lam, tau, lam_min, lam_max) -> float:
+def opacity_integral(lam: ArrayLike, tau: ArrayLike, lam_min: float, lam_max: float) -> float:
     """Integrate a model optical-depth profile over ``[lam_min, lam_max]``.
 
     *tau* is the convolved profile of :meth:`Molecule.get_tau` /
@@ -233,6 +240,15 @@ def opacity_integral(lam, tau, lam_min, lam_max) -> float:
 
     Unlike :func:`flux_integral`, no frequency conversion or Jy unit factor
     is applied - the optical depth is not a flux density.
+
+    Parameters
+    ----------
+    lam : array_like
+        Wavelengths in um, in any order.
+    tau : array_like
+        Optical-depth profile at *lam*, in 1/um.
+    lam_min, lam_max : float
+        Wavelength range in um.
 
     Returns
     -------
