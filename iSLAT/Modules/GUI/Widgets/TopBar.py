@@ -17,6 +17,7 @@ from iSLAT.Modules.GUI.Widgets.SampleManagerWindow import SampleManagerWindow
 from iSLAT.Modules.GUI.Widgets.SortMoleculesWindow import SortMoleculesWindow
 from iSLAT.Modules.GUI.Widgets.BulkApplyWindow import BulkApplyPropertiesWindow
 from iSLAT.Modules.GUI.Widgets.IntensitySettingsWindow import IntensitySettingsWindow
+from iSLAT.Modules.GUI.Widgets.LineSearchWindow import LineSearchWindow
 from iSLAT.Modules.GUI.PlotGridWindow import PlotGridWindow
 from iSLAT.Modules.GUI.FullSpectrumWindow import FullSpectrumWindow
 from iSLAT.Modules.FileHandling.iSLATFileHandling import (
@@ -205,6 +206,7 @@ class TopBar(ResizableFrame):
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label=center_view_label, command=self.open_center_view_dialog)
         spec_functions_menu.add_command(label=mark_wavelengths_label, command=self.open_wavelength_marker_dialog)
+        spec_functions_menu.add_command(label="Find Lines in Range\u2026", command=self.find_lines_in_range)
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Manage Sample\u2026", command=self.manage_sample)
         
@@ -223,6 +225,7 @@ class TopBar(ResizableFrame):
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
             center_view_label:                  "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: " + shortcut_text("open_center_view_dialog"),
             mark_wavelengths_label:             "Mark a wavelength (line) or a range\n(shaded band) on the spectrum plots,\nwith an optional label (left / center /\nright of the mark), line and label\ncolors (color pickers) and line style.\nMarks are included in full-spectrum output.\nKeybind: " + shortcut_text("open_wavelength_marker_dialog"),
+            "Find Lines in Range\u2026":       "List every line in a wavelength range\n(typed in or selected on the plot)\nfrom a chosen set of .par files and\nCSV line lists, in a sortable table\nthat can be exported to CSV.",
         })
 
         # ── Views dropdown ─────────────────────────────────────────────
@@ -1199,6 +1202,10 @@ class TopBar(ResizableFrame):
     def intensity_settings(self):
         """Open the popout window for choosing the intensity calculation method."""
         IntensitySettingsWindow.open(self.master, self.islat, self.theme)
+
+    def find_lines_in_range(self):
+        """Open the popout window for finding the lines of chosen files in a wavelength range."""
+        LineSearchWindow.open(self.master, self.islat, self.theme, self.main_plot)
 
     def save_parameters(self, file_path = None, auto = False):
         """

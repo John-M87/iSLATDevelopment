@@ -31,7 +31,15 @@ try:
 except ImportError:
     pd = None
 
-__all__ = ["read_molecular_data", "MolecularDataReader"]
+__all__ = ["read_molecular_data", "read_par_lines_in_range", "MolecularDataReader"]
+
+def read_par_lines_in_range(filename, lam_min, lam_max):
+    """Read the lines of a .par file whose wavelength is in ``[lam_min, lam_max]``.
+
+    See :meth:`MolecularDataReader.read_lines_in_range`; returns
+    ``(comment_lines, lines_data)``.
+    """
+    return MolecularDataReader().read_lines_in_range(filename, lam_min, lam_max)
 
 def read_molecular_data(molecule_name, filename):
     """
@@ -90,29 +98,107 @@ class MolecularDataReader:
                 print(f"Debug: Fast method failed: {e}, falling back to standard method")
             return self._read_par_file_standard(full_file_path)
 
-    def _read_par_file(self, filename):
-        """Fast .par file reader using direct numpy operations."""
+    @staticmethod
+    def _split_par_text(filename):
+        """Return ``(comment_lines, clean_lines)`` of the .par file *filename*.
+
+        *comment_lines* are the lines starting with ``#``; *clean_lines* are
+        the other non-empty lines (partition function and line records).
+        """
         # Read entire file at once using binary mode for speed
         with open(filename, 'rb') as f:
             file_bytes = f.read()
-        
+
         # Decode and normalize line endings
         file_str = file_bytes.decode('utf-8', errors='ignore')
         all_lines = file_str.replace('\r\n', '\n').replace('\r', '\n').split('\n')
 
-        # Filter out comments and empty lines
-        #clean_lines = [line for line in all_lines if line.strip() and not line.strip().startswith('#')]
-        clean_lines = []
         comment_lines = []
+        clean_lines = []
         for line in all_lines:
-            if line.strip().startswith('#'):
+            stripped = line.strip()
+            if stripped.startswith('#'):
                 comment_lines.append(line)
-                continue
-            elif line.strip():
+            elif stripped:
                 clean_lines.append(line)
-            else:
+        return comment_lines, clean_lines
+
+    @staticmethod
+    def _locate_line_records(clean_lines, n_partition):
+        """Return the line records that follow the partition function block.
+
+        The record count is the first integer line within a few lines after
+        the *n_partition* partition entries (a ``Number of lines`` label may
+        come before it).  Returns ``None`` when no count is found.
+        """
+        lines_start_search = n_partition + 1
+        for i in range(lines_start_search, min(lines_start_search + 5, len(clean_lines))):
+            try:
+                num_lines = int(clean_lines[i].strip())
+            except ValueError:
                 continue
-        
+            return clean_lines[i + 1:i + 1 + num_lines]
+        return None
+
+    @staticmethod
+    def _record_wavelengths(records):
+        """Wavelength (characters 66-77, in microns) of each line record.
+
+        Records whose wavelength cannot be read give NaN, so they never fall
+        inside a wavelength range.
+        """
+        try:
+            return np.array([float(record[66:77]) for record in records], dtype=np.float64)
+        except ValueError:
+            wavelengths = np.full(len(records), np.nan)
+            for i, record in enumerate(records):
+                try:
+                    wavelengths[i] = float(record[66:77])
+                except ValueError:
+                    pass
+            return wavelengths
+
+    def read_lines_in_range(self, filename, lam_min, lam_max, file_path=data_files_path):
+        """Read only the lines of a .par file with ``lam_min <= lam <= lam_max``.
+
+        Only the wavelength column of every record is parsed; the full fields
+        are parsed for the matching lines alone, so this is much faster than
+        :meth:`read_par_file` when the range holds a small part of the file.
+        The partition function is not read.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the .par file (relative to *file_path* unless absolute).
+        lam_min, lam_max : float
+            Wavelength range in microns (inclusive).
+        file_path : str or Path, optional
+            Folder a relative *filename* is taken from.
+
+        Returns
+        -------
+        tuple
+            ``(comment_lines, lines_data)``: the file's ``#`` header lines and
+            a list of line dictionaries (same keys as :meth:`read_par_file`),
+            in file order.
+        """
+        full_file_path = os.path.abspath(os.path.join(file_path, filename))
+        comment_lines, clean_lines = self._split_par_text(full_file_path)
+        if len(clean_lines) < 3:
+            return comment_lines, []
+
+        records = self._locate_line_records(clean_lines, int(clean_lines[0].strip()))
+        if not records:
+            return comment_lines, []
+
+        wavelengths = self._record_wavelengths(records)
+        keep = np.flatnonzero((wavelengths >= lam_min) & (wavelengths <= lam_max))
+        return comment_lines, self._parse_lines_fast_direct([records[i] for i in keep])
+
+    def _read_par_file(self, filename):
+        """Fast .par file reader using direct numpy operations."""
+        comment_lines, clean_lines = self._split_par_text(filename)
+
         other_fields_list = []
 
         # get any fields in the comments that were specfied in self._other_fields
@@ -147,23 +233,11 @@ class MolecularDataReader:
         partition_function = self._partition_type(partition_array[:, 0], partition_array[:, 1])
         
         # Find molecular lines section
-        lines_start_search = n_partition + 1
-        num_lines = None
-        lines_start = None
-        
-        for i in range(lines_start_search, min(lines_start_search + 5, len(clean_lines))):
-            try:
-                num_lines = int(clean_lines[i].strip())
-                lines_start = i + 1
-                break
-            except ValueError:
-                continue
-        
-        if num_lines is None or lines_start is None:
+        molecular_lines = self._locate_line_records(clean_lines, n_partition)
+        if molecular_lines is None:
             return partition_function, []
-        
+
         # Parse molecular lines using ultra-fast numpy operations
-        molecular_lines = clean_lines[lines_start:lines_start + num_lines]
         lines_data = self._parse_lines_fast_direct(molecular_lines)
         
         return partition_function, lines_data, other_fields_list

@@ -27,6 +27,11 @@ from .PartitionFunctionExtender import (
     extend_partition_function,
     register_extension_mode,
 )
+from .LineRangeSearch import (
+    LineSearchError,
+    LineSearchResult,
+    search_line_lists,
+)
 
 __all__ = [
     "Chi2Spectrum",
@@ -48,4 +53,7 @@ __all__ = [
     "ExtensionMode",
     "extend_partition_function",
     "register_extension_mode",
+    "LineSearchError",
+    "LineSearchResult",
+    "search_line_lists",
 ]
