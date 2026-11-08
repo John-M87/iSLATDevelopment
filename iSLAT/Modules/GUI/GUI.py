@@ -4,6 +4,7 @@ import os
 import platform
 import threading
 import queue
+import time
 
 from iSLAT.Modules.Debug.PerformanceLogger import get_performance_summary
 from iSLAT.Modules.FileHandling.iSLATFileHandling import write_molecules_to_csv
@@ -453,7 +454,14 @@ class GUI:
             If False, display spectrum synchronously (blocks until complete).
         """
         self.create_window()
-    
+
+        # Hold the plot's draws until Tk has laid the window out; every draw
+        # before that is at a provisional canvas size.
+        canvas = getattr(getattr(self, "plot", None), "canvas", None)
+        if hasattr(canvas, "hold_draws"):
+            canvas.hold_draws()
+            self.master.after(self._LAYOUT_CHECK_MS, self._release_plot_draws_when_laid_out, time.monotonic())
+
         self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # Listen for OS appearance changes (macOS dark ↔ light mode)
@@ -472,7 +480,30 @@ class GUI:
             self.master.after(1, self._start_async_spectrum_display)
         
         self.window.mainloop()
-    
+
+    #: How often (ms) to check whether Tk has finished laying out the window ...
+    _LAYOUT_CHECK_MS = 50
+    #: ... and the longest (s) the first plot draw waits for that.
+    _LAYOUT_MAX_WAIT_S = 2.0
+
+    def _release_plot_draws_when_laid_out(self, started: float, last_size=None) -> None:
+        """Release the plot's held draws once Tk has laid out the window.
+
+        Tk sizes the canvas over its first event-loop rounds (the left-hand
+        panels size themselves only after the window is mapped).  The window
+        counts as laid out once the canvas is mapped, the figure has been
+        resized to it and its size did not change since the previous check.
+        """
+        canvas = self.plot.canvas
+        widget = canvas.get_tk_widget()
+        size = (widget.winfo_width(), widget.winfo_height())
+        figure_size = tuple(int(round(v)) for v in canvas.figure.bbox.size)
+        laid_out = bool(widget.winfo_ismapped()) and size == last_size and figure_size == size
+        if laid_out or time.monotonic() - started >= self._LAYOUT_MAX_WAIT_S:
+            canvas.release_draws()
+        else:
+            self.master.after(self._LAYOUT_CHECK_MS, self._release_plot_draws_when_laid_out, started, size)
+
     def _start_async_spectrum_display(self):
         """Called after GUI is shown - starts async spectrum calculation."""
         if (hasattr(self, 'plot') and self.plot is not None and
@@ -583,8 +614,10 @@ class GUI:
                     # Initialize data-dependent plot elements now that calculations are done
                     self.plot.update_model_plot()
                     self.plot._set_initial_zoom_range()
+                    # Both calls above already asked for a draw; draw_idle merges
+                    # with that one (a draw() here rendered the figure twice).
                     if hasattr(self.plot, 'canvas'):
-                        self.plot.canvas.draw()
+                        self.plot.canvas.draw_idle()
                     #print("Spectrum displayed successfully (async)")
                     
                     # Print final performance summary including all async operations
