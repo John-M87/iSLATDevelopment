@@ -8,6 +8,7 @@ from typing import Optional, List, Tuple, Any, TYPE_CHECKING
 
 import iSLAT.Constants as c
 from .CachedLayout import CachedConstrainedLayoutEngine
+from .HoldableCanvas import HoldableFigureCanvasTkAgg
 from .LegendStrategy import StandardLegend
 from .MainPlotGrid import MainPlotGrid
 from .Theming import apply_canvas_theme, apply_figure_theme
@@ -34,49 +35,6 @@ if TYPE_CHECKING:
 
 from .PlotDebug import debug_config
 from iSLAT.Modules.DataProcessing.LineAnalyzer import LineAnalyzer
-
-class HoldableFigureCanvasTkAgg(FigureCanvasTkAgg):
-    """FigureCanvasTkAgg that can hold its draws while the window is still being laid out.
-
-    While held, ``draw_idle`` requests (including the ones Tk resizes make)
-    are only remembered; resizes still update the figure size.
-    :meth:`release_draws` then makes one draw.  Explicit ``draw()`` calls
-    are not held.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self._holding_draws = False
-        self._draw_requested = False
-        super().__init__(*args, **kwargs)
-
-    @property
-    def holding_draws(self) -> bool:
-        return self._holding_draws
-
-    def hold_draws(self) -> None:
-        """Remember draw requests instead of drawing until :meth:`release_draws`."""
-        self._holding_draws = True
-        # Take over a draw that is already queued.
-        queued = getattr(self, "_idle_draw_id", None)
-        if queued:
-            self.get_tk_widget().after_cancel(queued)
-            self._idle_draw_id = None
-            self._draw_requested = True
-
-    def release_draws(self) -> None:
-        """Stop holding draws; draw once if any draw was requested meanwhile."""
-        if not self._holding_draws:
-            return
-        self._holding_draws = False
-        if self._draw_requested:
-            self._draw_requested = False
-            super().draw_idle()
-
-    def draw_idle(self) -> None:
-        if self._holding_draws:
-            self._draw_requested = True
-            return
-        super().draw_idle()
 
 class iSLATPlot(WavelengthMarkerStoreMixin):
     """

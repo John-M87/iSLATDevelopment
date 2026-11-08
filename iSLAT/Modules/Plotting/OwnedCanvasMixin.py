@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 try:
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as _FigureCanvasTkAgg
+    from .HoldableCanvas import HoldableFigureCanvasTkAgg as _FigureCanvasTkAgg
 except ImportError:  # pragma: no cover - Tk is not available
     _FigureCanvasTkAgg = None
 
@@ -82,6 +82,10 @@ class OwnedCanvasMixin:
         if fig is None or _FigureCanvasTkAgg is None or self._parent_frame is None:
             return
         self._canvas = _FigureCanvasTkAgg(fig, master=self._parent_frame)
+        # A new widget starts at the figure's own size and Tk resizes it once
+        # it is packed: draw only when that has happened, not at both sizes.
+        if hasattr(self._canvas, "hold_draws_until_laid_out"):
+            self._canvas.hold_draws_until_laid_out()
         self._right_click_cid = self._canvas.mpl_connect(
             "button_press_event", self._on_canvas_button_press,
         )

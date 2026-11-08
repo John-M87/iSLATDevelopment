@@ -52,7 +52,7 @@ __all__ = ["Intensity"]
 class Intensity(WavelengthRangeMixin):
     __slots__ = ('_molecule', '_intensity', '_tau', '_t_kin', '_n_mol', '_dv', '_method', '_cache_valid', '_sorted_idx', '_sorted_freq',
                  '_cached_line_scalar', '_cached_e_delta', '_cached_dv_star',
-                 '_cached_freq_ratio', '_wavelength_range')
+                 '_cached_freq_ratio', '_wavelength_range', '_full_range_cache')
     
     def __init__(self, molecule_line_list: 'MoleculeLineList',
                  wavelength_range: Optional[tuple] = None) -> None:
@@ -92,6 +92,9 @@ class Intensity(WavelengthRangeMixin):
         self._cached_e_delta: Optional[np.ndarray] = None
         self._cached_dv_star: Optional[np.ndarray] = None  # per-neighbor dv thresholds for overlap
         self._cached_freq_ratio: Optional[np.ndarray] = None  # freq / c, shape (1, n_lines)
+        # (raw lines, (t_kin, n_mol, dv, method), intensity, tau) of the last
+        # full-range calculation (see _compute_full_range_intensity).
+        self._full_range_cache: Optional[tuple] = None
 
     # Pre-computed constants for blackbody calculation (class-level for efficiency)
     _BB_COEFF_RJ = 2.0 * c.BOLTZMANN_CONSTANT / (c.SPEED_OF_LIGHT_CGS ** 2)
@@ -1192,6 +1195,15 @@ class Intensity(WavelengthRangeMixin):
         if self._t_kin is None or self._n_mol is None or self._dv is None:
             return np.full(n_rows, np.nan), np.full(n_rows, np.nan)
 
+        # The result depends only on the line list and the parameters, and it
+        # is asked for on every population-diagram redraw (each selection):
+        # reuse the last one when neither changed.  The arrays are read-only
+        # because callers get the cached objects.
+        params = (self._t_kin, self._n_mol, self._dv, self._method or "curve_growth")
+        cached = self._full_range_cache
+        if cached is not None and cached[0] is raw and cached[1] == params:
+            return cached[2], cached[3]
+
         # Create a temporary unfiltered MoleculeLineList and Intensity
         # so the full calculation pipeline runs over all lines.
         from .MoleculeLineList import MoleculeLineList as _MLL
@@ -1213,6 +1225,10 @@ class Intensity(WavelengthRangeMixin):
             full_i = full_t = None
 
         if full_i is not None and len(full_i) == n_rows:
+            full_i.setflags(write=False)
+            if full_t is not None:
+                full_t.setflags(write=False)
+            self._full_range_cache = (raw, params, full_i, full_t)
             return (full_i, full_t)
 
         # The rebuild did not line up with *raw*.  This happens whenever the

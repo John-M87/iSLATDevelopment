@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Startup draws the main plot only once the window is laid out.
+"""Plot canvases are drawn once their widget is laid out, and blit opaque figures without alpha.
 
 * HoldableFigureCanvasTkAgg remembers draw requests (and resize draws)
   while held and makes one draw when released.
-* GUI._release_plot_draws_when_laid_out releases the hold once the canvas
-  is mapped, the figure has its size and that size held for a check (or
-  after a time limit).
+* hold_draws_until_laid_out releases the hold once the widget is mapped,
+  the figure has its size and that size held for a check (or after a time
+  limit).  GUI.start uses it for the main plot, OwnedCanvasMixin for every
+  new view canvas (e.g. the first switch to the Full Spectrum view).
 * GUI._poll_async_result asks for a draw instead of drawing on top of the
   draw that update_model_plot already asked for.
+* Opaque figures are blitted to Tk without alpha.
 """
 import queue
 import time
@@ -32,7 +34,7 @@ def tk_root():
 
 @pytest.fixture
 def canvas(tk_root):
-    from iSLAT.Modules.Plotting.MainPlot import HoldableFigureCanvasTkAgg
+    from iSLAT.Modules.Plotting.HoldableCanvas import HoldableFigureCanvasTkAgg
     fig = Figure(figsize=(4, 3), dpi=100)
     fig.add_subplot(111).plot([0, 1], [0, 1])
     c = HoldableFigureCanvasTkAgg(fig, master=tk_root)
@@ -99,26 +101,47 @@ class TestHoldableCanvas:
 # ----------------------------------------------------------------------
 # When the hold is released
 # ----------------------------------------------------------------------
-def _gui_with_canvas(widget_size, mapped=True, figure_px=None):
-    from iSLAT.Modules.GUI.GUI import GUI
-    gui = GUI.__new__(GUI)
-    gui.master = MagicMock()
-    w, h = widget_size
+class _FakeWidget:
+    def __init__(self, size, mapped=True):
+        self.size, self.mapped = size, mapped
+        self.toplevel = MagicMock()
+
+    def winfo_exists(self):
+        return True
+
+    def winfo_width(self):
+        return self.size[0]
+
+    def winfo_height(self):
+        return self.size[1]
+
+    def winfo_ismapped(self):
+        return self.mapped
+
+    def winfo_toplevel(self):
+        return self.toplevel
+
+
+def _held_canvas(widget_size, mapped=True, figure_px=None):
+    """A HoldableFigureCanvasTkAgg stand-in: the real methods on a fake widget."""
+    from iSLAT.Modules.Plotting.HoldableCanvas import HoldableFigureCanvasTkAgg
     fw, fh = figure_px if figure_px is not None else widget_size
-    figure = Figure(figsize=(fw / 100.0, fh / 100.0), dpi=100)
-    widget = SimpleNamespace(winfo_width=lambda: w, winfo_height=lambda: h, winfo_ismapped=lambda: mapped)
-    gui.plot = SimpleNamespace(canvas=SimpleNamespace(
-        get_tk_widget=lambda: widget, figure=figure, release_draws=MagicMock(),
-    ))
-    return gui
+    widget = _FakeWidget(widget_size, mapped)
+    c = HoldableFigureCanvasTkAgg.__new__(HoldableFigureCanvasTkAgg)
+    c._holding_draws = True
+    c._draw_requested = False
+    c.figure = Figure(figsize=(fw / 100.0, fh / 100.0), dpi=100)
+    c.get_tk_widget = lambda: widget
+    c.release_draws = MagicMock()
+    return c, widget
 
 
 class TestReleaseWhenLaidOut:
     def test_releases_once_size_is_stable_and_applied(self):
-        gui = _gui_with_canvas((1200, 600))
-        gui._release_plot_draws_when_laid_out(time.monotonic(), (1200, 600))
-        gui.plot.canvas.release_draws.assert_called_once()
-        gui.master.after.assert_not_called()
+        c, widget = _held_canvas((1200, 600))
+        c._release_when_laid_out(time.monotonic(), (1200, 600))
+        c.release_draws.assert_called_once()
+        widget.toplevel.after.assert_not_called()
 
     @pytest.mark.parametrize("case", [
         dict(last_size=None),                                  # first look at the size
@@ -127,18 +150,79 @@ class TestReleaseWhenLaidOut:
         dict(last_size=(1200, 600), figure_px=(640, 480)),     # figure not resized yet
     ], ids=["first-check", "still-resizing", "not-mapped", "figure-not-resized"])
     def test_waits_until_laid_out(self, case):
-        gui = _gui_with_canvas((1200, 600), mapped=case.get("mapped", True), figure_px=case.get("figure_px"))
-        gui._release_plot_draws_when_laid_out(time.monotonic(), case["last_size"])
-        gui.plot.canvas.release_draws.assert_not_called()
-        delay, callback, started, size = gui.master.after.call_args[0]
-        assert callback == gui._release_plot_draws_when_laid_out
+        c, widget = _held_canvas((1200, 600), mapped=case.get("mapped", True), figure_px=case.get("figure_px"))
+        c._release_when_laid_out(time.monotonic(), case["last_size"])
+        c.release_draws.assert_not_called()
+        delay, callback, started, size = widget.toplevel.after.call_args[0]
+        assert callback == c._release_when_laid_out
         assert size == (1200, 600)
 
     def test_releases_after_the_time_limit_anyway(self):
-        from iSLAT.Modules.GUI.GUI import GUI
-        gui = _gui_with_canvas((1200, 600), mapped=False)
-        gui._release_plot_draws_when_laid_out(time.monotonic() - GUI._LAYOUT_MAX_WAIT_S - 0.1, None)
-        gui.plot.canvas.release_draws.assert_called_once()
+        c, _widget = _held_canvas((1200, 600), mapped=False)
+        c._release_when_laid_out(time.monotonic() - c.LAYOUT_MAX_WAIT_S - 0.1, None)
+        c.release_draws.assert_called_once()
+
+    def test_stops_checking_once_released_elsewhere(self):
+        c, widget = _held_canvas((1200, 600), mapped=False)
+        c._holding_draws = False
+        c._release_when_laid_out(time.monotonic(), None)
+        widget.toplevel.after.assert_not_called()
+
+    def test_hold_draws_until_laid_out_releases_on_a_real_widget(self, tk_root):
+        # The root is withdrawn, so the widget is never mapped: the time limit releases it.
+        from iSLAT.Modules.Plotting.HoldableCanvas import HoldableFigureCanvasTkAgg
+        c = HoldableFigureCanvasTkAgg(Figure(figsize=(2, 2)), master=tk_root)
+        c.get_tk_widget().pack()
+        c.LAYOUT_MAX_WAIT_S = 0.2
+        c.hold_draws_until_laid_out()
+        assert c.holding_draws
+        deadline = time.monotonic() + 3.0
+        while c.holding_draws and time.monotonic() < deadline:
+            tk_root.update()
+            time.sleep(0.01)
+        assert not c.holding_draws
+        c.get_tk_widget().destroy()
+
+
+# ----------------------------------------------------------------------
+# Who holds
+# ----------------------------------------------------------------------
+def test_gui_start_holds_the_plot_until_laid_out():
+    from iSLAT.Modules.GUI.GUI import GUI
+    gui = GUI.__new__(GUI)
+    gui.config = {"start_on_top": False}
+    gui.master = MagicMock()
+    gui.window = gui.master
+    gui.plot = SimpleNamespace(canvas=MagicMock())
+    gui.create_window = MagicMock()
+    gui._bind_appearance_change = MagicMock()
+    gui.start(display_spectrum_async=False)
+    gui.plot.canvas.hold_draws_until_laid_out.assert_called_once()
+    gui.window.mainloop.assert_called_once()
+
+
+def test_new_view_canvases_are_held_until_laid_out(tk_root):
+    from iSLAT.Modules.Plotting.OwnedCanvasMixin import OwnedCanvasMixin
+
+    class _View(OwnedCanvasMixin):
+        _canvas = None
+        _pm = None
+
+        def __init__(self, fig, parent):
+            self._fig, self._parent_frame = fig, parent
+
+        def get_figure(self):
+            return self._fig
+
+        def _notify_canvas_changed(self):
+            pass
+
+    view = _View(Figure(figsize=(3, 2)), tk_root)
+    view._show_canvas()
+    try:
+        assert view._canvas.holding_draws
+    finally:
+        view._canvas.get_tk_widget().destroy()
 
 
 def test_poll_asks_for_a_draw_instead_of_drawing():
@@ -153,3 +237,44 @@ def test_poll_asks_for_a_draw_instead_of_drawing():
     gui.plot.update_model_plot.assert_called_once()
     gui.plot.canvas.draw_idle.assert_called()
     gui.plot.canvas.draw.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# Blitting
+# ----------------------------------------------------------------------
+class TestBlitOffsets:
+    @staticmethod
+    def _offsets_used(canvas, monkeypatch):
+        import iSLAT.Modules.Plotting.HoldableCanvas as hc
+        used = []
+        original = hc._backend_tk.blit
+        monkeypatch.setattr(hc._backend_tk, "blit", lambda photo, data, offsets, bbox=None: (
+            used.append(offsets), original(photo, data, offsets, bbox=bbox)))
+        canvas.draw()
+        return used
+
+    def test_opaque_figure_is_blitted_without_alpha(self, canvas, monkeypatch):
+        from iSLAT.Modules.Plotting.HoldableCanvas import RGB_OFFSETS
+        assert self._offsets_used(canvas, monkeypatch) == [RGB_OFFSETS]
+
+    @pytest.mark.parametrize("make_transparent", [
+        lambda fig: fig.patch.set_alpha(0.5),
+        lambda fig: fig.patch.set_facecolor((1, 1, 1, 0)),
+        lambda fig: fig.patch.set_visible(False),
+    ], ids=["patch-alpha", "facecolor-alpha", "no-background"])
+    def test_transparent_figure_keeps_alpha(self, canvas, monkeypatch, make_transparent):
+        from iSLAT.Modules.Plotting.HoldableCanvas import RGBA_OFFSETS
+        make_transparent(canvas.figure)
+        assert self._offsets_used(canvas, monkeypatch) == [RGBA_OFFSETS]
+
+    def test_opaque_blit_shows_the_same_pixels(self, canvas, monkeypatch, tk_root):
+        import iSLAT.Modules.Plotting.HoldableCanvas as hc
+        canvas.draw()
+        photo = canvas._tkphoto
+        w, h = canvas.get_width_height()
+        points = [(x, y) for x in range(0, w, 37) for y in range(0, h, 29)]
+        hc._backend_tk.blit(photo, canvas.renderer.buffer_rgba(), hc.RGBA_OFFSETS)
+        with_alpha = [photo.get(x, y) for x, y in points]
+        hc._backend_tk.blit(photo, canvas.renderer.buffer_rgba(), hc.RGB_OFFSETS)
+        without_alpha = [photo.get(x, y) for x, y in points]
+        assert with_alpha == without_alpha

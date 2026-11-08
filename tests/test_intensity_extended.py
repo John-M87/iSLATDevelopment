@@ -593,3 +593,90 @@ class TestPopulationDataAlignsWithPandasTable(_IntensityTestBase):
         df = ll.get_pandas_table()
         full = intensity.get_population_diagram_data(1.0, 160.0, full_range=True)
         assert len(full['eu']) != len(df)
+
+
+class TestFullRangeCache(_IntensityTestBase):
+    """The full-range intensities behind the population diagram are reused.
+
+    The population diagram asks for them on every redraw.  Recomputing means
+    rebuilding the whole line list from its file and recalculating every
+    line (~60 ms for H2O), so the result is kept until the parameters or
+    the line list change.  The rebuild from file is replaced here by an
+    in-memory copy of the same lines, counted per call.
+    """
+
+    N_LINES = 12
+
+    @pytest.fixture
+    def rebuilds(self, monkeypatch):
+        import iSLAT.Modules.DataTypes.MoleculeLineList as mll_module
+        calls = []
+        n_lines = self.N_LINES
+        real = mll_module.MoleculeLineList
+
+        def molecule_line_list(*args, **kwargs):
+            if "lines_data" in kwargs:      # in-memory lists (this test's own) are built normally
+                return real(*args, **kwargs)
+            calls.append(kwargs)            # the full-range rebuild from file
+            return self._make_line_list(n_lines=n_lines)
+
+        monkeypatch.setattr(mll_module, "MoleculeLineList", molecule_line_list)
+        return calls
+
+    def _intensity(self):
+        from iSLAT.Modules.DataTypes.Intensity import Intensity
+        inten = Intensity(self._make_line_list(n_lines=self.N_LINES))
+        # Optically thick, so every parameter below changes the intensities.
+        inten.calc_intensity(t_kin=500.0, n_mol=1e20, dv=2.0)
+        return inten
+
+    def test_repeated_tables_reuse_the_calculation(self, rebuilds):
+        inten = self._intensity()
+        first = inten.build_table(full_range=True)
+        second = inten.build_table(full_range=True)
+        assert len(rebuilds) == 1
+        import pandas as pd
+        pd.testing.assert_frame_equal(first, second)
+        assert np.isfinite(np.asarray(first["intens"], dtype=float)).all()
+
+    def test_population_diagram_reuses_the_calculation(self, rebuilds):
+        inten = self._intensity()
+        a = inten.get_population_diagram_data(1.0, 160.0, full_range=True)
+        b = inten.get_population_diagram_data(1.0, 160.0, full_range=True)
+        assert len(rebuilds) == 1
+        np.testing.assert_array_equal(a["intens"], b["intens"])
+
+    @pytest.mark.parametrize("params", [
+        dict(t_kin=900.0, n_mol=1e20, dv=2.0),
+        dict(t_kin=500.0, n_mol=3e20, dv=2.0),
+        dict(t_kin=500.0, n_mol=1e20, dv=5.0),
+        dict(t_kin=500.0, n_mol=1e20, dv=2.0, method="radex"),
+    ], ids=["t_kin", "n_mol", "dv", "method"])
+    def test_parameter_change_recalculates(self, rebuilds, params):
+        inten = self._intensity()
+        before = inten.build_table(full_range=True)["intens"].to_numpy()
+        inten.calc_intensity(**params)
+        after = inten.build_table(full_range=True)["intens"].to_numpy()
+        assert len(rebuilds) == 2
+        assert not np.allclose(before, after)
+
+    def test_new_line_list_recalculates(self, rebuilds):
+        inten = self._intensity()
+        inten.build_table(full_range=True)
+        inten.molecule._raw_lines_data = inten.molecule._raw_lines_data.copy()
+        inten.build_table(full_range=True)
+        assert len(rebuilds) == 2
+
+    def test_edits_to_a_returned_table_do_not_reach_the_cache(self, rebuilds):
+        inten = self._intensity()
+        first = inten.build_table(full_range=True)
+        expected = first["intens"].to_numpy().copy()
+        first.loc[0, "intens"] = -1.0
+        first["intens"] *= 2.0
+        np.testing.assert_array_equal(inten.build_table(full_range=True)["intens"].to_numpy(), expected)
+
+    def test_list_without_source_file_is_not_cached(self):
+        # The rebuild comes back empty; the active arrays are used and nothing is cached.
+        inten = self._intensity()
+        inten.build_table(full_range=True)
+        assert inten._full_range_cache is None
