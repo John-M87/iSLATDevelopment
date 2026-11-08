@@ -249,14 +249,18 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         grid.error_data = getattr(islat, 'err_data', None)
         grid.wave_data_obs = wave_data_obs
 
-        # Re-render only the spectrum panel - leaves inspection + pop panels alone.
-        grid._render_spectrum_panel()
+        # A molecule parameter only changes the models: update the model lines
+        # and summed fill in place, keeping the observed spectrum (its error
+        # bars take ~0.5 s to re-create).  Otherwise re-render only the
+        # spectrum panel - leaves inspection + pop panels alone.
+        if not grid.update_models_in_place():
+            grid._render_spectrum_panel()
         grid.apply_theme_to_figure()
         self._pm.make_span_selector()
 
-        # The re-render cleared ax1 and drew a fresh legend and summed fill:
-        # put the atomic / saved lines back and re-apply the summed, legend,
-        # observed-data and Y-axis settings.
+        # A re-render cleared ax1 and drew a fresh legend and summed fill (an
+        # in-place update rebuilt the legend): put the atomic / saved lines
+        # back and re-apply the summed, legend, observed-data and Y-axis settings.
         self.sync_toggle_state(self._pm.toggle_state)
 
     def _do_update_model_plot(self) -> None:

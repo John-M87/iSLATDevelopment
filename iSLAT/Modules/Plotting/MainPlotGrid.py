@@ -8,7 +8,7 @@ Layout (GridSpec 2x2):
 
 The grid can be used entirely standalone in a notebook / script, or its axes can be shared with the GUI embedding layer.
 """
-from typing import Optional, Tuple, List, Dict, Any, Union, TYPE_CHECKING
+from typing import Optional, Tuple, List, Dict, Any, NamedTuple, Union, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
@@ -18,7 +18,8 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from .ArtistTags import (
-    SUMMED_TAG, iter_molecule_lines, remove_molecule_lines, remove_tagged, set_molecule_visible,
+    MOLECULE_TAG, OBSERVED_TAG, SUMMED_TAG, iter_molecule_lines, iter_tagged, remove_molecule_lines,
+    remove_tagged, set_molecule_visible,
 )
 from .BasePlot import BasePlot
 from .CompositePlot import CompositePlot
@@ -38,6 +39,27 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
+
+class _SpectrumRender(NamedTuple):
+    """What the last full render of the spectrum panel drew, so the models can be updated in place."""
+    wave: np.ndarray
+    flux: np.ndarray
+    error: Optional[np.ndarray]
+    x_range: Tuple[float, float]
+    lines: Tuple[Any, ...]   # the molecule model lines it drew, in order
+    fills: Tuple[Any, ...]   # the summed fill it drew (empty when none)
+
+def _copy_or_none(a: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    return None if a is None else np.array(a, copy=True)
+
+def _same_values(a: Optional[np.ndarray], b: Optional[np.ndarray]) -> bool:
+    """True when *a* and *b* are both ``None`` or hold the same values (NaNs included)."""
+    if a is None or b is None:
+        return a is b
+    try:
+        return bool(np.array_equal(a, b, equal_nan=True))
+    except TypeError:
+        return False
 
 class MainPlotGrid(CompositePlot):
     """
@@ -162,6 +184,8 @@ class MainPlotGrid(CompositePlot):
         # Tracks the current PopulationDiagramPlot mode so we know when
         # to recreate the panel rather than just mutating its attributes.
         self._pdp_mode: Optional[str] = None  # 'molecule' | 'molecules'
+        # Set by every full render of the spectrum panel (see update_models_in_place).
+        self._spectrum_render: Optional[_SpectrumRender] = None
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -289,25 +313,13 @@ class MainPlotGrid(CompositePlot):
             if _prev_xlim != (0.0, 1.0) and _prev_ylim != (0.0, 1.0):
                 _restore_lims = True
 
+        self._spectrum_render = None
         if self.wave_data is None or len(self.wave_data) == 0:
             ax.clear()
             ax.set_title("No spectrum data loaded")
             return
 
-        # Resolve wavelength range for this render.
-        # Priority: explicit spectrum_range > global_wavelength_range from molecules > data bounds.
-        if self.spectrum_range is not None:
-            xmin_sp, xmax_sp = self.spectrum_range
-        else:
-            xmin_sp = float(np.nanmin(self.wave_data))
-            xmax_sp = float(np.nanmax(self.wave_data))
-            # Expand to the molecules' global_wavelength_range when the user
-            # has extended min/max wave beyond the observed data.
-            if self.molecules is not None:
-                mol_range = getattr(self.molecules, '_global_wavelength_range', None)
-                if mol_range is not None:
-                    xmin_sp = min(xmin_sp, float(mol_range[0]))
-                    xmax_sp = max(xmax_sp, float(mol_range[1]))
+        xmin_sp, xmax_sp = self._spectrum_x_range()
 
         # Build the molecule cache (list of pre-computed spectra) so that
         # SpectrumPanel can slice into it without recomputing molecule data.
@@ -383,6 +395,118 @@ class MainPlotGrid(CompositePlot):
         if _restore_lims:
             ax.set_xlim(_prev_xlim)
             ax.set_ylim(_prev_ylim)
+
+        self._spectrum_render = _SpectrumRender(
+            _copy_or_none(self.wave_data), _copy_or_none(self.flux_data),
+            _copy_or_none(self.error_data), (xmin_sp, xmax_sp),
+            tuple(iter_molecule_lines(ax)), tuple(iter_tagged(ax, SUMMED_TAG, lines=False)),
+        )
+
+    def _spectrum_x_range(self) -> Tuple[float, float]:
+        """Wavelength range drawn on the spectrum panel.
+
+        Priority: explicit ``spectrum_range`` > the data range widened to the
+        molecules' global wavelength range (when the user extended min / max
+        wave beyond the observed data).
+        """
+        if self.spectrum_range is not None:
+            xmin_sp, xmax_sp = self.spectrum_range
+            return xmin_sp, xmax_sp
+        xmin_sp = float(np.nanmin(self.wave_data))
+        xmax_sp = float(np.nanmax(self.wave_data))
+        if self.molecules is not None:
+            mol_range = getattr(self.molecules, '_global_wavelength_range', None)
+            if mol_range is not None:
+                xmin_sp = min(xmin_sp, float(mol_range[0]))
+                xmax_sp = max(xmax_sp, float(mol_range[1]))
+        return xmin_sp, xmax_sp
+
+    def update_models_in_place(self) -> bool:
+        """Redraw the spectrum panel's molecule models without re-rendering the panel.
+
+        For changes that only alter the models (a molecule parameter): the
+        model lines and the summed fill drawn by the last full render get the
+        new data, and the legend is rebuilt.  The observed spectrum (whose
+        error bars are slow to re-create), overlays, labels and limits stay
+        as they are.
+
+        Returns ``False`` without changing anything when the panel needs a
+        full :meth:`_render_spectrum_panel` instead: it was never rendered,
+        the observed data or wavelength range changed, its model lines or
+        summed fill were replaced since, or a different set of models (or a
+        summed fill appearing / disappearing) is needed now.
+        """
+        ax = self.ax_spectrum
+        last = self._spectrum_render
+        if ax is None or self.spectrum_panel is None or last is None:
+            return False
+        if self.wave_data is None or len(self.wave_data) == 0:
+            return False
+        xr = self._spectrum_x_range()
+        if (xr != last.x_range
+                or not _same_values(self.wave_data, last.wave)
+                or not _same_values(self.flux_data, last.flux)
+                or not _same_values(self.error_data, last.error)):
+            return False
+        lines = tuple(iter_molecule_lines(ax))
+        fills = tuple(iter_tagged(ax, SUMMED_TAG, lines=False))
+        if (len(lines) != len(last.lines) or any(a is not b for a, b in zip(lines, last.lines))
+                or len(fills) != len(last.fills) or any(a is not b for a, b in zip(fills, last.fills))):
+            return False
+
+        # The models as a full render would draw them (see SpectrumPanel.generate_plot).
+        mol_cache, _labels, _colors = build_molecule_traces(
+            self.molecules, self.wave_data, self.get_molecule_spectrum_data,
+            self.wave_data_obs, skip_errors=True,
+        )
+        drawn = []
+        for trace in mol_cache:
+            in_range = (trace.lam >= xr[0]) & (trace.lam <= xr[1])
+            if np.any(in_range):
+                drawn.append((trace, in_range))
+        if [trace.name for trace, _ in drawn] != [getattr(line, MOLECULE_TAG) for line in lines]:
+            return False
+        summed_wave, summed_flux = summed_model_flux(self.molecules, self.wave_data_obs)
+        fill_data = None
+        if summed_wave is not None and summed_flux is not None:
+            s_mask = (summed_wave >= xr[0]) & (summed_wave <= xr[1])
+            s_wave, s_flux = np.asarray(summed_wave)[s_mask], np.asarray(summed_flux)[s_mask]
+            if len(s_flux) > 0 and np.any(s_flux > 0):
+                fill_data = (s_wave, s_flux)
+        if (fill_data is not None) != bool(fills) or (fills and not hasattr(fills[0], "set_data")):
+            return False
+
+        panel = self.spectrum_panel
+        panel.theme = self.theme
+        base_linewidth = panel._get_theme_value("model_linewidth", 1.2)
+        alpha = panel._get_theme_value("model_alpha", 1.0)
+        zorder = panel._get_theme_value("zorder_model", 3)
+        for line, (trace, in_range) in zip(lines, drawn):
+            line.set_data(trace.lam[in_range], trace.flux[in_range])
+            line.set_color(trace.color)
+            line.set_label(trace.label)
+            line.set_linewidth(panel.get_molecule_linewidth_by_name(trace.name, base_linewidth))
+            line.set_alpha(alpha)
+            line.set_zorder(zorder)
+        if fill_data is not None:
+            fills[0].set_data(fill_data[0], 0, fill_data[1])
+
+        panel.molecules = self.molecules
+        panel.mol_cache = mol_cache
+        panel.summed_wave = summed_wave
+        panel.summed_flux = summed_flux
+
+        # Rebuild the legend as a full render does: with the observed data,
+        # model lines and summed fill all visible (a legend keeps the entries
+        # of artists the toggles hide later).
+        shown = [*iter_tagged(ax, OBSERVED_TAG), *lines, *fills]
+        was_visible = [artist.get_visible() for artist in shown]
+        for artist in shown:
+            artist.set_visible(True)
+        self._update_legend(ax)
+        for artist, visible in zip(shown, was_visible):
+            artist.set_visible(visible)
+        return True
 
     # ------------------------------------------------------------------
     def _render_inspection_panel(self) -> None:
