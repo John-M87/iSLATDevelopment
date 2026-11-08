@@ -306,25 +306,28 @@ class TestControlsAndInteraction:
     def test_registers_layout_entries_and_tau_toggles(self, rendered):
         view, pm, *_ = rendered
         bus = ControlBus()
-        cp, tb = _NoopSurface(), _NoopSurface()
+        cp, tb, vm = _NoopSurface(), _NoopSurface(), _NoopSurface()
         bus.register_surface("control_panel", cp)
         bus.register_surface("top_bar", tb)
+        bus.register_surface("views_menu", vm)
         pm.control_bus = bus
 
         view._register_control_fields()
         assert isinstance(cp.get_field("n_panels"), EntryField)
         assert any(isinstance(f, DisplayRangeField) for f in cp.fields())
-        tb_keys = [f.key for f in tb.fields()]
-        assert tb_keys == ["tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill", "tau_show_flux",
-                           "data_density", "skip_gaps"]
-        assert all(isinstance(f, ToggleField) for f in tb.fields())
+        # The tau toggles go to the Views menu's view-controls section, not the top bar.
+        assert tb.fields() == []
+        vm_keys = [f.key for f in vm.fields()]
+        assert vm_keys == ["tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill", "tau_show_flux",
+                           "data_density"]
+        assert all(isinstance(f, ToggleField) for f in vm.fields())
 
-        log_field = tb.get_field("tau_log_scale")
+        log_field = vm.get_field("tau_log_scale")
         log_field.setter(not log_field.getter())
         assert pm.toggle_state["tau_log_scale"] is True
 
         view.deactivate()
-        assert cp.fields() == [] and tb.fields() == []
+        assert cp.fields() == [] and vm.fields() == []
 
     def test_span_select_opens_three_panel(self, rendered):
         view, pm, islat, _ = rendered
@@ -559,14 +562,14 @@ class TestFractionToggle:
         view._set_stem_mode(False)
         assert pm.toggle_state["tau_display_mode"] == "profile"
 
-    def test_top_bar_button_flips_fraction(self, rendered):
+    def test_views_menu_toggle_flips_fraction(self, rendered):
         view, pm, *_ = rendered
         bus = ControlBus()
-        tb = _NoopSurface()
-        bus.register_surface("top_bar", tb)
+        vm = _NoopSurface()
+        bus.register_surface("views_menu", vm)
         pm.control_bus = bus
         view._register_control_fields()
-        field = tb.get_field("tau_fraction_mode")
+        field = vm.get_field("tau_fraction_mode")
         field.setter(not field.getter())
         assert pm.toggle_state["tau_display_mode"] == "fraction"
         field.setter(not field.getter())

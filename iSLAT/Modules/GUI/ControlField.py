@@ -3,8 +3,8 @@ ControlField — portable, surface-agnostic UI controls for iSLAT.
 
 A :class:`ControlField` describes a single UI control (toggle, entry, …) that
 can be rendered on any registered :class:`ControlSurface` (ControlPanel,
-TopBar, ConfigureSubplots dialog).  Views register fields on activation and
-un-register them on deactivation via a :class:`ControlBus`.
+TopBar, the Views menu, ConfigureSubplots dialog).  Views register fields on
+activation and un-register them on deactivation via a :class:`ControlBus`.
 
 Hierarchy::
 
@@ -105,6 +105,16 @@ class ControlField(ABC):
             The same list that was returned by :meth:`build_widget`.
         """
 
+    def build_menu_entry(self, menu: tk.Menu) -> List[Any]:
+        """Append this field to *menu* as menu entries.
+
+        Returns the references that :meth:`refresh` needs later (for
+        example the entry's :class:`tk.Variable`).  The default adds
+        nothing and returns an empty list: fields with no menu form
+        (entries, display-range bindings, ...) are skipped by menu surfaces.
+        """
+        return []
+
 # ---------------------------------------------------------------------------
 # Concrete field types
 # ---------------------------------------------------------------------------
@@ -116,6 +126,8 @@ class ToggleField(ControlField):
       :class:`tk.BooleanVar`.
     * **TOP_BAR / DIALOG** context → :class:`ttk.Button` that flips the
       state on each click.
+    * In a menu (:meth:`build_menu_entry`) → a check-button entry bound to a
+      :class:`tk.BooleanVar`.
     """
 
     def __init__(
@@ -165,10 +177,27 @@ class ToggleField(ControlField):
             return [widget]
 
     # ------------------------------------------------------------------
-    def refresh(self, widget_refs: List[tk.Widget]) -> None:
+    def build_menu_entry(self, menu: tk.Menu) -> List[Any]:
+        var = tk.BooleanVar(master=menu, value=bool(self.getter()))
+
+        def _on_toggle() -> None:
+            self.setter(var.get())
+            # The setter may refuse or adjust the change; show the real state.
+            try:
+                var.set(bool(self.getter()))
+            except Exception:
+                pass
+
+        menu.add_checkbutton(label=self.label, variable=var, command=_on_toggle)
+        return [var]
+
+    # ------------------------------------------------------------------
+    def refresh(self, widget_refs: List[Any]) -> None:
         if not widget_refs:
             return
-        var: Optional[tk.BooleanVar] = getattr(widget_refs[0], "_field_var", None)
+        ref = widget_refs[0]
+        # Menu entries store the variable itself; widgets carry it as _field_var.
+        var: Optional[tk.Variable] = ref if isinstance(ref, tk.Variable) else getattr(ref, "_field_var", None)
         if var is not None:
             try:
                 var.set(bool(self.getter()))

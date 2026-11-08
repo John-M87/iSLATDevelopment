@@ -136,6 +136,7 @@ class TestThreePanelViewNoFields:
         surface = _NoopSurface()
         bus.register_surface("control_panel", surface)
         bus.register_surface("top_bar", _NoopSurface())
+        bus.register_surface("views_menu", _NoopSurface())
         pm.control_bus = bus
 
         view = ThreePanelView(pm)
@@ -143,6 +144,7 @@ class TestThreePanelViewNoFields:
 
         assert surface.fields() == []
         assert bus.get_surface("top_bar").fields() == []
+        assert bus.get_surface("views_menu").fields() == []
 
     def test_deactivate_unregister_owner_is_safe(self):
         from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
@@ -164,16 +166,17 @@ class TestThreePanelViewNoFields:
 
 class TestFullSpectrumViewControlFields:
     """FullSpectrumView registers an EntryField for n_panels and a
-    DisplayRangeField, both on the 'control_panel' surface."""
+    DisplayRangeField, both on the 'control_panel' surface, and its
+    toggles on the 'views_menu' surface (the Views menu's view controls)."""
 
     def _make_view_with_bus(self):
         from iSLAT.Modules.Plotting.FullSpectrumView import FullSpectrumView
         pm = _make_mock_plot_manager()
         bus = ControlBus()
         cp_surface = _NoopSurface()
-        tb_surface = _NoopSurface()
+        vm_surface = _NoopSurface()
         bus.register_surface("control_panel", cp_surface)
-        bus.register_surface("top_bar", tb_surface)
+        bus.register_surface("views_menu", vm_surface)
         pm.control_bus = bus
 
         view = FullSpectrumView(pm)
@@ -181,18 +184,18 @@ class TestFullSpectrumViewControlFields:
         plot = FullSpectrumPlot(wave_data=wave, flux_data=flux, n_panels=8)
         view._plot = plot
         view._canvas = MagicMock()
-        return view, pm, bus, cp_surface, tb_surface
+        return view, pm, bus, cp_surface, vm_surface
 
     # ------------------------------------------------------------------
     def test_register_fields_adds_n_panels_entry(self):
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
 
         keys = [f.key for f in cp_surface.fields()]
         assert "n_panels" in keys
 
     def test_n_panels_field_is_entry_field(self):
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
 
         field = cp_surface.get_field("n_panels")
@@ -200,14 +203,14 @@ class TestFullSpectrumViewControlFields:
         assert field.datatype == "int"
 
     def test_n_panels_field_owner_is_view(self):
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
 
         field = cp_surface.get_field("n_panels")
         assert field.owner is view
 
     def test_register_fields_adds_display_range_field(self):
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
 
         cp_keys = [f.key for f in cp_surface.fields()]
@@ -215,33 +218,33 @@ class TestFullSpectrumViewControlFields:
         display_fields = [f for f in cp_surface.fields() if isinstance(f, DisplayRangeField)]
         assert len(display_fields) >= 1
 
-    def test_register_fields_adds_toggle_to_top_bar(self):
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+    def test_register_fields_adds_toggles_to_views_menu(self):
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
 
-        tb_keys = [f.key for f in tb_surface.fields()]
-        assert "show_residuals" in tb_keys
+        vm_keys = [f.key for f in vm_surface.fields()]
+        assert vm_keys == ["show_residuals", "data_density"]
 
     def test_show_residuals_is_toggle_field(self):
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
 
-        field = tb_surface.get_field("show_residuals")
+        field = vm_surface.get_field("show_residuals")
         assert isinstance(field, ToggleField)
 
     def test_deactivate_removes_all_owned_fields(self):
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
 
-        assert len(cp_surface.fields()) > 0 or len(tb_surface.fields()) > 0
+        assert len(cp_surface.fields()) > 0 or len(vm_surface.fields()) > 0
         bus.unregister_owner(view)
 
         assert cp_surface.fields() == []
-        assert tb_surface.fields() == []
+        assert vm_surface.fields() == []
 
     def test_re_register_replaces_fields(self):
         """Calling _register_control_fields twice should not duplicate fields."""
-        view, pm, bus, cp_surface, tb_surface = self._make_view_with_bus()
+        view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
         view._register_control_fields()
         n_after_first = len(cp_surface.fields())
         view._register_control_fields()

@@ -11,8 +11,6 @@ import numpy as np
 import pytest
 from matplotlib.figure import Figure
 
-from iSLAT.Modules.GUI.ControlField import ToggleField
-from iSLAT.Modules.GUI.ControlSurface import ControlBus, ControlSurface
 from iSLAT.Modules.Plotting import FullSpectrumPlot, GapMode, ResidualSpectrumPlot, SpectrumPanel
 from iSLAT.Modules.Plotting.FullSpectrumView import FullSpectrumView, toggle_state_display_kwargs
 
@@ -189,11 +187,6 @@ class _Molecules:
         return []
 
 
-class _NoopSurface(ControlSurface):
-    def _rebuild(self):
-        pass
-
-
 def _view(**toggles):
     islat = SimpleNamespace(wave_data_original=WAVE, wave_data=WAVE, flux_data=FLUX, err_data=None,
                             molecules_dict=_Molecules(), input_line_list="missing.csv", root=None)
@@ -247,18 +240,6 @@ class TestFullSpectrumView:
         x0, x1 = ax.get_xlim()
         sel = (WAVE >= x0) & (WAVE <= x1)
         assert ax.get_ylim() == pytest.approx((FLUX[sel].min(), FLUX[sel].max()))
-
-    def test_registers_top_bar_toggle(self):
-        view, pm = _view()
-        bus = ControlBus()
-        bar = _NoopSurface()
-        bus.register_surface("control_panel", _NoopSurface())
-        bus.register_surface("top_bar", bar)
-        pm.control_bus = bus
-        view._register_control_fields()
-        field = next(f for f in bar.fields() if f.key == "skip_gaps")
-        assert isinstance(field, ToggleField)
-        assert field.label == "Skip Data Gaps"
 
     def test_exports_follow_the_setting(self):
         assert "gap_mode" not in toggle_state_display_kwargs({})

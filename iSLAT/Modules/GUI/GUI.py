@@ -428,6 +428,9 @@ class GUI:
         self.plot.control_bus.register_surface(
             "top_bar", self.top_bar._top_bar_surface
         )
+        self.plot.control_bus.register_surface(
+            "views_menu", self.top_bar._views_menu_surface
+        )
         # The default view was activated inside iSLATPlot.__init__, before
         # these surfaces existed, so its control fields went nowhere.
         # Register them again now that the surfaces are wired.

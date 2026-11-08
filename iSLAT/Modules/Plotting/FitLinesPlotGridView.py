@@ -77,6 +77,10 @@ class FitLinesPlotGridView(PlotView):
     plot_manager : iSLATPlot
         The main controller (``iSLAT.Modules.Plotting.MainPlot.iSLATPlot``).
     """
+
+    #: Name this view is registered under in the Views menu (``iSLATPlot.views``).
+    VIEW_NAME: str = "Line Grid"
+
     def __init__(self, plot_manager: Any) -> None:
         super().__init__(plot_manager)
 
@@ -679,7 +683,8 @@ class FitLinesPlotGridView(PlotView):
 
         Two :class:`EntryField` objects (``n_cols`` / ``n_rows``) are placed on
         the control panel - mirroring the ``n_panels`` field of the full
-        spectrum view - and a ``show_model_lines`` :class:`ToggleField` is placed on the top bar.
+        spectrum view - and a ``show_model_lines`` :class:`ToggleField` is placed in the
+        view-controls section of the Views menu.
         """
         bus = getattr(self._pm, "control_bus", None)
         if bus is None:
@@ -716,7 +721,7 @@ class FitLinesPlotGridView(PlotView):
                 owner=self,
                 tip="Toggle molecule model line overlays\non the fit-lines plot grid",
             ),
-            "top_bar",
+            "views_menu",
         )
 
     def deactivate(self) -> None:

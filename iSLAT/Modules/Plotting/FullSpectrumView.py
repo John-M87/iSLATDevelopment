@@ -801,7 +801,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
             ),
         ], "control_panel")
 
-        # --- TopBar toggle ---
+        # --- Views menu toggles (view controls section) ---
         pm = self._pm
 
         def _residuals_getter() -> bool:
@@ -819,7 +819,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 owner=self,
                 tip=f"Toggle residual sub-panels on/off\nin full spectrum mode\nKeybind: {shortcut_text('toggle_residuals')}",
             ),
-            "top_bar",
+            "views_menu",
         )
 
         bus.register(
@@ -834,13 +834,13 @@ class FullSpectrumView(ToggleMixin, PlotView):
                     "ON:  equal data-point count per panel (DATA_DENSITY)."
                 ),
             ),
-            "top_bar",
+            "views_menu",
         )
 
-        #bus.register(self._skip_gaps_field(ToggleField), "top_bar")
+        #bus.register(self._skip_gaps_field(ToggleField), "views_menu")
 
     def _skip_gaps_field(self, toggle_field_cls: Any) -> Any:
-        """The *Skip Data Gaps* top-bar toggle (shared with :class:`OpticalDepthView`)."""
+        """The *Skip Data Gaps* Views-menu toggle (shared with :class:`OpticalDepthView`)."""
         return toggle_field_cls(
             "skip_gaps", "Skip Data Gaps",
             getter=self._get_skip_gaps,

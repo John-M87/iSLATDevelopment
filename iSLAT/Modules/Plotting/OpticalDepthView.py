@@ -7,7 +7,7 @@ The view builds on :class:`FullSpectrumView`, which already drives any :class:`S
 What differs from the full spectrum view:
 
 * The *Total Model* toggle shows / hides the combined "Total τ" line (and the summed-model fill of the flux sub-panels).
-* View-specific top-bar toggles switch between a linear and a logarithmic τ axis, from the convolved profile to per-line stems at the line centres or to each molecule's fractional share of the total τ per pixel (*τ Fraction*), between stacked and overlaid molecules, and add a flux sub-panel below each τ panel (*Flux Panels*), plus the data-density x scaling shared with the full spectrum view.
+* View-specific toggles (in the view-controls section of the Views menu) switch between a linear and a logarithmic τ axis, from the convolved profile to per-line stems at the line centres or to each molecule's fractional share of the total τ per pixel (*τ Fraction*), between stacked and overlaid molecules, and add a flux sub-panel below each τ panel (*Flux Panels*), plus the data-density x scaling shared with the full spectrum view.
 * The flux Y-axis settings (auto-scale, *Set Y Limits…*, in Jy) and the observed-data toggle apply to the flux sub-panels only; each τ panel is scaled to its own τ.
 * Dragging a range on a panel opens it in the Three Panel view for line inspection.
 * *Save Figure…* exports a fresh standalone optical depth figure.
@@ -326,7 +326,7 @@ class OpticalDepthView(FullSpectrumView):
                 ),
             ),
             #self._skip_gaps_field(ToggleField),
-        ], "top_bar")
+        ], "views_menu")
 
     # ==================================================================
     # Selection: inspect lines in the Three Panel view

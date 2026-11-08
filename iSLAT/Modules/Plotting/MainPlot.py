@@ -156,7 +156,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         self._view_change_callbacks: list = []
 
         # --- ControlBus: central registry for surface-agnostic UI controls ---
-        # Surfaces (ControlPanelSurface, TopBarSurface) are registered by GUI.create_window()
+        # Surfaces (ControlPanelSurface, TopBarSurface, ViewsMenuSurface) are registered by GUI.create_window()
         # after ControlPanel and TopBar are constructed.
         self.control_bus = ControlBus()
         self._configure_subplots_surface = ConfigureSubplotsSurface()

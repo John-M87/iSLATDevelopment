@@ -89,6 +89,77 @@ class TopBarSurface(ControlSurface):
                 except Exception:
                     pass
 
+# ---------------------------------------------------------------------------
+# ViewsMenuSurface - ControlSurface implementation for the Views dropdown
+# ---------------------------------------------------------------------------
+class ViewsMenuSurface(ControlSurface):
+    """Concrete :class:`ControlSurface` that renders the active view's
+    :class:`ControlField` objects as a section at the bottom of the Views menu.
+
+    The section is a separator, a disabled header naming the view (its
+    ``VIEW_NAME``, e.g. "Optical Depth Controls") and one entry per field
+    (:meth:`ControlField.build_menu_entry`, a check-button for a
+    :class:`ToggleField`).  It is hidden while no registered field has a
+    menu form.  The surface must be created after the menu's static entries,
+    and nothing else may be appended to the menu afterwards: the section is
+    always the last entries of the menu.
+
+    Parameters
+    ----------
+    menu:
+        The ``tk.Menu`` to render into.
+    tips:
+        The label -> tooltip dict of the menu's :class:`MenuToolTip`.  The
+        fields' tips are added to it while they are shown.
+    """
+    def __init__(self, menu: tk.Menu, tips: Optional[Dict[str, str]] = None) -> None:
+        super().__init__()
+        self._menu = menu
+        self._tips = tips if tips is not None else {}
+        self._added_tips: list = []
+        end = menu.index("end")
+        self._start = 0 if end is None else end + 1
+
+    def refresh_all(self) -> None:
+        """Re-read every field's current value (called each time the menu opens)."""
+        for key in list(self._fields):
+            self.refresh(key)
+
+    def _clear(self) -> None:
+        end = self._menu.index("end")
+        if end is not None and end >= self._start:
+            self._menu.delete(self._start, "end")
+        for label in self._added_tips:
+            self._tips.pop(label, None)
+        self._added_tips = []
+        self._widget_refs.clear()
+
+    def _rebuild(self) -> None:
+        self._clear()
+        if not self._fields:
+            return
+
+        owner = next(iter(self._fields.values())).owner
+        view_name = getattr(owner, "VIEW_NAME", None)
+        header = f"{view_name} Controls" if view_name else "View Controls"
+        self._menu.add_separator()
+        self._menu.add_command(label=header, state="disabled")
+        header_index = self._menu.index("end")
+
+        for field in self._fields.values():
+            try:
+                refs = field.build_menu_entry(self._menu)
+            except Exception:
+                refs = []
+            self._widget_refs[field.key] = refs
+            if field.tip and field.label not in self._tips:
+                self._tips[field.label] = field.tip
+                self._added_tips.append(field.label)
+
+        if self._menu.index("end") == header_index:
+            # No field rendered anything: drop the empty section.
+            self._clear()
+
 class TopBar(ResizableFrame):
     def __init__(
         self, 
@@ -290,7 +361,7 @@ class TopBar(ResizableFrame):
         views_menu.configure(postcommand=self._sync_plot_option_vars)
 
         views_drpwn.config(menu=views_menu)
-        MenuToolTip(views_menu, {
+        self._views_menu_tips = {
             "Three Panel":        "Standard 3-panel layout:\nfull spectrum, line inspection,\nand population diagram.",
             "Full Spectrum":      "Multi-panel full-spectrum view\nshowing the entire wavelength range.",
             "Optical Depth":      "Multi-panel optical depth τ(λ)\nof the visible molecules over\nthe entire wavelength range.",
@@ -303,7 +374,12 @@ class TopBar(ResizableFrame):
             "Show Observed Data": "Show / hide the observed spectrum\non the main plot.",
             "Show Saved Line Labels": "Show / hide the saved-line labels\nin the current view (each view\nremembers its own setting).",
             "Saved Line Labels\u2026": "Choose which column of the input\nline list labels the saved lines,\nwith an optional prefix / suffix,\nand the views that show labels.",
-        })
+        }
+        MenuToolTip(views_menu, self._views_menu_tips)
+        # The active view's own toggles (residuals, data density, the optical
+        # depth options, ...) are added below the static entries by this
+        # surface; it is registered on the ControlBus as "views_menu".
+        self._views_menu_surface = ViewsMenuSurface(views_menu, self._views_menu_tips)
         # ──────────────────────────────────────────────────────────────
 
         saved_lines_tip = f"Show saved lines\nfrom the 'Input Line List'\nKeybind: {shortcut_text('toggle_saved_lines')}"
@@ -1548,6 +1624,10 @@ class TopBar(ResizableFrame):
         except Exception:
             pass
         self._sync_saved_labels_var()
+        # View toggles can also change via keybinds; show their real state.
+        surface = getattr(self, '_views_menu_surface', None)
+        if surface is not None:
+            surface.refresh_all()
 
     def _sync_saved_labels_var(self) -> None:
         """Mirror the active view's saved-line label toggle (disabled for views without saved lines)."""

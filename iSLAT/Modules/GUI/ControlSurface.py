@@ -2,8 +2,9 @@
 ControlSurface and ControlBus — the registration backbone for iSLAT UI controls.
 
 A :class:`ControlSurface` is a named UI destination (e.g. the ControlPanel
-view-fields section, the TopBar dynamic area, the Configure Subplots dialog)
-that can host :class:`~iSLAT.Modules.GUI.ControlField.ControlField` instances.
+view-fields section, the TopBar dynamic area, the view-controls section of
+the Views menu, the Configure Subplots dialog) that can host
+:class:`~iSLAT.Modules.GUI.ControlField.ControlField` instances.
 
 A :class:`ControlBus` owns a registry of surfaces and forwards
 register / unregister calls from views to the correct surface(s).
@@ -16,13 +17,14 @@ Typical lifecycle
 
        bus.register_surface("control_panel", ControlPanelSurface(frame))
        bus.register_surface("top_bar", TopBarSurface(frame))
+       bus.register_surface("views_menu", ViewsMenuSurface(views_menu))
        bus.register_surface("configure_subplots", ConfigureSubplotsSurface())
 
 3. When ``FullSpectrumView.activate()`` is called, it registers its fields::
 
        bus.register(EntryField("n_panels", ..., owner=self), "control_panel")
        bus.register(DisplayRangeField("fsv_range", ..., owner=self), "control_panel")
-       bus.register(ToggleField("show_residuals", ..., owner=self), "top_bar")
+       bus.register(ToggleField("show_residuals", ..., owner=self), "views_menu")
 
 4. When ``FullSpectrumView.deactivate()`` is called::
 
