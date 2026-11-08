@@ -600,7 +600,9 @@ class PopulationDiagramPlot(BasePlot):
             self._render_component_legend(ax)
 
         # Re-render any previously plotted active-line scatter so it
-        # persists across axes changes and color_by calls.
+        # persists across axes changes and color_by calls - but only while
+        # its molecule is still on the diagram.  After a switch to another
+        # molecule those points would land on the wrong diagram.
         if self._active_lines_cache is not None:
             cache = self._active_lines_cache
             al = cache["active_lines"]
@@ -612,13 +614,16 @@ class PopulationDiagramPlot(BasePlot):
             for entry in al:
                 if len(entry) > 2:
                     entry[2] = None
-            self.render_active_lines(
-                cache["line_data"],
-                al,
-                molecule=cache["molecule"],
-                threshold=cache["threshold"],
-                color=cache["color"],
-            )
+            if self._plots_molecule(cache["molecule"]):
+                self.render_active_lines(
+                    cache["line_data"],
+                    al,
+                    molecule=cache["molecule"],
+                    threshold=cache["threshold"],
+                    color=cache["color"],
+                )
+            else:
+                self._active_lines_cache = None
 
         if self.fig is not None:
             self.apply_theme_to_figure()
@@ -663,6 +668,16 @@ class PopulationDiagramPlot(BasePlot):
         elif hasattr(mol_seq, "values") and not isinstance(mol_seq, list):
             mol_seq = mol_seq.values()
         return list(mol_seq)
+
+    def _plots_molecule(self, molecule: Optional["Molecule"]) -> bool:
+        """Whether *molecule* is one of the molecules this diagram plots (matched by name)."""
+        if molecule is None:
+            return False
+        name = getattr(molecule, "name", None)
+        return any(
+            mol is molecule or (name is not None and getattr(mol, "name", None) == name)
+            for mol in self._input_molecules()
+        )
 
     def get_molecule_ids(self) -> List[str]:
         """Return the distinct species ids of the molecules on this diagram.

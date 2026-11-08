@@ -1077,7 +1077,11 @@ class MainPlotGrid(CompositePlot):
         if ax is None:
             return
 
-        # Cache check - skip re-render if molecule and parameters unchanged.
+        # Cache check - skip re-render if molecule and parameters unchanged,
+        # unless the panel now shows a different single molecule (its own
+        # set_molecule, e.g. from the context menu, or a full refresh can swap
+        # it behind this cache).  All-molecules mode (no single molecule) keeps
+        # the skip.
         current_hash = None
         if molecule is not None and hasattr(molecule, '_compute_intensity_hash'):
             current_hash = (molecule.name, molecule._compute_intensity_hash())
@@ -1086,8 +1090,11 @@ class MainPlotGrid(CompositePlot):
             self._pdp_molecule = None
             self._pdp_cache_key = None
 
+        panel = self.pop_diagram_panel
         if (not force_redraw
                 and self._pdp_molecule is molecule
+                and panel is not None
+                and (panel.molecule is None or panel.molecule is molecule)
                 and current_hash is not None
                 and self._pdp_cache_key == current_hash):
             return

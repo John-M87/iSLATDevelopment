@@ -121,9 +121,12 @@ def _scatter_offsets_count(ax):
 # Fixture: a fully wired ThreePanelView with a real molecule
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def tpv_fixture():
-    """Yield (view, mol, pm) — a ThreePanelView in borrowed-axes mode."""
+def _build_three_panel_view(mol, comparison_mols=()):
+    """Return (view, pm, fig): a ThreePanelView in borrowed-axes mode.
+
+    *mol* is the primary active molecule; *comparison_mols* are the
+    comparison molecules shown alongside it in the line inspection panel.
+    """
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.Plotting.MainPlotGrid import MainPlotGrid
     from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
@@ -136,11 +139,12 @@ def tpv_fixture():
     wave = np.linspace(10.0, 22.0, 500)
     flux = np.random.default_rng(42).uniform(0.1, 0.5, len(wave))
 
-    mol = _make_molecule()
     md = MoleculeDict()
     md[mol.name] = mol
-    md._active_molecule = mol           # required by get_active_set()
-    md._comparison_molecules = []       # required by get_active_set()
+    for comp in comparison_mols:
+        md[comp.name] = comp
+    md._active_molecule = mol                           # required by get_active_set()
+    md._comparison_molecules = list(comparison_mols)    # required by get_active_set()
     md.apply_stellar_rv = MagicMock(side_effect=lambda w: w)
 
     # islat stub
@@ -151,7 +155,7 @@ def tpv_fixture():
     islat.err_data = None
     islat.molecules_dict = md
     islat.active_molecule = mol
-    islat.comparison_molecules = []
+    islat.comparison_molecules = list(comparison_mols)
     islat.user_settings = {"line_threshold": 0.0}
 
     # plot_manager stub
@@ -184,9 +188,33 @@ def tpv_fixture():
         return []
     pm.get_molecule_line_data = _get_mol_line_data
 
-    view = ThreePanelView(pm)
+    return ThreePanelView(pm), pm, fig
+
+
+@pytest.fixture
+def tpv_fixture():
+    """Yield (view, mol, pm) — a ThreePanelView in borrowed-axes mode."""
+    mol = _make_molecule()
+    view, pm, fig = _build_three_panel_view(mol)
 
     yield view, mol, pm
+
+    plt.close(fig)
+
+
+@pytest.fixture
+def tpv_two_molecules():
+    """Yield (view, primary, comparison, pm): a primary and one comparison molecule.
+
+    The comparison molecule's lines sit between the primary's, so every
+    line inspection marker belongs to exactly one molecule.
+    """
+    primary = _make_molecule(name="H2O", temp=500.0, lam_start=12.0)
+    comparison = _make_molecule(name="CO", temp=900.0, lam_start=12.7)
+    comparison.color = "#FF5500"
+    view, pm, fig = _build_three_panel_view(primary, [comparison])
+
+    yield view, primary, comparison, pm
 
     plt.close(fig)
 
@@ -931,3 +959,144 @@ class TestAxisChangePreservesHighlight:
             f"Vline count changed: {len(vlines_before)} → {len(vlines_after)} "
             "after axis change (active_lines was incorrectly cleared)"
         )
+
+
+# ===========================================================================
+# 9. Several active molecules: clicking a line shows its molecule's diagram
+# ===========================================================================
+
+class TestMultiMoleculePickSwitchesPopulationDiagram:
+    """With a primary and a comparison molecule in the selection, clicking a
+    line inspection marker must show that marker's molecule on the population
+    diagram, in either direction and any number of times, with only that
+    molecule's active-line points on it."""
+
+    XMIN, XMAX = 11.0, 20.0
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _marker_entries(view, mol_name):
+        """active_lines entries of *mol_name* that have a line inspection marker."""
+        return [
+            entry for entry in view.active_lines
+            if entry[0] is not None and entry[3].get("molecule_name") == mol_name
+        ]
+
+    def _pick_marker(self, view, mol_name, index=0):
+        """Simulate a click on marker *index* of *mol_name*; return its info dict."""
+        entries = self._marker_entries(view, mol_name)
+        assert len(entries) > index, f"no line inspection marker {index} for {mol_name}"
+        vline, _text, _sc, value = entries[index]
+        event = MagicMock()
+        event.artist = vline
+        event.ind = []
+        assert view._handle_line_pick_event(event) is value
+        return value
+
+    @staticmethod
+    def _live_active_scatter(view):
+        """Distinct active-line scatter artists in active_lines still drawn on ax3."""
+        live = []
+        for entry in view.active_lines:
+            sc = entry[2]
+            if sc is not None and sc in view.ax3.collections and all(sc is not s for s in live):
+                live.append(sc)
+        return live
+
+    def _assert_diagram_shows(self, view, mol):
+        pdp = view._grid.pop_diagram_panel
+        assert pdp.molecule is mol
+        assert mol.name in view.ax3.get_title()
+        # Exactly one active-line scatter is drawn, and it belongs to mol.
+        live = self._live_active_scatter(view)
+        assert len(live) == 1, f"{len(live)} active-line scatter collections on the diagram"
+        owners = {
+            entry[3].get("molecule_name")
+            for entry in view.active_lines if entry[2] is live[0]
+        }
+        assert owners == {mol.name}
+        assert list(view._active_scatter_collections) == [mol.name]
+        sc, count = view._active_scatter_collections[mol.name]
+        assert sc is live[0]
+        assert count == len(sc.get_offsets())
+
+    # ------------------------------------------------------------------
+    # tests
+    # ------------------------------------------------------------------
+
+    def test_selection_shows_primary_diagram(self, tpv_two_molecules):
+        view, primary, comparison, pm = tpv_two_molecules
+        view.on_selection(self.XMIN, self.XMAX)
+        assert self._marker_entries(view, primary.name)
+        assert self._marker_entries(view, comparison.name)
+        self._assert_diagram_shows(view, primary)
+
+    def test_pick_comparison_marker_shows_comparison_diagram(self, tpv_two_molecules):
+        view, primary, comparison, pm = tpv_two_molecules
+        view.on_selection(self.XMIN, self.XMAX)
+
+        self._pick_marker(view, comparison.name)
+
+        self._assert_diagram_shows(view, comparison)
+
+    def test_pick_primary_marker_after_comparison_switches_back(self, tpv_two_molecules):
+        view, primary, comparison, pm = tpv_two_molecules
+        view.on_selection(self.XMIN, self.XMAX)
+
+        self._pick_marker(view, comparison.name)
+        self._pick_marker(view, primary.name)
+
+        self._assert_diagram_shows(view, primary)
+
+    def test_clicking_back_and_forth_keeps_diagram_in_step(self, tpv_two_molecules):
+        """Every click shows the clicked molecule; nothing piles up on ax3."""
+        view, primary, comparison, pm = tpv_two_molecules
+        view.on_selection(self.XMIN, self.XMAX)
+        n_collections = {primary.name: len(view.ax3.collections)}
+
+        for mol in (comparison, primary, comparison, comparison, primary, primary, comparison):
+            self._pick_marker(view, mol.name, index=1)
+            self._assert_diagram_shows(view, mol)
+            n_collections.setdefault(mol.name, len(view.ax3.collections))
+            assert len(view.ax3.collections) == n_collections[mol.name]
+
+    def test_picked_line_highlighted_on_switched_diagram(self, tpv_two_molecules):
+        """The clicked marker and its point on the newly shown diagram are orange, nothing else."""
+        import matplotlib.colors as mcolors
+        view, primary, comparison, pm = tpv_two_molecules
+        view.on_selection(self.XMIN, self.XMAX)
+        orange = mcolors.to_rgba("orange")
+
+        for mol in (comparison, primary):
+            value = self._pick_marker(view, mol.name, index=2)
+
+            for vline, _text, _sc, entry_value in view.active_lines:
+                if vline is None:
+                    continue
+                is_orange = np.allclose(mcolors.to_rgba(vline.get_color()), orange)
+                assert is_orange == (entry_value is value)
+
+            sc, _count = view._active_scatter_collections[mol.name]
+            orange_points = [
+                i for i, fc in enumerate(sc.get_facecolors()) if np.allclose(fc, orange)
+            ]
+            assert orange_points == [value["_scatter_point_index"]]
+
+    def test_pick_switches_after_menu_reset_to_primary(self, tpv_two_molecules):
+        """"Show Active Molecule Only" sets the diagram directly; a later click must still switch."""
+        view, primary, comparison, pm = tpv_two_molecules
+        view.on_selection(self.XMIN, self.XMAX)
+        self._pick_marker(view, comparison.name)
+
+        # What the population diagram context-menu item does.
+        view._grid.pop_diagram_panel.set_molecule(primary)
+        assert view._grid.pop_diagram_panel.molecule is primary
+        # The comparison molecule's points must not be replayed onto the primary's diagram.
+        assert self._live_active_scatter(view) == []
+
+        self._pick_marker(view, comparison.name)
+
+        self._assert_diagram_shows(view, comparison)
