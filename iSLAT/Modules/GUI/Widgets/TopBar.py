@@ -11,6 +11,10 @@ import iSLAT.Constants as c
 from ..GUIFunctions import create_button, create_menu_btn
 from ..KeyBindings import shortcut_text
 from ..Tooltips import CreateToolTip, MenuToolTip
+from ..YAxisDataSync import (
+    Y_DATA_SYNC_MENU_LABEL, Y_DATA_SYNC_MENU_TIP, Y_DATA_SYNC_OFF,
+    add_y_data_range_controls, add_y_data_sync_menu, y_data_sync_var_value,
+)
 from .ResizableFrame import ResizableFrame
 from iSLAT.Modules.GUI.Widgets.ChartWindow import MoleculeSelector
 from iSLAT.Modules.GUI.Widgets.SampleManagerWindow import SampleManagerWindow
@@ -260,6 +264,14 @@ class TopBar(ResizableFrame):
             command=lambda: self.main_plot.set_y_autoscale_source(
                 "model" if self._y_model_var.get() else "data"),
         )
+        self._y_data_sync_var = tk.StringVar(value=Y_DATA_SYNC_OFF)
+        add_y_data_sync_menu(
+            views_menu, self._y_data_sync_var, self.main_plot.set_y_data_sync,
+            bg=btn_theme.get("background", "lightgray"),
+            fg=self.theme.get("foreground", "#F0F0F0"),
+            activebackground=btn_theme.get("active_background", "gray"),
+            activeforeground=self.theme.get("foreground", "#F0F0F0"),
+        )
         views_menu.add_command(label="Set Y Limits\u2026", command=self.open_y_limits_dialog)
         views_menu.add_checkbutton(
             label="Show Observed Data",
@@ -286,6 +298,7 @@ class TopBar(ResizableFrame):
             "Line Grid":          "Grid of individual line fits\nfrom the most recent fit run.",
             "Auto-scale Y Axis":  "ON: the main plot's Y axis follows\nthe data in view.\nOFF: it stays at the current / set limits.",
             "Auto-scale Y to Model Flux": "When auto-scaling, fit the Y axis to the\nplotted model (molecule lines and sum)\ninstead of the observed data.",
+            Y_DATA_SYNC_MENU_LABEL: Y_DATA_SYNC_MENU_TIP,
             "Set Y Limits\u2026":  "Pin the main plot's Y axis to\nspecific values (turns auto-scale off).",
             "Show Observed Data": "Show / hide the observed spectrum\non the main plot.",
             "Show Saved Line Labels": "Show / hide the saved-line labels\nin the current view (each view\nremembers its own setting).",
@@ -1530,6 +1543,7 @@ class TopBar(ResizableFrame):
         try:
             self._y_autoscale_var.set(bool(getattr(self.main_plot, 'y_autoscale_toggle', True)))
             self._y_model_var.set(getattr(self.main_plot, 'y_autoscale_source', 'data') == 'model')
+            self._y_data_sync_var.set(y_data_sync_var_value(getattr(self.main_plot, 'y_data_sync', None)))
             self._observed_var.set(bool(getattr(self.main_plot, 'observed_toggle', True)))
         except Exception:
             pass
@@ -1556,7 +1570,12 @@ class TopBar(ResizableFrame):
             set_saved_line_label_view_visible(self.islat, view, bool(visible))
 
     def open_y_limits_dialog(self) -> None:
-        """Open a small dialog to pin the main plot's Y axis to specific values."""
+        """Open a small dialog to pin the main plot's Y axis to specific values.
+
+        Its *Data min/max* section fills the values from the observed
+        data's min / max (whole spectrum or visible range), or keeps the
+        axis synced to them (also per panel).
+        """
         pm = self.main_plot
         try:
             cur_lo, cur_hi = pm.get_y_limits()
@@ -1570,16 +1589,35 @@ class TopBar(ResizableFrame):
         pad = {"padx": 8, "pady": 4}
 
         tk.Label(win, text="Y min (Jy):").grid(row=0, column=0, sticky="w", **pad)
-        lo_var = tk.StringVar(value=f"{cur_lo:.4g}")
+        lo_var = tk.StringVar(master=win, value=f"{cur_lo:.4g}")
         lo_entry = tk.Entry(win, textvariable=lo_var, width=12)
         lo_entry.grid(row=0, column=1, sticky="w", **pad)
 
         tk.Label(win, text="Y max (Jy):").grid(row=1, column=0, sticky="w", **pad)
-        hi_var = tk.StringVar(value=f"{cur_hi:.4g}")
+        hi_var = tk.StringVar(master=win, value=f"{cur_hi:.4g}")
         tk.Entry(win, textvariable=hi_var, width=12).grid(row=1, column=1, sticky="w", **pad)
 
         status = tk.Label(win, text="", fg="red")
-        status.grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+        status.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
+
+        def _fill(lo: float, hi: float) -> None:
+            lo_var.set(f"{lo:.6g}")
+            hi_var.set(f"{hi:.6g}")
+
+        def _sync(scope: str) -> None:
+            pm.set_y_data_sync(scope)
+            win.destroy()
+
+        add_y_data_range_controls(
+            win, 2,
+            current_scope=getattr(pm, 'y_data_sync', None),
+            panel_count=pm.y_axis_count() if hasattr(pm, 'y_axis_count') else 1,
+            get_range=pm.get_data_y_range,
+            on_fill=_fill,
+            on_sync=_sync,
+            set_status=lambda text: status.config(text=text),
+            **pad,
+        )
 
         def _apply(*_):
             try:
@@ -1599,7 +1637,7 @@ class TopBar(ResizableFrame):
             win.destroy()
 
         btns = tk.Frame(win)
-        btns.grid(row=3, column=0, columnspan=2, pady=8)
+        btns.grid(row=4, column=0, columnspan=2, pady=8)
         ttk.Button(btns, text="Apply", command=_apply).pack(side="left", padx=4)
         ttk.Button(btns, text="Auto-scale", command=_auto).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=4)

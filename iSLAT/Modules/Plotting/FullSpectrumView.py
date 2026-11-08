@@ -27,7 +27,7 @@ from matplotlib.figure import Figure as MplFigure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.widgets import SpanSelector
 
-from .PlotView import PlotView, draw_wavelength_markers
+from .PlotView import PlotView, draw_wavelength_markers, normalize_y_data_sync
 from ..GUI.KeyBindings import shortcut_text
 from .StackedSpectralPanel import StackedSpectralPanel
 from .FullSpectrumPlot import FullSpectrumPlot
@@ -273,8 +273,16 @@ class FullSpectrumView(ToggleMixin, PlotView):
         super()._reapply_display_state(toggle_state)
         if (isinstance(toggle_state, dict)
                 and toggle_state.get("y_autoscale", True)
+                and self._y_data_sync_scope(toggle_state) is None
                 and self._y_autoscale_source() == "model"):
             self._autoscale_y_axes()
+
+    def _y_data_arrays(self):
+        """The plot's own (RV-corrected) arrays, which match the panels' wavelength axes."""
+        plot = self._plot
+        if plot is not None and getattr(plot, "flux_data", None) is not None:
+            return getattr(plot, "wave_data", None), plot.flux_data
+        return super()._y_data_arrays()
 
     def _load_saved_line_data(self):
         return self._load_line_data()
@@ -1472,6 +1480,7 @@ def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
 
     Mirrors what the interactive views show: observed-data and summed-model
     visibility, manual Y limits while auto-scaling is off, and otherwise the
+    data min / max sync scope (``y_data_sync``, only when set) or the
     ``"data"`` / ``"model"`` auto-scale source.
     """
     ts = toggle_state if isinstance(toggle_state, dict) else {}
@@ -1480,6 +1489,9 @@ def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
         "show_summed": bool(ts.get("summed", True)),
         "y_autoscale_source": ts.get("y_autoscale_source", "data"),
     }
+    sync = normalize_y_data_sync(ts.get("y_data_sync"))
+    if ts.get("y_autoscale", True) and sync is not None:
+        kw["y_data_sync"] = sync
     if not ts.get("y_autoscale", True):
         manual = ts.get("y_limits")
         if manual is not None:

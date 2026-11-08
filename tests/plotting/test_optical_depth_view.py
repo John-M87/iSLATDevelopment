@@ -416,6 +416,28 @@ class TestFluxPanels:
         pm.toggle_state["y_autoscale_source"] = "model"
         assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
 
+    def test_data_sync_applies_to_flux_panels_only(self, with_flux):
+        view, pm, *_ = with_flux
+        tau_before = [ax.get_ylim() for ax in view.subplots.values()]
+        pm.toggle_state["y_data_sync"] = "panel"
+        assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
+        # The observed flux is a flat 0.05 Jy, widened by 5 % on each side.
+        for ax in view._plot.get_flux_axes().values():
+            assert ax.get_ylim() == pytest.approx((0.0475, 0.0525))
+        assert [ax.get_ylim() for ax in view.subplots.values()] == tau_before
+        assert view.y_axis_count() == len(view._plot.get_flux_axes())
+
+    def test_export_helper_applies_data_sync(self, with_flux):
+        view, pm, *_ = with_flux
+        flux_axes = list(view._plot.get_flux_axes().values())
+        for ax in flux_axes:
+            ax.set_ylim(-1.0, 1.0)
+        view._apply_flux_display_state(view._plot, dict(pm.toggle_state, y_data_sync="global"))
+        assert all(ax.get_ylim() == pytest.approx((0.0475, 0.0525)) for ax in flux_axes)
+        view._apply_flux_display_state(
+            view._plot, dict(pm.toggle_state, y_data_sync="global", y_autoscale=False, y_limits=(0.0, 2.0)))
+        assert all(ax.get_ylim() == (0.0, 2.0) for ax in flux_axes)
+
     def test_observed_toggle_hides_flux_data(self, with_flux):
         view, *_ = with_flux
         view.toggle_observed_data(False)

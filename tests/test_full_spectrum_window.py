@@ -270,6 +270,64 @@ class TestYAxis:
         assert not dlg.winfo_exists()
         assert all(ax.get_ylim() == (0.0, 7.0) for ax in _spectrum_axes(win))
 
+    # The window starts with 4 panels over 6-10 um; the data is 1 Jy below 8 um and 4 Jy above.
+    def test_sync_to_data_min_max(self, make_window):
+        win, _ = make_window()
+        win.set_y_limits(-1, 9)
+        win.set_y_data_sync("panel")
+        assert win.toggle_state["y_autoscale"] is True and win.y_autoscale_var.get() is True
+        assert win.y_data_sync_var.get() == "panel"
+        lims = [ax.get_ylim() for ax in _spectrum_axes(win)]
+        assert lims[0] == pytest.approx((0.95, 1.05)) and lims[-1] == pytest.approx((3.8, 4.2))
+        win.set_y_data_sync("view")
+        assert all(ax.get_ylim() == (1.0, 4.0) for ax in _spectrum_axes(win))
+        win.set_y_autoscale_source("model")                 # exclusive with syncing
+        assert win.toggle_state["y_data_sync"] is None
+        assert win.y_data_sync_var.get() == "off"
+
+    def test_sync_inherited_from_gui_and_kept_on_relayout(self, make_window, tmp_path):
+        win, _ = make_window(_islat(tmp_path, _gui_state(y_data_sync="panel")))
+        assert win.y_data_sync_var.get() == "panel"
+        assert _spectrum_axes(win)[0].get_ylim() == pytest.approx((0.95, 1.05))
+        win.n_panels_var.set("2")
+        win.apply_settings()
+        lims = [ax.get_ylim() for ax in _spectrum_axes(win)]
+        assert lims == [pytest.approx((0.95, 1.05)), pytest.approx((3.8, 4.2))]
+
+    def test_sync_menu(self, make_window):
+        win, _ = make_window()
+        index = next(i for i in range(win.y_menu.index("end") + 1)
+                     if win.y_menu.type(i) == "cascade")
+        assert win.y_menu.entrycget(index, "label") == "Sync Y to Data Min/Max"
+        sub = win.nametowidget(win.y_menu.entrycget(index, "menu"))
+        labels = [sub.entrycget(i, "label") for i in range(sub.index("end") + 1)]
+        assert labels == ["Off", "Global Data", "Active View", "Each Panel"]
+        sub.invoke(3)
+        assert win.toggle_state["y_data_sync"] == "panel"
+        sub.invoke(1)
+        assert win.toggle_state["y_data_sync"] == "global"
+        assert all(ax.get_ylim() == (1.0, 4.0) for ax in _spectrum_axes(win))
+        sub.invoke(0)
+        assert win.toggle_state["y_data_sync"] is None
+
+    def test_y_limits_dialog_data_min_max(self, make_window):
+        win, _ = make_window()
+        win.open_y_limits_dialog()
+        dlg = win._y_limits_dialog
+        combo = next(w for w in _walk(dlg) if w.winfo_class() == "TCombobox")
+        assert list(dlg.tk.splitlist(combo.cget("values"))) == ["Global data", "Active view", "Each panel"]
+        entries = [w for w in _walk(dlg) if w.winfo_class() == "TEntry"]
+        _button(dlg, "Fill Values").invoke()
+        assert (entries[0].get(), entries[1].get()) == ("1", "4")
+        assert dlg.winfo_exists()                           # filling only fills the entries
+        combo.set("Each panel")
+        combo.event_generate("<<ComboboxSelected>>")
+        assert _button(dlg, "Fill Values").instate(["disabled"])
+        _button(dlg, "Keep Synced").invoke()
+        assert not dlg.winfo_exists()
+        assert win.toggle_state["y_data_sync"] == "panel"
+        assert _spectrum_axes(win)[0].get_ylim() == pytest.approx((0.95, 1.05))
+
 
 class TestMarkersSaveRefresh:
     def test_marks_start_from_gui_then_are_window_only(self, make_window, tmp_path):
@@ -366,7 +424,8 @@ class TestCompactBar:
         assert not any(a.get_visible() for a in _tagged(win, "_islat_observed"))
         y_labels = [win.y_menu.entrycget(i, "label") for i in range(win.y_menu.index("end") + 1)
                     if win.y_menu.type(i) != "separator"]
-        assert y_labels == ["Auto-scale Y Axis", "Auto-scale Y to Model Flux", "Set Y Limits\u2026"]
+        assert y_labels == ["Auto-scale Y Axis", "Auto-scale Y to Model Flux",
+                            "Sync Y to Data Min/Max", "Set Y Limits\u2026"]
         win.y_menu.invoke(1)
         assert win.toggle_state["y_autoscale_source"] == "model"
         win.y_menu.invoke(0)

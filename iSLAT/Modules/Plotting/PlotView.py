@@ -266,6 +266,88 @@ def fit_y_limits_to_model(ax: Any) -> Optional[Tuple[float, float]]:
     return (bottom, top + top / 8)
 
 
+# ----------------------------------------------------------------------
+# Y axis synced to the observed data's min / max
+# ----------------------------------------------------------------------
+#: Scopes for ``toggle_state["y_data_sync"]``: the whole spectrum, the
+#: active view's visible wavelength range (one range shared by all of its
+#: panels), or each panel's own wavelength range.
+Y_DATA_SYNC_SCOPES: Tuple[str, ...] = ("global", "view", "panel")
+
+
+def normalize_y_data_sync(value: Any) -> Optional[str]:
+    """Return *value* as a Y data-sync scope, or ``None`` when syncing is off.
+
+    Accepts the scopes in :data:`Y_DATA_SYNC_SCOPES` in any case; anything
+    else (``None``, ``"off"``, ...) means off.
+    """
+    if value is None:
+        return None
+    scope = str(value).strip().lower()
+    return scope if scope in Y_DATA_SYNC_SCOPES else None
+
+
+def data_y_range(
+    wave: Any,
+    flux: Any,
+    x_ranges: Optional[Any] = None,
+) -> Optional[Tuple[float, float]]:
+    """Return the exact ``(min, max)`` of the finite *flux* values.
+
+    With *x_ranges* (a sequence of ``(start, end)`` wavelength pairs) only
+    the points whose wavelength lies in at least one range count.  Unlike
+    the auto-scale rules no headroom is added; a flat selection is widened
+    slightly, since an axis cannot show a zero-height range.  Returns
+    ``None`` when no finite flux is selected.
+    """
+    import numpy as np
+    from matplotlib.transforms import nonsingular
+    if flux is None:
+        return None
+    flux = np.asarray(flux, dtype=float).ravel()
+    keep = np.isfinite(flux)
+    if x_ranges is not None:
+        if wave is None:
+            return None
+        wave = np.asarray(wave, dtype=float).ravel()
+        if wave.shape != flux.shape:
+            return None
+        in_range = np.zeros(flux.shape, dtype=bool)
+        for start, end in x_ranges:
+            lo, hi = sorted((float(start), float(end)))
+            in_range |= (wave >= lo) & (wave <= hi)
+        keep &= in_range
+    if not np.any(keep):
+        return None
+    lo, hi = nonsingular(float(flux[keep].min()), float(flux[keep].max()), expander=0.05)
+    return (float(lo), float(hi))
+
+
+def data_synced_y_limits(
+    axes: Any,
+    wave: Any,
+    flux: Any,
+    scope: Any,
+) -> List[Optional[Tuple[float, float]]]:
+    """Return Y limits that sync each of *axes* to the observed data's min / max.
+
+    * ``"global"``: every axes gets the min / max of all the data.
+    * ``"view"``: every axes gets the min / max of the data inside any of
+      the axes' x-ranges (one shared range for the whole view).
+    * ``"panel"``: each axes gets the min / max inside its own x-range.
+
+    One entry per axes, ``None`` where there is no data (or the scope is off).
+    """
+    axes = list(axes)
+    scope = normalize_y_data_sync(scope)
+    if not axes or scope is None:
+        return [None] * len(axes)
+    if scope == "panel":
+        return [data_y_range(wave, flux, [ax.get_xlim()]) for ax in axes]
+    x_ranges = None if scope == "global" else [ax.get_xlim() for ax in axes]
+    return [data_y_range(wave, flux, x_ranges)] * len(axes)
+
+
 class PlotView(ABC):
     """
     Abstract base for a swappable plot view inside the main iSLAT window.
@@ -512,10 +594,85 @@ class PlotView(ABC):
                 changed = True
         return changed
 
+    # --- Y axis synced to the observed data's min / max -------------------
+    def _y_data_sync_scope(self, toggle_state: Optional[dict] = None) -> Optional[str]:
+        """The ``y_data_sync`` scope of *toggle_state* (default: the controller's), or ``None``."""
+        if not isinstance(toggle_state, dict):
+            toggle_state = getattr(getattr(self, "_pm", None), "toggle_state", None)
+        if not isinstance(toggle_state, dict):
+            return None
+        return normalize_y_data_sync(toggle_state.get("y_data_sync"))
+
+    def _y_data_arrays(self) -> Tuple[Any, Any]:
+        """``(wave, flux)`` of the observed spectrum in the Y axes' wavelength coordinates."""
+        islat = getattr(self, "_islat", None)
+        return getattr(islat, "wave_data", None), getattr(islat, "flux_data", None)
+
+    def _iter_y_sync_only_axes(self):
+        """Yield extra axes that follow the data min / max sync only.
+
+        Unlike :meth:`_iter_y_axes` they ignore manual limits and the normal
+        auto-scale rule, and they do not widen the view's range: for
+        ``"global"`` and ``"view"`` they take the same limits as the view's
+        Y axes, for ``"panel"`` the data in their own x-range.  Default: none.
+        """
+        return iter(())
+
+    def _data_synced_y_limits_by_axes(self, scope: str) -> List[Tuple[Any, Optional[Tuple[float, float]]]]:
+        """``(axes, limits)`` for every Y axis and sync-only axis under *scope* (``None`` = no data)."""
+        axes = list(self._iter_y_axes())
+        followers = list(self._iter_y_sync_only_axes())
+        wave, flux = self._y_data_arrays()
+        limits = data_synced_y_limits(axes, wave, flux, scope)
+        if followers:
+            if scope == "panel" or not axes:
+                limits += data_synced_y_limits(followers, wave, flux, scope)
+            else:
+                limits += [limits[0]] * len(followers)   # the view's shared range
+        return list(zip(axes + followers, limits))
+
+    def _apply_data_synced_y_limits(self, scope: str) -> bool:
+        """Set every Y axis (and sync-only axis) to the observed data's min / max for *scope*.
+
+        Axes without data in their range keep their limits.  Returns
+        ``True`` when any limits were set.
+        """
+        changed = False
+        for ax, lims in self._data_synced_y_limits_by_axes(scope):
+            if lims is not None:
+                ax.set_ylim(*lims)
+                changed = True
+        return changed
+
+    def y_axis_count(self) -> int:
+        """Number of Y axes (panels) the data min / max sync applies to."""
+        return (sum(1 for _ax in self._iter_y_axes())
+                + sum(1 for _ax in self._iter_y_sync_only_axes()))
+
+    def get_data_y_range(self, scope: str = "global") -> Optional[Tuple[float, float]]:
+        """The observed data's ``(min, max)`` for *scope*, as one pair of limits.
+
+        ``"global"`` covers the whole spectrum and ``"view"`` the visible
+        range of every Y axis.  ``"panel"`` has one range per panel, so it
+        only gives a single pair when the view has exactly one panel
+        (see :meth:`y_axis_count`).  Returns ``None`` for views without Y
+        axes, without data, or for an unknown scope.
+        """
+        scope = normalize_y_data_sync(scope)
+        axes = list(self._iter_y_axes())
+        if scope is None or not axes or (scope == "panel" and self.y_axis_count() != 1):
+            return None
+        wave, flux = self._y_data_arrays()
+        if scope == "global":
+            return data_y_range(wave, flux)
+        return data_y_range(wave, flux, [ax.get_xlim() for ax in axes])
+
     def apply_y_limits(self, toggle_state: dict, autoscale_now: bool = True) -> bool:
         """Apply the controller's Y-axis policy to this view's Y axes.
 
-        * ``y_autoscale`` on and *autoscale_now*: re-fit the axes.
+        * ``y_autoscale`` on and *autoscale_now*: re-fit the axes - to the
+          observed data's min / max when ``y_data_sync`` is set, otherwise
+          with the view's auto-scale rule.
         * ``y_autoscale`` on but *autoscale_now* False: leave them alone.
         * ``y_autoscale`` off: pin every Y axis to ``y_limits``.
 
@@ -532,6 +689,9 @@ class PlotView(ABC):
             return changed
         if not autoscale_now:
             return False
+        scope = self._y_data_sync_scope(toggle_state)
+        if scope is not None:
+            return self._apply_data_synced_y_limits(scope)
         return self._autoscale_y_axes()
 
     def get_y_limits(self) -> Optional[Tuple[float, float]]:
@@ -542,16 +702,20 @@ class PlotView(ABC):
         return None
 
     def _reapply_display_state(self, toggle_state: dict) -> None:
-        """Re-impose observed visibility and manual Y limits after a re-render.
+        """Re-impose observed visibility and manual / data-synced Y limits after a re-render.
 
         Re-rendering recreates observed artists (visible) and lets the plot
-        pick its own Y limits, so both settings must be put back.  Call it
+        pick its own Y limits, so these settings must be put back.  Call it
         at the end of every re-render path and from ``sync_toggle_state``.
         """
         if not isinstance(toggle_state, dict):
             return
         self._set_observed_visibility(toggle_state.get("observed", True))
         self.apply_y_limits(toggle_state, autoscale_now=False)
+        if toggle_state.get("y_autoscale", True):
+            scope = self._y_data_sync_scope(toggle_state)
+            if scope is not None:
+                self._apply_data_synced_y_limits(scope)
         self._apply_wavelength_markers(toggle_state)
 
     # ------------------------------------------------------------------

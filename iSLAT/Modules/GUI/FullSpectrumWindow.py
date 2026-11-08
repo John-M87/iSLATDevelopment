@@ -20,8 +20,13 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 from iSLAT.Modules.Plotting.FullSpectrumView import FullSpectrumView
-from iSLAT.Modules.Plotting.PlotView import WavelengthMarkerStoreMixin
+from iSLAT.Modules.Plotting.PlotView import WavelengthMarkerStoreMixin, normalize_y_data_sync
 from iSLAT.Modules.Plotting.StackedSpectralPanel import StackedSpectralPanel
+from .Tooltips import MenuToolTip
+from .YAxisDataSync import (
+    Y_DATA_SYNC_MENU_LABEL, Y_DATA_SYNC_MENU_TIP,
+    add_y_data_range_controls, add_y_data_sync_menu, y_data_sync_var_value,
+)
 
 if TYPE_CHECKING:
     from iSLAT.iSLATClass import iSLAT
@@ -37,6 +42,7 @@ DEFAULT_WINDOW_TOGGLE_STATE: Dict[str, Any] = {
     "current_selection": None,
     "y_autoscale": True,
     "y_autoscale_source": "data",
+    "y_data_sync": None,
     "y_limits": None,
     "observed": True,
     "wavelength_markers": [],
@@ -453,6 +459,9 @@ class FullSpectrumWindow(tk.Toplevel):
         self.y_menu.add_checkbutton(label="Auto-scale Y to Model Flux", variable=self.y_model_var,
                                     command=lambda: self.set_y_autoscale_source(
                                         "model" if self.y_model_var.get() else "data"))
+        self.y_data_sync_var = tk.StringVar(master=self, value=y_data_sync_var_value(ts.get("y_data_sync")))
+        add_y_data_sync_menu(self.y_menu, self.y_data_sync_var, self.set_y_data_sync)
+        MenuToolTip(self.y_menu, {Y_DATA_SYNC_MENU_LABEL: Y_DATA_SYNC_MENU_TIP})
         self.y_menu.add_separator()
         self.y_menu.add_command(label="Set Y Limits\u2026", command=self.open_y_limits_dialog)
 
@@ -476,6 +485,7 @@ class FullSpectrumWindow(tk.Toplevel):
             var.set(bool(self.toggle_state.get(key, DEFAULT_WINDOW_TOGGLE_STATE[key])))
         self.y_autoscale_var.set(bool(self.toggle_state.get("y_autoscale", True)))
         self.y_model_var.set(self.toggle_state.get("y_autoscale_source") == "model")
+        self.y_data_sync_var.set(y_data_sync_var_value(self.toggle_state.get("y_data_sync")))
 
     def _after_change(self) -> None:
         self.status_var.set("")
@@ -541,8 +551,32 @@ class FullSpectrumWindow(tk.Toplevel):
         self._after_change()
 
     def set_y_autoscale_source(self, source: str) -> None:
-        """Fit the Y auto-scale to the observed ``"data"`` or the drawn ``"model"``."""
+        """Fit the Y auto-scale to the observed ``"data"`` or the drawn ``"model"``.
+
+        Choosing ``"model"`` stops syncing to the data's min / max.
+        """
         self.toggle_state["y_autoscale_source"] = "model" if source == "model" else "data"
+        if source == "model":
+            self.toggle_state["y_data_sync"] = None
+        if self.toggle_state.get("y_autoscale", True):
+            self.view.apply_y_limits(self.toggle_state, autoscale_now=True)
+            self.view.draw()
+        self._after_change()
+
+    def set_y_data_sync(self, scope: Optional[str]) -> None:
+        """Sync the panels' Y axes to the observed data's exact min / max, or stop syncing.
+
+        *scope* is ``"global"`` (the whole spectrum), ``"view"`` (the data
+        in all panels' ranges, one shared range) or ``"panel"`` (each panel
+        to its own range); ``None`` / ``"off"`` returns to the normal
+        auto-scale rule.  Syncing turns auto-scale on and the model-flux
+        source off.
+        """
+        scope = normalize_y_data_sync(scope)
+        self.toggle_state["y_data_sync"] = scope
+        if scope is not None:
+            self.toggle_state["y_autoscale_source"] = "data"
+            self.toggle_state["y_autoscale"] = True
         if self.toggle_state.get("y_autoscale", True):
             self.view.apply_y_limits(self.toggle_state, autoscale_now=True)
             self.view.draw()
@@ -663,7 +697,26 @@ class FullSpectrumWindow(tk.Toplevel):
             ttk.Label(content, text=text).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=2)
             ttk.Entry(content, textvariable=var, width=12).grid(row=row, column=1, pady=2)
         ttk.Label(content, textvariable=error_var, foreground="red").grid(
-            row=2, column=0, columnspan=2, sticky="w")
+            row=3, column=0, columnspan=2, sticky="w")
+
+        def _fill(lo: float, hi: float) -> None:
+            ymin_var.set(f"{lo:.6g}")
+            ymax_var.set(f"{hi:.6g}")
+
+        def _sync(scope: str) -> None:
+            self.set_y_data_sync(scope)
+            win.destroy()
+
+        add_y_data_range_controls(
+            content, 2,
+            current_scope=self.toggle_state.get("y_data_sync"),
+            panel_count=self.view.y_axis_count(),
+            get_range=self.view.get_data_y_range,
+            on_fill=_fill,
+            on_sync=_sync,
+            set_status=error_var.set,
+            padx=0, pady=(6, 2),
+        )
 
         def _apply(_event=None):
             try:
@@ -674,7 +727,7 @@ class FullSpectrumWindow(tk.Toplevel):
             win.destroy()
 
         buttons = ttk.Frame(content)
-        buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=(4, 0))
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(4, 0))
         ttk.Button(buttons, text="Apply", command=_apply).pack(side="right", padx=(4, 0))
         ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right")
         win.bind("<Return>", _apply)

@@ -590,3 +590,338 @@ class TestFullSpectrumModelAutoscaleSurvivesRerender:
         pm.toggle_state.update({"y_autoscale": False, "y_limits": (0.0, 9.0)})
         view._regenerate_layout()
         assert all(ax.get_ylim() == (0.0, 9.0) for ax in plot.subplots.values())
+
+
+# ======================================================================
+# Y axis synced to the observed data's min / max
+# ======================================================================
+FLAT_ONE = (0.95, 1.05)    # a flat 1 Jy selection, widened by 5 %
+FLAT_FOUR = (3.8, 4.2)     # a flat 4 Jy selection, widened by 5 %
+
+
+class TestDataYRangeHelpers:
+    WAVE = 5.0 + 0.5 * np.arange(11)    # 5.0 .. 10.0, exactly representable
+    FLUX = WAVE.copy()                  # flux equals wavelength
+
+    def test_normalize_scope(self):
+        from iSLAT.Modules.Plotting.PlotView import normalize_y_data_sync
+        assert normalize_y_data_sync("Global") == "global"
+        assert normalize_y_data_sync(" panel ") == "panel"
+        assert normalize_y_data_sync("view") == "view"
+        assert normalize_y_data_sync("off") is None
+        assert normalize_y_data_sync(None) is None
+        assert normalize_y_data_sync("garbage") is None
+
+    def test_global_is_exact_min_max_ignoring_nan(self):
+        from iSLAT.Modules.Plotting.PlotView import data_y_range
+        flux = self.FLUX.copy()
+        flux[0] = np.nan
+        assert data_y_range(self.WAVE, flux) == (5.5, 10.0)   # no headroom added
+
+    def test_ranges_select_points_in_any_range(self):
+        from iSLAT.Modules.Plotting.PlotView import data_y_range
+        assert data_y_range(self.WAVE, self.FLUX, [(6.0, 7.0)]) == (6.0, 7.0)
+        assert data_y_range(self.WAVE, self.FLUX, [(9.0, 8.0)]) == (8.0, 9.0)   # reversed pair
+        assert data_y_range(self.WAVE, self.FLUX, [(5.0, 5.5), (9.5, 10.0)]) == (5.0, 10.0)
+
+    def test_flat_selection_is_widened(self):
+        from iSLAT.Modules.Plotting.PlotView import data_y_range
+        assert data_y_range(self.WAVE, self.FLUX, [(6.9, 7.1)]) == pytest.approx((6.65, 7.35))
+        assert data_y_range([1.0, 2.0], [0.0, 0.0]) == pytest.approx((-0.05, 0.05))
+
+    def test_none_without_usable_data(self):
+        from iSLAT.Modules.Plotting.PlotView import data_y_range
+        assert data_y_range(self.WAVE, None) is None
+        assert data_y_range(self.WAVE, np.full(11, np.nan)) is None
+        assert data_y_range(self.WAVE, self.FLUX, [(20.0, 30.0)]) is None
+        assert data_y_range(None, self.FLUX, [(5.0, 6.0)]) is None
+        assert data_y_range(self.WAVE[:5], self.FLUX, [(5.0, 6.0)]) is None   # mismatched lengths
+
+    def test_synced_limits_per_scope(self):
+        from iSLAT.Modules.Plotting.PlotView import data_synced_y_limits
+        fig = Figure()
+        ax_a, ax_b = fig.add_subplot(211), fig.add_subplot(212)
+        ax_a.set_xlim(5.0, 6.0)
+        ax_b.set_xlim(8.0, 9.0)
+        axes = [ax_a, ax_b]
+        assert data_synced_y_limits(axes, self.WAVE, self.FLUX, "panel") == [(5.0, 6.0), (8.0, 9.0)]
+        assert data_synced_y_limits(axes, self.WAVE, self.FLUX, "view") == [(5.0, 9.0)] * 2
+        assert data_synced_y_limits(axes, self.WAVE, self.FLUX, "global") == [(5.0, 10.0)] * 2
+        assert data_synced_y_limits(axes, self.WAVE, self.FLUX, None) == [None, None]
+        assert data_synced_y_limits([], self.WAVE, self.FLUX, "global") == []
+
+
+class TestControllerYDataSync:
+    """Three Panel view (ax1 only): flux is 1 Jy below 7.5 um and 4 Jy above."""
+
+    def test_global_ignores_xrange(self):
+        pm = _make_controller()
+        pm.ax1.set_xlim(5.0, 7.0)
+        pm.set_y_data_sync("global")
+        assert pm.y_data_sync == "global"
+        assert pm.ax1.get_ylim() == (1.0, 4.0)
+        pm.canvas.draw_idle.assert_called()
+
+    def test_view_fits_visible_range_exactly(self):
+        pm = _make_controller()
+        pm.ax1.set_xlim(5.0, 7.0)
+        pm.set_y_data_sync("view")
+        assert pm.ax1.get_ylim() == pytest.approx(FLAT_ONE)
+        pm.ax1.set_xlim(7.0, 9.0)
+        pm.match_display_range(match_y=True)       # panning re-fits like auto-scale does
+        assert pm.ax1.get_ylim() == (1.0, 4.0)
+
+    def test_panel_equals_view_for_single_axis(self):
+        pm = _make_controller()
+        pm.ax1.set_xlim(8.0, 10.0)
+        pm.set_y_data_sync("panel")
+        assert pm.ax1.get_ylim() == pytest.approx(FLAT_FOUR)
+        assert pm.y_axis_count() == 1
+        assert pm.get_data_y_range("panel") == pytest.approx(FLAT_FOUR)
+
+    def test_sync_turns_autoscale_on_and_model_source_off(self):
+        pm = _make_controller()
+        pm.set_y_limits(0.0, 2.0)
+        pm.toggle_state["y_autoscale_source"] = "model"
+        pm.set_y_data_sync("global")
+        assert pm.y_autoscale_toggle is True
+        assert pm.y_autoscale_source == "data"
+        assert pm.ax1.get_ylim() == (1.0, 4.0)
+
+    def test_model_source_turns_sync_off(self):
+        pm = _make_controller()
+        pm.set_y_data_sync("global")
+        pm.set_y_autoscale_source("model")
+        assert pm.y_data_sync is None
+        pm.set_y_data_sync("view")
+        pm.set_y_autoscale_source("data")          # leaving the model source keeps sync
+        assert pm.y_data_sync == "view"
+
+    def test_off_restores_normal_autoscale(self):
+        pm = _make_controller()
+        pm.set_y_data_sync("global")
+        pm.set_y_data_sync(None)
+        assert pm.y_data_sync is None
+        assert pm.ax1.get_ylim()[1] == pytest.approx(4.5)   # data rule: max + max / 8
+        pm.set_y_data_sync("global")
+        pm.set_y_data_sync("off")
+        assert pm.toggle_state["y_data_sync"] is None
+
+    def test_manual_limits_win_and_autoscale_resumes_sync(self):
+        pm = _make_controller()
+        pm.set_y_data_sync("global")
+        pm.set_y_limits(0.0, 9.0)
+        assert pm.ax1.get_ylim() == (0.0, 9.0)
+        assert pm.apply_y_limits(autoscale_now=True) is True
+        assert pm.ax1.get_ylim() == (0.0, 9.0)
+        pm.set_y_autoscale(True)
+        assert pm.ax1.get_ylim() == (1.0, 4.0)
+
+    def test_off_while_manual_keeps_manual_limits(self):
+        pm = _make_controller()
+        pm.set_y_limits(0.0, 9.0)
+        pm.set_y_data_sync(None)
+        assert pm.ax1.get_ylim() == (0.0, 9.0)
+        assert pm.y_autoscale_toggle is False
+
+    def test_reapplied_after_rerender(self):
+        pm = _make_controller()
+        pm.ax2 = Figure().add_subplot(111)          # wavelength markers also go on ax2
+        pm.set_y_data_sync("global")
+        pm.ax1.set_ylim(-3.0, 3.0)                 # a re-render picked its own limits
+        pm.active_view._reapply_display_state(pm.toggle_state)
+        assert pm.ax1.get_ylim() == (1.0, 4.0)
+
+    def test_get_data_y_range(self):
+        pm = _make_controller()
+        pm.ax1.set_xlim(5.0, 7.0)
+        assert pm.get_data_y_range("global") == (1.0, 4.0)
+        assert pm.get_data_y_range("view") == pytest.approx(FLAT_ONE)
+        assert pm.get_data_y_range("nonsense") is None
+
+    def test_fallback_without_view(self):
+        pm = _make_controller()
+        pm.active_view = None
+        pm.ax1.set_xlim(5.0, 7.0)
+        pm.set_y_data_sync("view")
+        assert pm.ax1.get_ylim() == pytest.approx(FLAT_ONE)
+        pm.set_y_data_sync("global")
+        assert pm.ax1.get_ylim() == (1.0, 4.0)
+        assert pm.get_data_y_range("view") == pytest.approx(FLAT_ONE)
+        assert pm.y_axis_count() == 1
+
+    def test_population_diagram_view_has_no_data_range(self):
+        from iSLAT.Modules.Plotting.PopulationDiagramView import PopulationDiagramView
+        pm = MagicMock()
+        pm.toggle_state = {}
+        view = PopulationDiagramView(pm)
+        assert view.get_data_y_range("global") is None
+        assert view.y_axis_count() == 0
+        assert view.apply_y_limits({"y_autoscale": True, "y_data_sync": "global"}) is False
+
+
+class TestThreePanelInspectionYDataSync:
+    """The Three Panel line inspection panel (ax2) follows the data min / max sync."""
+
+    @staticmethod
+    def _controller(selection=(8.0, 9.0)):
+        pm = _make_controller()                      # 1 Jy below 7.5 um, 4 Jy above
+        pm.ax2 = Figure().add_subplot(111)
+        pm.ax2.set_ylim(0.0, 99.0)
+        if selection is not None:
+            pm.ax2.set_xlim(*selection)
+            pm.active_view._current_selection = selection
+        return pm
+
+    def test_each_panel_fits_the_selection(self):
+        pm = self._controller()
+        pm.set_y_data_sync("panel")
+        assert pm.ax1.get_ylim() == (1.0, 4.0)
+        assert pm.ax2.get_ylim() == pytest.approx(FLAT_FOUR)
+
+    def test_view_and_global_share_the_main_panel_range(self):
+        pm = self._controller()
+        pm.ax1.set_xlim(5.0, 7.0)
+        pm.set_y_data_sync("view")
+        assert pm.ax1.get_ylim() == pytest.approx(FLAT_ONE)
+        assert pm.ax2.get_ylim() == pytest.approx(FLAT_ONE)   # not widened by the 4 Jy selection
+        pm.set_y_data_sync("global")
+        assert pm.ax2.get_ylim() == (1.0, 4.0)
+
+    def test_untouched_without_selection(self):
+        pm = self._controller(selection=None)
+        pm.set_y_data_sync("panel")
+        assert pm.ax2.get_ylim() == (0.0, 99.0)
+        assert pm.y_axis_count() == 1
+
+    def test_manual_limits_and_normal_autoscale_leave_it_alone(self):
+        pm = self._controller()
+        pm.set_y_limits(0.0, 9.0)
+        assert pm.ax2.get_ylim() == (0.0, 99.0)
+        pm.set_y_autoscale(True)
+        assert pm.ax2.get_ylim() == (0.0, 99.0)
+
+    def test_counts_as_a_panel(self):
+        pm = self._controller()
+        assert pm.y_axis_count() == 2
+        assert pm.get_data_y_range("panel") is None          # one range per panel
+        assert pm.get_data_y_range("view") == (1.0, 4.0)     # the main panel's range
+
+    @staticmethod
+    def _stub_selection_rendering(pm):
+        """Replace the heavy rendering in on_selection with a plain plot that picks its own Y range."""
+        view = pm.active_view
+        pm.islat.active_molecule = SimpleNamespace(name="CO")
+        view._get_all_active_molecules = lambda: [pm.islat.active_molecule]
+        view._get_molecule_line_data = lambda mol, lo, hi: [("line", 1.0, None)]
+        view.clear_active_lines = lambda: None
+        view._render_population_diagram_with_lines = lambda *a, **k: None
+        view._highlight_strongest_line = lambda: None
+        view._apply_wavelength_markers = lambda _ts: None
+        view._pick_event_connected = True
+
+        def _render(xmin, xmax, _data):
+            pm.ax2.clear()
+            pm.ax2.set_xlim(xmin, xmax)
+            pm.ax2.set_ylim(0.0, 55.0)
+        view._render_line_inspection_multi = _render
+        return view
+
+    def test_new_selection_is_synced(self):
+        pm = self._controller(selection=None)
+        view = self._stub_selection_rendering(pm)
+        pm.toggle_state["y_data_sync"] = "panel"
+        view.on_selection(8.0, 9.0)
+        assert pm.ax2.get_ylim() == pytest.approx(FLAT_FOUR)
+        view.on_selection(6.0, 7.0)
+        assert pm.ax2.get_ylim() == pytest.approx(FLAT_ONE)
+
+    def test_new_selection_keeps_own_limits_when_not_syncing(self):
+        pm = self._controller(selection=None)
+        view = self._stub_selection_rendering(pm)
+        view.on_selection(8.0, 9.0)
+        assert pm.ax2.get_ylim() == (0.0, 55.0)
+        pm.toggle_state.update({"y_data_sync": "panel", "y_autoscale": False, "y_limits": (0.0, 9.0)})
+        view.on_selection(8.0, 9.0)
+        assert pm.ax2.get_ylim() == (0.0, 55.0)
+
+
+class TestFullSpectrumViewYDataSync:
+    """3 panels over 5-11 um: 1 Jy below 8 um, 4 Jy above, so (5, 7) is flat 1, (9, 11) flat 4."""
+
+    @staticmethod
+    def _make_view(scope):
+        view, plot, pm = TestFullSpectrumViewInheritsPolicy._make_view()
+        pm.legend_toggle = True
+        pm.toggle_state.update({"y_autoscale": True, "y_data_sync": scope})
+        return view, plot, pm
+
+    @staticmethod
+    def _assert_per_panel(plot):
+        lims = [plot.subplots[i].get_ylim() for i in sorted(plot.subplots)]
+        assert lims[0] == pytest.approx(FLAT_ONE)
+        assert lims[1] == pytest.approx((1.0, 4.0))
+        assert lims[2] == pytest.approx(FLAT_FOUR)
+
+    def test_each_panel_fits_its_own_range(self):
+        view, plot, pm = self._make_view("panel")
+        assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
+        self._assert_per_panel(plot)
+
+    def test_view_shares_one_range(self):
+        view, plot, pm = self._make_view("view")
+        view.apply_y_limits(pm.toggle_state, autoscale_now=True)
+        assert all(ax.get_ylim() == (1.0, 4.0) for ax in plot.subplots.values())
+
+    def test_view_differs_from_global_when_range_is_narrowed(self):
+        view, plot, pm = self._make_view("view")
+        view._set_display_range(5.0, 7.0)
+        assert all(ax.get_ylim() == pytest.approx(FLAT_ONE) for ax in plot.subplots.values())
+        pm.toggle_state["y_data_sync"] = "global"
+        view.apply_y_limits(pm.toggle_state, autoscale_now=True)
+        assert all(ax.get_ylim() == (1.0, 4.0) for ax in plot.subplots.values())
+
+    def test_survives_layout_regeneration(self):
+        view, plot, _pm = self._make_view("panel")
+        view._regenerate_layout()
+        self._assert_per_panel(plot)
+        view._set_n_panels(2)
+        lims = [plot.subplots[i].get_ylim() for i in sorted(plot.subplots)]
+        assert lims == [pytest.approx(FLAT_ONE), pytest.approx(FLAT_FOUR)]
+
+    def test_sync_wins_over_model_source_after_rerender(self):
+        view, plot, pm = self._make_view("panel")
+        pm.toggle_state["y_autoscale_source"] = "model"
+        view._regenerate_layout()
+        self._assert_per_panel(plot)
+
+    def test_data_range_queries(self):
+        view, _plot, _pm = self._make_view("panel")
+        assert view.y_axis_count() == 3
+        assert view.get_data_y_range("global") == (1.0, 4.0)
+        assert view.get_data_y_range("view") == (1.0, 4.0)
+        assert view.get_data_y_range("panel") is None   # one range per panel
+
+    def test_autoscale_off_ignores_sync(self):
+        view, plot, pm = self._make_view("panel")
+        pm.toggle_state.update({"y_autoscale": False, "y_limits": (0.0, 9.0)})
+        view._regenerate_layout()
+        assert all(ax.get_ylim() == (0.0, 9.0) for ax in plot.subplots.values())
+
+
+class TestLineInspectionViewYDataSync:
+    def test_sync_sets_limits_without_rebuilding(self):
+        view, pm = TestLineInspectionViewInheritsPolicy._make_view()
+        view.update_model_plot = MagicMock()
+        pm.toggle_state["y_data_sync"] = "view"
+        assert view.apply_y_limits(pm.toggle_state, autoscale_now=True) is True
+        view.update_model_plot.assert_not_called()
+        x0, x1 = view._plot.ax.get_xlim()
+        assert x0 < 7.0 < x1                       # the view spans the 1 -> 4 Jy step
+        assert view._plot.ax.get_ylim() == (1.0, 4.0)
+
+    def test_sync_kept_after_selection_rebuild(self):
+        view, pm = TestLineInspectionViewInheritsPolicy._make_view()
+        pm.toggle_state["y_data_sync"] = "global"
+        view.on_selection(6.5, 7.5)
+        assert view._plot.ax.get_ylim() == (1.0, 4.0)

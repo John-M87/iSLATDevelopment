@@ -125,6 +125,45 @@ class TestFullSpectrumPlotDisplayOptions:
         assert all(ax.get_ylim() == (-1.0, 2.0) for ax in plot.subplots.values())
         plot.close()
 
+    def test_data_sync_global_and_view(self):
+        # Panels 5-7 / 7-9 / 9-11 um; the data is 1 Jy below 8 um and 4 Jy above.
+        for scope in ("global", "view"):
+            plot = _plot(y_data_sync=scope)
+            plot.generate_plot()
+            assert all(ax.get_ylim() == (1.0, 4.0) for ax in plot.subplots.values())
+            plot.close()
+
+    def test_data_sync_view_covers_shown_range_only(self):
+        plot = _plot(y_data_sync="view", xlim_range=(5.0, 7.0))
+        plot.generate_plot()
+        assert all(ax.get_ylim() == pytest.approx((0.95, 1.05)) for ax in plot.subplots.values())
+        plot.close()
+
+    def test_data_sync_per_panel(self):
+        plot = _plot(y_data_sync="panel")
+        plot.generate_plot()
+        lims = [plot.subplots[i].get_ylim() for i in sorted(plot.subplots)]
+        assert lims[0] == pytest.approx((0.95, 1.05))
+        assert lims[1] == pytest.approx((1.0, 4.0))
+        assert lims[2] == pytest.approx((3.8, 4.2))
+        plot.update_panels_inplace()               # in-place model updates keep it
+        assert [plot.subplots[i].get_ylim() for i in sorted(plot.subplots)] == pytest.approx(lims)
+        plot.close()
+
+    def test_data_sync_wins_over_model_but_not_manual(self):
+        plot = _plot(y_data_sync="global", y_autoscale_source="model")
+        plot.generate_plot()
+        assert all(ax.get_ylim() == (1.0, 4.0) for ax in plot.subplots.values())
+        plot.close()
+        plot = _plot(y_data_sync="global", y_limits=(-1.0, 2.0))
+        plot.generate_plot()
+        assert all(ax.get_ylim() == (-1.0, 2.0) for ax in plot.subplots.values())
+        plot.close()
+
+    def test_invalid_data_sync_is_off(self):
+        assert _plot(y_data_sync="nope").y_data_sync is None
+        assert _plot().y_data_sync is None
+
     def test_inplace_update_keeps_display_options(self):
         plot = _plot(y_limits=(0.0, 9.0), show_summed=False, show_observed=False)
         plot.generate_plot()
@@ -229,6 +268,13 @@ class TestToggleStateDisplayKwargs:
         assert "y_limits" not in kw
         assert kw["y_autoscale_source"] == "data"
 
+    def test_data_sync_only_while_autoscaling(self):
+        assert toggle_state_display_kwargs({"y_data_sync": "Panel"})["y_data_sync"] == "panel"
+        assert "y_data_sync" not in toggle_state_display_kwargs({"y_data_sync": None})
+        assert "y_data_sync" not in toggle_state_display_kwargs({"y_data_sync": "off"})
+        kw = toggle_state_display_kwargs({"y_autoscale": False, "y_limits": (0, 5), "y_data_sync": "global"})
+        assert "y_data_sync" not in kw and kw["y_limits"] == (0.0, 5.0)
+
 
 # ======================================================================
 # End-to-end export paths
@@ -294,6 +340,11 @@ class TestOutputFullSpectrum:
         fsv.output_full_spectrum(self._islat(_toggle_state(y_autoscale_source="model")))
         (snap,) = recorder
         assert all(yl[1] < 1.0 for yl in snap["ylims"])  # model peaks at 0.2 Jy, data at 4 Jy
+
+    def test_data_sync_global(self, recorder, save_to):
+        fsv.output_full_spectrum(self._islat(_toggle_state(y_data_sync="global")))
+        (snap,) = recorder
+        assert snap["ylims"] and all(yl == (1.0, 4.0) for yl in snap["ylims"])
 
     def test_default_size(self, recorder, save_to):
         fsv.output_full_spectrum(self._islat(_toggle_state()))

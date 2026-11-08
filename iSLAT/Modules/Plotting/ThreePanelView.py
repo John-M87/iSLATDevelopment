@@ -442,6 +442,9 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         # Highlight strongest line AFTER both panels are populated
         self._highlight_strongest_line()
 
+        # The inspection plot picks its own Y range; re-impose a data min / max sync.
+        self._sync_inspection_y_to_data()
+
         # Connect pick event once
         if not self._pick_event_connected:
             self._canvas.mpl_connect('pick_event', self._on_pick_line)
@@ -1153,6 +1156,28 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
     def _iter_y_axes(self):
         """The Y auto-scale / manual-limit policy governs the main spectrum panel."""
         yield self.ax1
+
+    def _iter_y_sync_only_axes(self):
+        """The line inspection panel follows the data min / max sync while it shows a selection.
+
+        It shares the main panel's range for "global" / "view" and fits the
+        data in the selected range for "panel".  Manual limits and the
+        normal auto-scale rule leave it alone.
+        """
+        if getattr(self, "_current_selection", None) is not None:
+            yield self.ax2
+
+    def _sync_inspection_y_to_data(self) -> None:
+        """Re-impose the data min / max sync on the freshly drawn line inspection panel."""
+        state = getattr(self._pm, "toggle_state", None)
+        if not isinstance(state, dict) or not state.get("y_autoscale", True):
+            return
+        scope = self._y_data_sync_scope(state)
+        if scope is None:
+            return
+        for ax, lims in self._data_synced_y_limits_by_axes(scope):
+            if ax is self.ax2 and lims is not None:
+                ax.set_ylim(*lims)
 
     def _iter_toggle_axes(self):
         """Yield the three fixed axes."""

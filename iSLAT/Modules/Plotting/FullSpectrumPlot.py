@@ -81,6 +81,12 @@ class FullSpectrumPlot(StackedSpectralPanel):
         What the automatic per-panel limits fit to when *y_limits* is not
         given: the observed data (default, honouring *ymax_factor* and
         *uniform_ylim*) or the drawn molecule models and summed fill.
+    y_data_sync : {"global", "view", "panel"}, optional
+        Set every panel to the exact min / max of the observed flux (the
+        GUI's *Sync Y to Data Min/Max* setting): over the whole spectrum,
+        over all panels' wavelength ranges together, or over each panel's
+        own range.  Takes precedence over *y_autoscale_source*; manual
+        *y_limits* still win.  Default ``None`` (off).
     """
     def __init__(
         self,
@@ -101,6 +107,7 @@ class FullSpectrumPlot(StackedSpectralPanel):
         show_summed: bool = True,
         y_limits: Optional[Tuple[float, float]] = None,
         y_autoscale_source: str = "data",
+        y_data_sync: Optional[str] = None,
         **kwargs,
     ):
         # Allow callers to pass row_height via kwargs; default to
@@ -141,6 +148,8 @@ class FullSpectrumPlot(StackedSpectralPanel):
         self.y_autoscale_source: str = (
             "model" if str(y_autoscale_source).lower() == "model" else "data"
         )
+        from .PlotView import normalize_y_data_sync
+        self.y_data_sync: Optional[str] = normalize_y_data_sync(y_data_sync)
 
         # Override default figsize (SSP uses 14-wide; FSP uses 12)
         if figsize is None:
@@ -327,14 +336,19 @@ class FullSpectrumPlot(StackedSpectralPanel):
     ) -> Optional[Tuple[float, float]]:
         """Return the Y limits for panel *idx* under the current policy.
 
-        Manual :attr:`y_limits` win.  Otherwise the ``"model"`` source fits
-        the visible models drawn on *ax* (falling back to the observed data
-        in range, as the GUI does), and the ``"data"`` source uses the
-        pre-computed layout limits *panel_ylims* (default
-        :attr:`_panel_ylims`).
+        Manual :attr:`y_limits` win.  Next, :attr:`y_data_sync` sets the
+        panel to the observed data's exact min / max for its scope.
+        Otherwise the ``"model"`` source fits the visible models drawn on
+        *ax* (falling back to the observed data in range, as the GUI does),
+        and the ``"data"`` source uses the pre-computed layout limits
+        *panel_ylims* (default :attr:`_panel_ylims`).
         """
         if self.y_limits is not None:
             return self.y_limits
+        if self.y_data_sync is not None:
+            lims = self._data_synced_panel_ylim(ax)
+            if lims is not None:
+                return lims
         if self.y_autoscale_source == "model":
             from .PlotView import fit_y_limits_to_data, fit_y_limits_to_model
             lims = fit_y_limits_to_model(ax)
@@ -347,6 +361,23 @@ class FullSpectrumPlot(StackedSpectralPanel):
         if panel_ylims is not None and idx < len(panel_ylims):
             return panel_ylims[idx]
         return None
+
+    def _data_synced_panel_ylim(self, ax: Axes) -> Optional[Tuple[float, float]]:
+        """Exact observed-flux ``(min, max)`` for *ax* under :attr:`y_data_sync`.
+
+        ``"global"`` uses all the data, ``"view"`` the data inside any
+        panel's wavelength range, and ``"panel"`` the data inside *ax*'s
+        own x-range.  ``None`` when there is no data there.
+        """
+        from .PlotView import data_y_range
+        if self.y_data_sync == "global":
+            return data_y_range(self.wave_data, self.flux_data)
+        if self.y_data_sync == "panel":
+            return data_y_range(self.wave_data, self.flux_data, [ax.get_xlim()])
+        ranges = list(zip(getattr(self, "_panel_edges", []), getattr(self, "_panel_ends", [])))
+        if not ranges:
+            return data_y_range(self.wave_data, self.flux_data, [ax.get_xlim()])
+        return data_y_range(self.wave_data, self.flux_data, ranges)
 
     # ------------------------------------------------------------------
     def _post_render_cell(

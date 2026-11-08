@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .FullSpectrumView import FullSpectrumView, draw_toggle_state_markers
-from .PlotView import PlotView, fit_y_limits_to_data, fit_y_limits_to_model
+from .PlotView import (
+    PlotView, data_synced_y_limits, fit_y_limits_to_data, fit_y_limits_to_model,
+    normalize_y_data_sync,
+)
 from .OpticalDepthPanel import TOTAL_TAU_TAG
 from .OpticalDepthSpectrumPlot import OpticalDepthSpectrumPlot
 from .SpectralPanel import XScaling
@@ -439,7 +442,8 @@ class OpticalDepthView(FullSpectrumView):
         """Give *plot*'s flux sub-panels the GUI's observed-data visibility and Y-axis setting.
 
         Mirrors the live view: hidden observed data, manual Y limits while
-        auto-scale is off, otherwise a fit to the drawn model when the
+        auto-scale is off, otherwise the observed data's min / max when
+        ``y_data_sync`` is set, or a fit to the drawn model when the
         auto-scale source is "model" (the plot's own per-panel data limits
         are already set).
         """
@@ -452,10 +456,16 @@ class OpticalDepthView(FullSpectrumView):
                     if hasattr(art, "_islat_observed"):
                         art.set_visible(False)
         manual = ts.get("y_limits")
+        sync = normalize_y_data_sync(ts.get("y_data_sync"))
         if not ts.get("y_autoscale", True):
             if manual is not None:
                 for ax in flux_axes:
                     ax.set_ylim(float(manual[0]), float(manual[1]))
+        elif sync is not None:
+            synced = data_synced_y_limits(flux_axes, plot.wave_data, plot.flux_data, sync)
+            for ax, lims in zip(flux_axes, synced):
+                if lims is not None:
+                    ax.set_ylim(*lims)
         elif ts.get("y_autoscale_source") == "model":
             for ax in flux_axes:
                 lims = fit_y_limits_to_model(ax) or fit_y_limits_to_data(ax, plot.wave_data, plot.flux_data)

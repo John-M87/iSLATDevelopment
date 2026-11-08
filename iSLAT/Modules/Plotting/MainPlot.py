@@ -12,7 +12,10 @@ import iSLAT.Constants as c
 
 from .BasePlot import BasePlot
 from .MainPlotGrid import MainPlotGrid
-from .PlotView import PlotView, fit_y_limits_to_data, WavelengthMarkerStoreMixin
+from .PlotView import (
+    PlotView, WavelengthMarkerStoreMixin, data_synced_y_limits, data_y_range,
+    fit_y_limits_to_data, normalize_y_data_sync,
+)
 from .ThreePanelView import ThreePanelView
 from .FullSpectrumView import FullSpectrumView
 from .PopulationDiagramView import PopulationDiagramView
@@ -87,6 +90,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             "current_selection": None,   # (xmin, xmax) or None
             "y_autoscale":  True,        # main-plot Y axis follows the data in view
             "y_autoscale_source": "data",  # "data" or "model": what auto-scale fits to
+            "y_data_sync":  None,        # None or "global" / "view" / "panel": auto-scale to the data's exact min / max
             "y_limits":     None,        # manual (ymin, ymax) used when y_autoscale is False
             "observed":     True,        # observed-spectrum artists visible
             "wavelength_markers": [],    # user marks: [{"start", "end", "label", "color"}, ...]
@@ -233,6 +237,15 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
     @y_autoscale_source.setter
     def y_autoscale_source(self, value: str) -> None:
         self.toggle_state["y_autoscale_source"] = "model" if str(value).lower() == "model" else "data"
+
+    @property
+    def y_data_sync(self) -> Optional[str]:
+        """``"global"``, ``"view"`` or ``"panel"`` while auto-scale syncs to the data's min / max, else ``None``."""
+        return normalize_y_data_sync(self.toggle_state.get("y_data_sync"))
+
+    @y_data_sync.setter
+    def y_data_sync(self, value: Optional[str]) -> None:
+        self.toggle_state["y_data_sync"] = normalize_y_data_sync(value)
 
     @property
     def observed_toggle(self) -> bool:
@@ -507,11 +520,13 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             return True
         if not autoscale_now:
             return False
-        auto = fit_y_limits_to_data(
-            self.ax1,
-            getattr(self.islat, 'wave_data', None),
-            getattr(self.islat, 'flux_data', None),
-        )
+        wave = getattr(self.islat, 'wave_data', None)
+        flux = getattr(self.islat, 'flux_data', None)
+        scope = self.y_data_sync
+        if scope is not None:
+            auto = data_synced_y_limits([self.ax1], wave, flux, scope)[0]
+        else:
+            auto = fit_y_limits_to_data(self.ax1, wave, flux)
         if auto is None:
             return False
         self.ax1.set_ylim(*auto)
@@ -556,12 +571,64 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         """Choose what Y auto-scaling fits to: ``"data"`` or ``"model"``.
 
         Re-fits immediately when auto-scaling is on; otherwise the choice
-        takes effect the next time auto-scaling is turned on.
+        takes effect the next time auto-scaling is turned on.  Choosing
+        ``"model"`` stops syncing to the data's min / max (the two rules
+        are exclusive).
         """
         self.y_autoscale_source = source
+        if self.y_autoscale_source == "model":
+            self.y_data_sync = None
         if self.y_autoscale_toggle:
             self.apply_y_limits(autoscale_now=True)
             self._draw_active_view()
+
+    def set_y_data_sync(self, scope: Optional[str]) -> None:
+        """Sync the Y axes to the observed data's exact min / max, or stop syncing.
+
+        *scope* is ``"global"`` (the whole spectrum), ``"view"`` (the data
+        in the active view's visible range, one range shared by all of its
+        panels) or ``"panel"`` (each panel to the data in its own range;
+        the same as ``"view"`` for single-panel views).  ``None`` or
+        ``"off"`` returns auto-scaling to its normal rule.
+
+        Turning syncing on also turns Y auto-scaling on and the model-flux
+        source off; the axes are re-fitted immediately.
+        """
+        self.y_data_sync = scope
+        if self.y_data_sync is not None:
+            self.y_autoscale_source = "data"
+            self.y_autoscale_toggle = True
+        if self.y_autoscale_toggle:
+            self.apply_y_limits(autoscale_now=True)
+            self._draw_active_view()
+
+    def get_data_y_range(self, scope: str = "global") -> Optional[Tuple[float, float]]:
+        """The observed data's exact ``(min, max)`` in the active view for *scope*.
+
+        ``"global"`` covers the whole spectrum and ``"view"`` the visible
+        range.  ``"panel"`` gives a pair only for single-panel views.
+        ``None`` when the active view has no Y axis or no data there.
+        """
+        view = self._y_policy_view()
+        if view is not None:
+            if hasattr(view, 'get_data_y_range'):
+                return view.get_data_y_range(scope)
+            return None
+        scope = normalize_y_data_sync(scope)
+        if scope is None:
+            return None
+        wave = getattr(self.islat, 'wave_data', None)
+        flux = getattr(self.islat, 'flux_data', None)
+        if scope == "global":
+            return data_y_range(wave, flux)
+        return data_y_range(wave, flux, [self.ax1.get_xlim()])
+
+    def y_axis_count(self) -> int:
+        """Number of Y axes (panels) the Y settings apply to in the active view."""
+        view = self._y_policy_view()
+        if view is not None:
+            return int(view.y_axis_count()) if hasattr(view, 'y_axis_count') else 1
+        return 1
 
     def set_y_limits(
         self,
