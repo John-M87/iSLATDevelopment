@@ -15,8 +15,6 @@ What differs from the full spectrum view:
 The τ display options live in the controller's ``toggle_state`` (see :data:`TAU_OPTION_DEFAULTS`).
 """
 from __future__ import annotations
-
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_tagged, set_tagged_visible
@@ -31,7 +29,6 @@ from .SpectralPanel import XScaling
 from ..GUI.KeyBindings import shortcut_text
 
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
-from iSLAT.Modules.FileHandling import absolute_data_files_path
 
 if TYPE_CHECKING:
     import numpy as np
@@ -46,7 +43,6 @@ TAU_OPTION_DEFAULTS: Dict[str, Any] = {
     "tau_show_flux": False,         # flux sub-panel below each τ panel
 }
 
-
 class OpticalDepthView(FullSpectrumView):
     """Multi-panel optical depth view backed by an :class:`OpticalDepthSpectrumPlot`.
 
@@ -55,11 +51,15 @@ class OpticalDepthView(FullSpectrumView):
     plot_manager : iSLATPlot
         The main controller (``iSLAT.Modules.Plotting.MainPlot.iSLATPlot``).
     """
-
     VIEW_NAME: str = "Optical Depth"
 
     #: Stacking the sample's spectra is a Full Spectrum view option.
     SUPPORTS_SAMPLE_STACK: bool = False
+
+    # Save dialog and message (see PlotView.save_figure); the folder is the Full Spectrum view's.
+    SAVE_DIALOG_TITLE: str = "Save Optical Depth Figure"
+    SAVE_FILE_SUFFIX: Optional[str] = "optical_depth"
+    SAVE_MESSAGE: Optional[str] = "Optical depth figure saved to: {path}"
 
     # ==================================================================
     # Display options (stored in the controller's toggle_state)
@@ -474,44 +474,16 @@ class OpticalDepthView(FullSpectrumView):
                 if lims is not None:
                     ax.set_ylim(*lims)
 
-    def save_figure(
-        self,
-        save_path: str | None = None,
-        file_format: str = "pdf",
-        dpi: int | None = None,
-        rasterized: bool = False,
-        **kwargs,
-    ) -> str | None:
-        """Export the optical depth plot as shown, using a fresh standalone figure.
+    def _create_export_plot(self) -> OpticalDepthSpectrumPlot:
+        """Build and render the standalone optical depth plot that :meth:`save_figure` writes.
 
         The figure uses the live panel count and wavelength range and follows
         the toggle state: flux sub-panels (with their observed-data and Y-axis
-        settings), total τ line / summed model, legend, saved / atomic lines
-        and wavelength markers.
+        settings), total tau line / summed model, legend, saved / atomic lines
+        and wavelength markers.  The caller closes it after saving.
         """
-        if save_path is None:
-            from tkinter import filedialog
-            try:
-                default_name = Path(self._islat.loaded_spectrum_file).stem + f"_optical_depth.{file_format}"
-            except Exception:
-                default_name = f"optical_depth.{file_format}"
-            save_path = filedialog.asksaveasfilename(
-                title="Save Optical Depth Figure",
-                defaultextension=f".{file_format}",
-                initialfile=default_name,
-                initialdir=absolute_data_files_path,
-                filetypes=[(f"{file_format.upper()} files", f"*.{file_format}")],
-            )
-        if not save_path:
-            return None
-
         ts = self._pm.toggle_state
-        xlim_range: Optional[Tuple[float, float]] = None
-        n_panels: Optional[int] = None
-        if self._plot is not None:
-            xlim_range = (float(self._plot._xlim_start), float(self._plot._xlim_end))
-            n_panels = self._plot.n_panels
-
+        xlim_range, n_panels = self._export_range()
         wave, flux, wave_obs = self._load_spectrum_data()
         standalone = self._create_standalone_plot(
             wave, flux, wave_obs, xlim_range=xlim_range, n_panels=n_panels,
@@ -534,18 +506,7 @@ class OpticalDepthView(FullSpectrumView):
                         line_data["line"] = [""] * len(line_data)
                     standalone.plot_saved_lines(line_data, show_labels=self._saved_line_labels_visible())
             draw_toggle_state_markers(standalone.fig, ts)
-
-            if rasterized:
-                for ax in standalone.fig.axes:
-                    ax.set_rasterized(True)
-
-            save_kw: Dict[str, Any] = {"bbox_inches": "tight", "format": file_format, "dpi": dpi or 300}
-            save_kw.update(kwargs)
-            standalone.fig.savefig(save_path, **save_kw)
-        finally:
+        except Exception:
             standalone.close()
-
-        if hasattr(self._islat, "GUI") and hasattr(self._islat.GUI, "data_field"):
-            self._islat.GUI.data_field.insert_text(f"Optical depth figure saved to: {save_path}")
-
-        return save_path
+            raise
+        return standalone

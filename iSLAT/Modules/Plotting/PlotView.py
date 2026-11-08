@@ -8,15 +8,79 @@ Every user-facing action (toggle molecule, toggle summed spectrum, toggle legend
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_molecule_lines, iter_tagged, set_tagged_visible
+from .FigureExport import save_figure_file
+from .PlotDebug import debug_config
 
 if TYPE_CHECKING:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.Molecule import Molecule
+
+
+# ----------------------------------------------------------------------
+# Messages to the user and the save dialog
+# ----------------------------------------------------------------------
+def notify_user(islat: Any, message: str, **kwargs: Any) -> bool:
+    """Show *message* in the main window's data field (``islat.GUI.data_field``).
+
+    *kwargs* go to ``DataField.insert_text`` (e.g. ``clear_after=False``).
+    Returns ``False`` when there is no data field (scripts, tests) or
+    writing to it failed.
+    """
+    data_field = getattr(getattr(islat, "GUI", None), "data_field", None)
+    if data_field is None:
+        return False
+    try:
+        data_field.insert_text(message, **kwargs)
+    except Exception as exc:
+        debug_config.warning("plot_view", f"Could not write to the data field: {exc}")
+        return False
+    return True
+
+
+def default_save_name(islat: Any, suffix: str, file_format: str) -> str:
+    """``"<loaded spectrum>_<suffix>.<format>"``, or ``"<suffix>.<format>"`` when no spectrum file is known."""
+    try:
+        stem = Path(islat.loaded_spectrum_file).stem
+    except Exception:
+        stem = ""
+    name = f"{stem}_{suffix}" if stem else suffix
+    return f"{name}.{file_format}"
+
+
+def ask_save_path(
+    title: str,
+    file_format: str,
+    *,
+    initialfile: Optional[str] = None,
+    initialdir: Optional[str] = None,
+    any_file_type: bool = False,
+) -> str:
+    """Ask for the file to save to with Tk's save dialog; an empty string when cancelled.
+
+    The dialog offers *file_format* (and "All files" with *any_file_type*),
+    suggests *initialfile* and opens in *initialdir* when they are given.
+    """
+    from tkinter import filedialog
+
+    filetypes = [(f"{file_format.upper()} files", f"*.{file_format}")]
+    if any_file_type:
+        filetypes.append(("All files", "*.*"))
+    options: Dict[str, Any] = {
+        "title": title,
+        "defaultextension": f".{file_format}",
+        "filetypes": filetypes,
+    }
+    if initialfile:
+        options["initialfile"] = initialfile
+    if initialdir:
+        options["initialdir"] = initialdir
+    return filedialog.asksaveasfilename(**options)
 
 # ----------------------------------------------------------------------
 # User wavelength markers (Shift+M)
@@ -758,6 +822,17 @@ class PlotView(ABC):
     # ------------------------------------------------------------------
     # File output
     # ------------------------------------------------------------------
+    #: Title of the save dialog.
+    SAVE_DIALOG_TITLE: str = "Save Figure"
+    #: The save dialog suggests ``"<loaded spectrum>_<suffix>.<format>"``; ``None`` suggests no name.
+    SAVE_FILE_SUFFIX: Optional[str] = None
+    #: Folder the save dialog opens in (``None``: the dialog's default).
+    SAVE_INITIAL_DIR: Optional[str] = None
+    #: Also offer "All files" in the save dialog, besides the requested format.
+    SAVE_ANY_FILE_TYPE: bool = False
+    #: Data-field message after a successful save (``{path}`` is replaced), or ``None`` for none.
+    SAVE_MESSAGE: Optional[str] = None
+
     def save_figure(
         self,
         save_path: str | None = None,
@@ -767,62 +842,94 @@ class PlotView(ABC):
         **kwargs,
     ) -> str | None:
         """
-        Save the current view's figure to a file.
+        Save the view's figure to a file.
 
-        The default implementation saves the figure returned by
-        :meth:`get_figure`.
-        Subclasses may override this to produce a *different* figure for export (e.g. with toggle state baked in).
+        The steps are always the same: check :meth:`_can_save_figure`, ask
+        for a path when *save_path* is ``None`` (:meth:`_ask_save_path`),
+        get the figure from :meth:`_build_export_figure`, write it with
+        :func:`~iSLAT.Modules.Plotting.FigureExport.save_figure_file`,
+        release it, and show :attr:`SAVE_MESSAGE` in the data field.  Views
+        change *what* is saved by overriding :meth:`_build_export_figure`
+        (e.g. a fresh standalone figure with the toggle state baked in) and
+        the ``SAVE_*`` attributes for the dialog and the message.
 
         Parameters
         ----------
         save_path : str or None
             Destination path.  If *None* a file dialog is opened.
         file_format : str
-            File format extension (``"pdf"``, ``"png"``, …).
+            Format offered by the dialog, also used when the path has no
+            file extension matplotlib knows (``"pdf"``, ``"png"``, ...).
         dpi : int or None
-            Resolution.  *None* uses matplotlib's default.
+            Resolution.  *None* uses the display settings' export default
+            (300 dpi).
         rasterized : bool
-            If *True* axes are rasterized before saving (useful for PDFs
-            with very dense data).
+            If *True* the axes are rasterized for this save (useful for
+            PDFs with very dense data).
         **kwargs
             Extra keyword arguments forwarded to ``fig.savefig()``.
 
         Returns
         -------
         str or None
-            The path that was saved to, or *None* if the user cancelled.
+            The path that was saved to, or *None* when nothing was saved
+            (no figure, or the dialog was cancelled).
         """
-        from pathlib import Path
-        from tkinter import filedialog
-
-        fig = self.get_figure()
-        if fig is None:
+        if not self._can_save_figure():
             return None
-
         if save_path is None:
-            save_path = filedialog.asksaveasfilename(
-                title="Save Figure",
-                defaultextension=f".{file_format}",
-                filetypes=[(f"{file_format.upper()} files", f"*.{file_format}")],
-            )
+            save_path = self._ask_save_path(file_format)
         if not save_path:
             return None
+        fig, release = self._build_export_figure()
+        try:
+            if fig is None:
+                return None
+            saved = save_figure_file(
+                fig, save_path,
+                file_format=file_format, dpi=dpi, rasterized=rasterized, **kwargs,
+            )
+        finally:
+            if release is not None:
+                release()
+        if self.SAVE_MESSAGE:
+            self._notify_user(self.SAVE_MESSAGE.format(path=saved))
+        return saved
 
-        if rasterized:
-            for ax in fig.axes:
-                ax.set_rasterized(True)
+    def _can_save_figure(self) -> bool:
+        """Whether there is anything to save; checked before the dialog opens.  Default: the view has a figure."""
+        return self.get_figure() is not None
 
-        save_kw = {"bbox_inches": "tight", "format": file_format}
-        if dpi is not None:
-            save_kw["dpi"] = dpi
-        elif rasterized:
-            save_kw["dpi"] = 300
-        else:
-            save_kw["dpi"] = 300  # high-quality default for all exports
-        save_kw.update(kwargs)
+    def _build_export_figure(self) -> Tuple[Optional["Figure"], Optional[Callable[[], None]]]:
+        """Return ``(figure, release)``: the figure to save and a callable that frees it afterwards.
 
-        fig.savefig(save_path, **save_kw)
-        return save_path
+        The default saves the view's own figure as shown (:meth:`get_figure`)
+        and has nothing to release (*release* is ``None``).  Views that
+        export a different figure build it here and return its ``close``
+        method as *release*.
+        """
+        return self.get_figure(), None
+
+    def _ask_save_path(self, file_format: str) -> str:
+        """Open the save dialog configured by the ``SAVE_*`` attributes; an empty string when cancelled."""
+        initialfile = None
+        if self.SAVE_FILE_SUFFIX:
+            initialfile = default_save_name(
+                getattr(self._pm, "islat", None), self.SAVE_FILE_SUFFIX, file_format,
+            )
+        return ask_save_path(
+            self.SAVE_DIALOG_TITLE, file_format,
+            initialfile=initialfile,
+            initialdir=self.SAVE_INITIAL_DIR,
+            any_file_type=self.SAVE_ANY_FILE_TYPE,
+        )
+
+    # ------------------------------------------------------------------
+    # Messages
+    # ------------------------------------------------------------------
+    def _notify_user(self, message: str, **kwargs: Any) -> bool:
+        """Show *message* in the main window's data field (see :func:`notify_user`)."""
+        return notify_user(getattr(getattr(self, "_pm", None), "islat", None), message, **kwargs)
 
     # ------------------------------------------------------------------
     # Line-inspection helpers

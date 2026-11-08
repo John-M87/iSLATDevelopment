@@ -14,21 +14,11 @@ import matplotlib.pyplot as plt
 from .SpectrumPanelView import SpectrumPanelView
 from .PopulationDiagramPlot import PopulationDiagramPlot
 from .PopulationDiagramContextMixin import PopulationDiagramContextMixin
+from .PlotDebug import debug_config
 
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
-
-try:
-    from iSLAT.Modules.Debug import debug_config
-except ImportError:
-    class _FallbackDebug:
-        def verbose(self, *a, **kw): pass
-        def info(self, *a, **kw): pass
-        def warning(self, *a, **kw): print(f"WARNING: {kw or a}")
-        def error(self, *a, **kw): print(f"ERROR: {kw or a}")
-        def trace(self, *a, **kw): pass
-    debug_config = _FallbackDebug()
 
 class PopulationDiagramView(SpectrumPanelView, PopulationDiagramContextMixin):
     """
@@ -187,11 +177,8 @@ class PopulationDiagramView(SpectrumPanelView, PopulationDiagramContextMixin):
         # Register view-specific controls with the ControlBus
         self._register_control_fields()
 
-        if self._canvas is not None:
-            self._canvas.get_tk_widget().pack(
-                fill="both", expand=True, padx=0, pady=0
-            )
-            self._canvas.draw_idle()
+        self._show_canvas()
+        self.draw()
 
     def deactivate(self) -> None:
         """Stop live all-molecules re-rendering, then unregister controls and unpack the canvas."""

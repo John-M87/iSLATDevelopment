@@ -1,14 +1,15 @@
 """
 ToggleMixin - shared toggle-state management for PlotView implementations.
 
-Both :class:`ThreePanelView` and :class:`FullSpectrumView` need to
-reconcile visual state (atomic lines, saved lines, summed spectrum,
-legend, observed-data visibility, Y-axis limits) with the controller's
-canonical ``toggle_state`` dict.
+:class:`ThreePanelView`, :class:`FullSpectrumView` (and its subclasses) and
+:class:`FitLinesPlotGridView` need to reconcile visual state (atomic lines,
+saved lines, summed spectrum, legend, observed-data visibility, Y-axis
+limits) with the controller's canonical ``toggle_state`` dict.
 
-This mixin extracts the common *orchestration* logic so each view only
-has to implement a few small hooks describing **where** its axes live
-and **how** to add/remove overlay artists.
+This mixin holds the common *orchestration* logic, so each view only
+implements a few small hooks describing **where** its axes live and **how**
+to add/remove overlay artists.  The host is a :class:`PlotView`, which also
+provides ``draw()``; list the mixin first in the bases.
 
 Usage::
 
@@ -39,8 +40,13 @@ Hook methods (must be implemented by the concrete view):
         Return ``False`` when the view is not initialised and toggles
         should be silently ignored.
 
-    ``draw()``
-        Flush pending changes to the canvas.
+Optional hook:
+
+    ``_overlay_drawn(kind) -> bool or None``
+        Whether the atomic or saved lines are on the axes now, so
+        :meth:`sync_toggle_state` can leave an overlay that is already in
+        the wanted state alone.  The default (``None``) always removes and
+        redraws it.
 """
 from __future__ import annotations
 
@@ -86,13 +92,37 @@ class ToggleMixin:
         """Return True when the view is initialised and toggles can proceed."""
         ...
 
-    @abstractmethod
-    def draw(self) -> None:
-        ...
+    def _overlay_drawn(self, kind: str) -> Optional[bool]:
+        """Whether the *kind* overlay (``"atomic_lines"`` or ``"saved_lines"``) is on the axes now.
+
+        ``None`` (the default) means "not known": :meth:`sync_toggle_state`
+        then removes the overlay and redraws it when it is wanted.  Views
+        that can tell return ``True`` / ``False`` so an overlay that is
+        already in the wanted state is left alone.
+        """
+        return None
 
     # ------------------------------------------------------------------
     # Toggle helpers
     # ------------------------------------------------------------------
+    def _sync_overlay(self, kind: str, wanted: bool) -> None:
+        """Bring the *kind* overlay (``"atomic_lines"`` / ``"saved_lines"``) in line with *wanted*.
+
+        Saved lines are re-read from disk before they are drawn, so they
+        always show the current line list.
+        """
+        if kind == "atomic_lines":
+            add, remove = self._add_atomic_line_artists, self._remove_atomic_line_artists
+        else:
+            add, remove = self._add_saved_line_artists, self._remove_saved_line_artists
+        drawn = self._overlay_drawn(kind)
+        if drawn is None or (drawn and not wanted):
+            remove()
+        if wanted and not drawn:
+            if kind == "saved_lines":
+                self._set_saved_line_data(self._load_saved_line_data())
+            add()
+
     def _set_summed_visibility(self, visible: bool) -> None:
         """Show / hide the summed-spectrum fill on all toggle axes."""
         for ax in self._iter_toggle_axes():
@@ -120,19 +150,17 @@ class ToggleMixin:
     # Public toggle API (satisfies :class:`PlotView` abstract methods)
     # ------------------------------------------------------------------
     def sync_toggle_state(self, toggle_state: dict) -> None:
-        """Reconcile visual state with the controller's *toggle_state* dict."""
+        """Reconcile visual state with the controller's *toggle_state* dict.
+
+        Call it after every re-render (which recreates the artists with the
+        default visibility) and when the view is activated.
+        """
         if not self._toggle_ready():
             return
 
-        # Atomic lines
-        self._remove_atomic_line_artists()
-        if toggle_state.get("atomic_lines", False):
-            self._add_atomic_line_artists()
-
-        # Saved lines
-        self._remove_saved_line_artists()
-        if toggle_state.get("saved_lines", False):
-            self._add_saved_line_artists()
+        # Atomic and saved lines
+        self._sync_overlay("atomic_lines", toggle_state.get("atomic_lines", False))
+        self._sync_overlay("saved_lines", toggle_state.get("saved_lines", False))
 
         # Summed spectrum
         self._set_summed_visibility(toggle_state.get("summed", True))

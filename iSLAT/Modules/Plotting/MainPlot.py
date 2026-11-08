@@ -1,15 +1,12 @@
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-
 import matplotlib.pyplot as plt
-
 import numpy as np
 
 from typing import Optional, List, Tuple, Any, TYPE_CHECKING
 
 import iSLAT.Constants as c
-
 from .LegendStrategy import StandardLegend
 from .MainPlotGrid import MainPlotGrid
 from .Theming import apply_canvas_theme, apply_figure_theme
@@ -34,23 +31,7 @@ from iSLAT.Modules.GUI.Widgets.iSLATToolbar import iSLATNavigationToolbar, Confi
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
 
-# Import debug configuration with fallback
-try:
-    from iSLAT.Modules.Debug import debug_config
-except ImportError:
-    # Fallback to a simple debug class for compatibility
-    class FallbackDebugConfig:
-        def verbose(self, component, message, **kwargs):
-            pass
-        def info(self, component, message, **kwargs):
-            pass
-        def warning(self, component, message, **kwargs):
-            print(f"[{component.upper()}] WARNING: {message}")
-        def error(self, component, message, **kwargs):
-            print(f"[{component.upper()}] ERROR: {message}")
-        def trace(self, component, message, **kwargs):
-            pass
-    debug_config = FallbackDebugConfig()
+from .PlotDebug import debug_config
 from iSLAT.Modules.DataProcessing.LineAnalyzer import LineAnalyzer
 
 class iSLATPlot(WavelengthMarkerStoreMixin):

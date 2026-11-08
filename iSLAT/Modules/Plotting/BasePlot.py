@@ -24,6 +24,7 @@ from iSLAT.Modules.Plotting.LegendStrategy import (
     StandardLegend,
 )
 from iSLAT.Modules.Plotting.ArtistTags import remove_tagged
+from iSLAT.Modules.Plotting.FigureExport import save_figure_file
 from iSLAT.Modules.Plotting.ModelOverlays import (
     molecule_color,
     molecule_display_name,
@@ -906,19 +907,16 @@ class BasePlot(ABC):
         bbox_inches: str = "tight",
         **kwargs,
     ) -> Path:
-        """Save the figure to *path*."""
+        """Save the figure to *path* (format from the file extension, display-settings DPI by default).
+
+        Uses :func:`~iSLAT.Modules.Plotting.FigureExport.save_figure_file`,
+        like the GUI views' *Save Figure*; extra *kwargs* go to
+        ``Figure.savefig``.
+        """
         if self.fig is None:
             self.generate_plot()
         path = Path(path)
-        save_kw: Dict[str, Any] = {"bbox_inches": bbox_inches}
-        if dpi is not None:
-            save_kw["dpi"] = dpi
-        else:
-            # Use the centralized high-quality default
-            _default_dpi = _display_config.savefig_dpi if _display_config else 300
-            save_kw["dpi"] = _default_dpi
-        save_kw.update(kwargs)
-        self.fig.savefig(str(path), **save_kw)
+        save_figure_file(self.fig, path, dpi=dpi, bbox_inches=bbox_inches, **kwargs)
         return path
 
     def close(self) -> None:

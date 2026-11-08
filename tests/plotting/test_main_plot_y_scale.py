@@ -389,9 +389,9 @@ class TestLineInspectionViewPickSurvivesRebuild:
 
     def _make_view(self, monkeypatch):
         import importlib
-        # The package re-exports the class under the module name, so go via importlib.
-        spv = importlib.import_module("iSLAT.Modules.Plotting.SpectrumPanelView")
-        monkeypatch.setattr(spv, "_FigureCanvasTkAgg", self._FakeCanvas)
+        # The package re-exports classes under their module names, so go via importlib.
+        canvas_mixin = importlib.import_module("iSLAT.Modules.Plotting.OwnedCanvasMixin")
+        monkeypatch.setattr(canvas_mixin, "_FigureCanvasTkAgg", self._FakeCanvas)
         view, pm = TestLineInspectionViewInheritsPolicy._make_view()
         view._canvas = None
         view._parent_frame = object()

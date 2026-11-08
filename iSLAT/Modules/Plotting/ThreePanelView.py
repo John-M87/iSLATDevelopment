@@ -16,9 +16,10 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List
 
 import numpy as np
 
-from .PlotView import PlotView
-from .ArtistTags import has_tagged, remove_molecule_lines
+from .PlotView import PlotView, notify_user
+from .ArtistTags import ATOMIC_LINE_TAG, SAVED_LINE_TAG, has_tagged, remove_molecule_lines
 from .BasePlot import BasePlot
+from .PlotDebug import debug_config
 from .Theming import apply_canvas_theme
 from .SavedLineLabels import labels_visible
 from .ToggleMixin import ToggleMixin
@@ -39,18 +40,6 @@ import iSLAT.Constants as c
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 #from iSLAT.Modules.DataProcessing.LineAnalyzer import LineAnalyzer
 from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral, opacity_integral
-
-# Import debug configuration
-try:
-    from iSLAT.Modules.Debug import debug_config
-except ImportError:
-    class _Fallback:
-        def verbose(self, *a, **k): pass
-        def info(self, *a, **k): pass
-        def warning(self, *a, **k): print(f"WARNING: {a}")
-        def error(self, *a, **k): print(f"ERROR: {a}")
-        def trace(self, *a, **k): pass
-    debug_config = _Fallback()
 
 class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineInspectionContextMixin):
     """
@@ -265,14 +254,10 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         grid.apply_theme_to_figure()
         self._pm.make_span_selector()
 
-        # Reapply the legend toggle - _render_spectrum_panel always rebuilds
-        # the legend so we must re-hide it when the user has toggled it off.
-        if not self._pm.legend_toggle:
-            leg = self.ax1.get_legend()
-            if leg is not None:
-                leg.set_visible(False)
-
-        self._reapply_display_state(self._pm.toggle_state)
+        # The re-render cleared ax1 and drew a fresh legend and summed fill:
+        # put the atomic / saved lines back and re-apply the summed, legend,
+        # observed-data and Y-axis settings.
+        self.sync_toggle_state(self._pm.toggle_state)
 
     def _do_update_model_plot(self) -> None:
         """Internal full re-render via the composed :class:`MainPlotGrid`.
@@ -280,7 +265,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         Data is fetched from the ``iSLAT`` controller, pushed into the
         grid's ``update_data()`` method (which clears and re-renders the
         spectrum panel on the borrowed axes), and then toggle states are
-        reconciled on top.
+        reconciled on top with :meth:`sync_toggle_state`.
         """
         islat = self._islat
 
@@ -314,27 +299,10 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             wave_data_obs=wave_data_obs,
         )
 
-        # Respect summed_toggle - hide the summed fill if the user toggled it off.
-        if not self._pm.summed_toggle:
-            BasePlot._clear_tagged_artists(
-                grid.ax_spectrum, "_islat_summed", lines=False,
-            )
-
-        # Overlay saved / atomic lines if their toggles are on
-        if self._pm.atomic_toggle:
-            self.toggle_atomic_lines(True)
-
-        if self._pm.line_toggle:
-            self._add_saved_line_artists()
-
-        # Respect the legend toggle state
-        if not self._pm.legend_toggle:
-            for ax in (self.ax1, self.ax2, self.ax3):
-                leg = ax.get_legend()
-                if leg is not None:
-                    leg.set_visible(False)
-
-        self._reapply_display_state(self._pm.toggle_state)
+        # Saved / atomic lines, summed fill and legend visibility, observed
+        # data and Y limits follow the toggle state (the summed fill is hidden,
+        # not removed, so turning it back on shows it again).
+        self.sync_toggle_state(self._pm.toggle_state)
 
         # Recreate span selector and redraw
         self._pm.make_span_selector()
@@ -407,11 +375,8 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
                 debug_config.warning("three_panel_view", f"Could not get line data for {mol.name}: {e}")
 
         if not mol_line_data:
-            if hasattr(self._islat, 'GUI') and hasattr(self._islat.GUI, 'data_field'):
-                names = ", ".join(m.name for m in all_mols)
-                self._islat.GUI.data_field.insert_text(
-                    f"No transitions found for [{names}] in the selected range"
-                )
+            names = ", ".join(m.name for m in all_mols)
+            self._notify_user(f"No transitions found for [{names}] in the selected range")
             self.clear_active_lines()
             self._render_population_diagram_base()
             self._apply_wavelength_markers(self._pm.toggle_state)
@@ -1122,13 +1087,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         info_str = LineInspectionPlot.format_line_info(info)
 
         # --- push to GUI data-field ------------------------------------
-        if (hasattr(islat, 'GUI') and hasattr(islat.GUI, 'data_field') and
-                islat.GUI.data_field is not None):
-            try:
-                if hasattr(islat.GUI.data_field, 'text') and islat.GUI.data_field.text.winfo_exists():
-                    islat.GUI.data_field.insert_text(info_str, clear_after=clear_data_field)
-            except Exception as e:
-                debug_config.warning("three_panel_view", f"Could not update data field: {e}")
+        notify_user(islat, info_str, clear_after=clear_data_field)
 
     # ------------------------------------------------------------------
     # ToggleMixin hooks
@@ -1219,43 +1178,12 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
         return ifh.read_line_saves(file_name=self._islat.input_line_list)
 
-    # ------------------------------------------------------------------
-    # Override sync_toggle_state for idempotent behaviour
-    # ------------------------------------------------------------------
-    def sync_toggle_state(self, toggle_state: dict) -> None:
-        """Reconcile visual state, skipping redundant add/remove operations.
+    def _overlay_drawn(self, kind: str) -> bool:
+        """Whether the atomic or saved lines are on ax1, so syncing leaves them alone when they already match.
 
-        The base :class:`ToggleMixin` always removes-then-adds; here we
-        check ``_has_tagged_artists`` first for a lighter touch when the
-        view is merely being re-activated.
+        Re-activating the view then only adds or removes what changed.
         """
-        # Atomic lines
-        if toggle_state.get("atomic_lines", False):
-            if not self._has_tagged_artists("_islat_atomic_line"):
-                self._add_atomic_line_artists()
-        else:
-            if self._has_tagged_artists("_islat_atomic_line"):
-                self._remove_atomic_line_artists()
-
-        # Saved lines
-        if toggle_state.get("saved_lines", False):
-            if not self._has_tagged_artists("_islat_saved_line"):
-                self._set_saved_line_data(self._load_saved_line_data())
-                self._add_saved_line_artists()
-        else:
-            if self._has_tagged_artists("_islat_saved_line"):
-                self._remove_saved_line_artists()
-
-        # Summed spectrum
-        self._set_summed_visibility(toggle_state.get("summed", True))
-
-        # Legend
-        self._set_legend_visibility(toggle_state.get("legend", True))
-
-        # Observed-data visibility and manual Y limits (main panel)
-        self._reapply_display_state(toggle_state)
-
-        self.draw()
+        return self._has_tagged_artists(ATOMIC_LINE_TAG if kind == "atomic_lines" else SAVED_LINE_TAG)
 
     # ------------------------------------------------------------------
     # Selection restoration

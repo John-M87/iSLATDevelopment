@@ -25,10 +25,15 @@ import pandas as pd
 
 import matplotlib
 from matplotlib.figure import Figure as MplFigure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.widgets import SpanSelector
 
-from .PlotView import PlotView, draw_wavelength_markers, normalize_y_data_sync
+from .FigureExport import save_figure_file
+from .OwnedCanvasMixin import OwnedCanvasMixin
+from .PlotDebug import debug_config
+from .PlotView import (
+    PlotView, ask_save_path, default_save_name, draw_wavelength_markers,
+    normalize_y_data_sync, notify_user,
+)
 from ..GUI.KeyBindings import shortcut_text
 from .StackedSpectralPanel import StackedSpectralPanel
 from .FullSpectrumPlot import FullSpectrumPlot
@@ -114,19 +119,7 @@ SKIP_GAPS_TIP: str = (
     "     no data are left out."
 )
 
-# Import debug configuration
-try:
-    from iSLAT.Modules.Debug import debug_config
-except ImportError:
-    class _Fallback:
-        def verbose(self, *a, **k): pass
-        def info(self, *a, **k): pass
-        def warning(self, *a, **k): print(f"WARNING: {a}")
-        def error(self, *a, **k): print(f"ERROR: {a}")
-        def trace(self, *a, **k): pass
-    debug_config = _Fallback()
-
-class FullSpectrumView(ToggleMixin, PlotView):
+class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     """
     Multi-panel full spectrum view backed by a :class:`StackedSpectralPanel`.
 
@@ -134,7 +127,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
     which owns the figure, axes, and all the standard rendering helpers.
     This view adds:
 
-    - Tk canvas management (pack / unpack)
+    - Tk canvas management (pack / unpack, from :class:`OwnedCanvasMixin`)
     - Span selectors for click-to-inspect
     - Interactive overlay toggles (atomic lines, saved lines, summed)
     - PDF export (creates a fresh standalone plot)
@@ -142,8 +135,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
     Toggle-state management (atomic lines, saved lines, summed spectrum, legend) is provided by :class:`ToggleMixin`.
 
     The view is **generic**: override :meth:`_create_plot` and
-    :meth:`_create_standalone_plot` to back it with any
-    :class:`StackedSpectralPanel` subclass.
+    :meth:`_create_standalone_plot` (or :meth:`_create_export_plot`) to
+    back it with any :class:`StackedSpectralPanel` subclass.
     """
 
     #: Name this view is registered under in the Views menu (``iSLATPlot.views``).
@@ -151,6 +144,12 @@ class FullSpectrumView(ToggleMixin, PlotView):
 
     #: Whether the view offers *Stack Sample Spectra* (subclasses with another plot turn it off).
     SUPPORTS_SAMPLE_STACK: bool = True
+
+    # Save dialog and message (see PlotView.save_figure).
+    SAVE_DIALOG_TITLE: str = "Save Spectrum Output"
+    SAVE_FILE_SUFFIX: Optional[str] = "full_output"
+    SAVE_INITIAL_DIR: Optional[str] = absolute_data_files_path
+    SAVE_MESSAGE: Optional[str] = "Spectrum output saved to: {path}"
 
     def __init__(self, plot_manager: Any) -> None:
         # Shared view state (_pm, _islat, _parent_frame, _initialised,
@@ -263,16 +262,11 @@ class FullSpectrumView(ToggleMixin, PlotView):
         if self._initialised:
             self._replace_plot()
         if value and self._initialised and len(self._sample_stack_spectra) < 2:
-            data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
-            if data_field is not None:
-                try:
-                    data_field.insert_text(
-                        "The sample has no other spectra to stack yet: add them with "
-                        "Spectral Functions > Manage Sample...\n",
-                        clear_after=False,
-                    )
-                except Exception:
-                    pass
+            self._notify_user(
+                "The sample has no other spectra to stack yet: add them with "
+                "Spectral Functions > Manage Sample...\n",
+                clear_after=False,
+            )
 
     def _get_stack_layout_label(self) -> str:
         return SAMPLE_STACK_LAYOUT_LABELS[self._stack_layout()]
@@ -310,12 +304,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         if problems:
             msg = "Could not stack some sample spectra:\n  " + "\n  ".join(problems)
             debug_config.warning("full_spectrum_view", msg)
-            data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
-            if data_field is not None:
-                try:
-                    data_field.insert_text(msg + "\n", clear_after=False)
-                except Exception:
-                    pass
+            self._notify_user(msg + "\n", clear_after=False)
         return spectra
 
     def _release_sample_stack(self) -> None:
@@ -743,17 +732,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
         self._plot.generate_plot()
         self._install_span_selectors()
 
-        # If the figure object changed (it will), rebuild the canvas
-        if self.fig is not old_fig:
-            if self._canvas is not None:
-                self._canvas.get_tk_widget().pack_forget()
-                self._canvas.get_tk_widget().destroy()
-                self._canvas = None
-            self._ensure_canvas()
-            if self._canvas is not None and self._parent_frame is not None:
-                self._canvas.get_tk_widget().pack(
-                    fill="both", expand=True, padx=0, pady=0,
-                )
+        # The figure object changed (it always does): rebuild the canvas.
+        self._show_canvas_if_replaced(old_fig)
 
         # Re-apply overlays
         self.sync_toggle_state(self._pm.toggle_state)
@@ -941,47 +921,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
         main_plot.canvas.draw_idle()
 
     # ==================================================================
-    # Canvas helpers
+    # Context menu (the canvas and right-click routing come from OwnedCanvasMixin)
     # ==================================================================
-    def _ensure_canvas(self) -> None:
-        """Build (or rebuild) the :class:`FigureCanvasTkAgg`."""
-        fig = self.fig
-        if self._canvas is not None:
-            if fig is not None and self._canvas.figure is fig:
-                return
-            self._canvas.get_tk_widget().destroy()
-            self._canvas = None
-        if fig is not None:
-            self._canvas = FigureCanvasTkAgg(fig, master=self._parent_frame)
-            self._canvas.mpl_connect(
-                "button_press_event", self._on_canvas_button_press
-            )
-            self._notify_canvas_changed()
-
-    def _on_canvas_button_press(self, event: Any) -> None:
-        """Route right-click events to :meth:`build_context_menu`."""
-        if event.button != 3:
-            return
-        if self._canvas is None:
-            return
-        try:
-            canvas_widget = self._canvas.get_tk_widget()
-        except Exception:
-            return
-        menu = self.build_context_menu(event, canvas_widget)
-        if menu is None:
-            return
-        try:
-            x_root = canvas_widget.winfo_rootx() + int(event.x)
-            y_root = canvas_widget.winfo_rooty() + int(
-                canvas_widget.winfo_height() - event.y
-            )
-            menu.tk_popup(x_root, y_root)
-        except Exception:
-            pass
-        finally:
-            menu.grab_release()
-
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Any:
         """Return a ``tk.Menu`` for the right-clicked panel, or ``None``."""
         try:
@@ -1078,18 +1019,12 @@ class FullSpectrumView(ToggleMixin, PlotView):
             self._needs_refresh = False
         elif self._needs_refresh:
             # Data changed while we were inactive - full refresh
-            old_fig = self.fig
             self._rebuild_plot()
             self._needs_refresh = False
-            if self.fig is not old_fig:
-                if self._canvas is not None:
-                    self._canvas.get_tk_widget().destroy()
-                    self._canvas = None
         # else: simple view toggle - just repack the existing canvas
 
-        self._ensure_canvas()
-        if self._canvas is not None:
-            self._canvas.get_tk_widget().pack(fill="both", expand=True, padx=0, pady=0)
+        # (Re)builds the canvas when the figure was replaced, then packs it.
+        self._show_canvas()
 
         # Sync theme in case it changed while the other view was active.
         self.apply_theme(self._pm.theme)
@@ -1225,14 +1160,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
             tip=SKIP_GAPS_TIP,
         )
 
-    def deactivate(self) -> None:
-        if self._canvas is not None:
-            self._canvas.get_tk_widget().pack_forget()
-
-        # Unregister all fields this view registered across all surfaces
-        bus = getattr(self._pm, 'control_bus', None)
-        if bus is not None:
-            bus.unregister_owner(self)
+    # deactivate (unregister the ControlBus fields, unpack the canvas) comes
+    # from OwnedCanvasMixin.
 
     # ------------------------------------------------------------------
     # Theme
@@ -1270,15 +1199,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         old_fig = self.fig
         self._rebuild_plot()
         self._needs_refresh = False
-
-        if self.fig is not old_fig:
-            if self._canvas is not None:
-                self._canvas.get_tk_widget().pack_forget()
-                self._canvas.get_tk_widget().destroy()
-                self._canvas = None
-            self._ensure_canvas()
-            if self._canvas is not None and self._parent_frame is not None:
-                self._canvas.get_tk_widget().pack(fill="both", expand=True, padx=0, pady=0)
+        self._show_canvas_if_replaced(old_fig)
 
         # Apply toggle state overlays after regeneration
         self.sync_toggle_state(self._pm.toggle_state)
@@ -1499,51 +1420,10 @@ class FullSpectrumView(ToggleMixin, PlotView):
         if legend_ax is not None and self._plot is not None:
             self._plot.legend_strategy.update_visibility(legend_ax, visible)
 
-    def sync_toggle_state(self, toggle_state: dict) -> None:
-        """Override to refresh saved-line data from disk before adding artists."""
-        if not self._toggle_ready():
-            return
-
-        # Atomic lines
-        self._remove_atomic_line_artists()
-        if toggle_state.get("atomic_lines", False):
-            self._add_atomic_line_artists()
-
-        # Saved lines - always refresh from disk
-        self._remove_saved_line_artists()
-        if toggle_state.get("saved_lines", False):
-            self._set_saved_line_data(self._load_saved_line_data())
-            self._add_saved_line_artists()
-
-        # Summed spectrum
-        self._set_summed_visibility(toggle_state.get("summed", True))
-
-        # Legend
-        self._set_legend_visibility(toggle_state.get("legend", True))
-
-        # Observed-data visibility and manual Y limits
-        self._reapply_display_state(toggle_state)
-
-        self.draw()
-
-    def toggle_legend(self, visible: Optional[bool] = None) -> None:
-        """Override to use the composed plot's legend strategy."""
-        if not self._toggle_ready():
-            return
-        legend_ax = self.subplots.get(0)
-        if legend_ax is None:
-            return
-        legend = legend_ax.get_legend()
-        if legend is not None:
-            if visible is not None:
-                self._plot.legend_strategy.update_visibility(legend_ax, visible)
-            else:
-                self._plot.legend_strategy.update_visibility(
-                    legend_ax, not legend.get_visible(),
-                )
-        self.draw()
-
-    # toggle_summed_spectrum, toggle_saved_lines, toggle_atomic_lines are inherited from ToggleMixin - no override needed.
+    # sync_toggle_state, toggle_legend, toggle_summed_spectrum, toggle_saved_lines
+    # and toggle_atomic_lines come from ToggleMixin (which re-reads the saved
+    # lines from disk on every sync and shows / hides the legend through
+    # _set_legend_visibility above).
 
     def toggle_residuals(self, show: bool) -> None:
         """Switch between :class:`FullSpectrumPlot` and :class:`ResidualSpectrumPlot`.
@@ -1609,7 +1489,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
             self._plot.remove_atomic_lines()
 
     # ==================================================================
-    # File output  (overrides PlotView.save_figure)
+    # File output: PlotView.save_figure saves what _build_export_figure builds
     # ==================================================================
     def _create_standalone_plot(
         self,
@@ -1658,54 +1538,21 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 )
         return FullSpectrumPlot(**kw)
 
-    def save_figure(
-        self,
-        save_path: str | None = None,
-        file_format: str = "pdf",
-        dpi: int | None = None,
-        rasterized: bool = False,
-        **kwargs,
-    ) -> str | None:
+    def _can_save_figure(self) -> bool:
+        """Exports build a figure of their own, so saving works even before the view was first shown."""
+        return True
+
+    def _build_export_figure(self):
+        """A fresh standalone figure with the toggle state baked in, so saving never touches the GUI figure."""
+        plot = self._create_export_plot()
+        return plot.fig, plot.close
+
+    def _export_range(self) -> Tuple[Optional[Tuple[float, float]], Optional[int]]:
+        """``(xlim_range, n_panels)`` of the live plot, so the saved figure matches what the user sees.
+
+        Before the first render (no live plot) the molecules' global
+        wavelength range and the default panel count are used.
         """
-        Export the full spectrum to a file using a **fresh standalone figure** that has the current toggle state baked in.
-
-        This avoids side-effects on the interactive GUI figure.
-        """
-        from tkinter import filedialog
-
-        if save_path is None:
-            try:
-                default_name = Path(self._islat.loaded_spectrum_file).stem + f"_full_output.{file_format}"
-            except Exception:
-                default_name = f"full_output.{file_format}"
-            save_path = filedialog.asksaveasfilename(
-                title="Save Spectrum Output",
-                defaultextension=f".{file_format}",
-                initialfile=default_name,
-                initialdir=absolute_data_files_path,
-                filetypes=[
-                    (f"{file_format.upper()} files", f"*.{file_format}"),
-                ],
-            )
-        if not save_path:
-            return None
-
-        # Build toggle-state-aware kwargs for the standalone plot
-        ts = self._pm.toggle_state
-
-        line_list_df: Optional[pd.DataFrame] = None
-        if ts.get("saved_lines", False):
-            line_list_df = self.line_data
-
-        atomic_lines_df: Optional[pd.DataFrame] = None
-        if ts.get("atomic_lines", False):
-            atomic_lines_df = load_atomic_lines()
-
-        # Create standalone figure via the overridable factory method
-        wave, flux, wave_obs = self._load_spectrum_data()
-
-        # Use the live plot's wavelength bounds and panel count so the saved
-        # figure matches exactly what the user sees in the GUI.
         xlim_range: Optional[Tuple[float, float]] = None
         n_panels: Optional[int] = None
         if self._plot is not None:
@@ -1714,69 +1561,55 @@ class FullSpectrumView(ToggleMixin, PlotView):
             if x_start is not None and x_end is not None:
                 xlim_range = (float(x_start), float(x_end))
             n_panels = getattr(self._plot, 'n_panels', None)
-        # Fall back to molecules' global_wavelength_range when the interactive
-        # plot is not yet rendered (e.g. called before first activation).
         if xlim_range is None:
             mol_dict = getattr(self._islat, 'molecules_dict', None)
             mol_range = getattr(mol_dict, '_global_wavelength_range', None) if mol_dict else None
             if mol_range is not None:
                 xlim_range = (float(mol_range[0]), float(mol_range[1]))
+        return xlim_range, n_panels
 
-        standalone = self._create_standalone_plot(
+    def _create_export_plot(self) -> StackedSpectralPanel:
+        """Build and render the standalone plot that :meth:`save_figure` writes.
+
+        It follows the toggle state (saved / atomic lines, observed data,
+        summed model, Y-axis policy, wavelength marks), the live wavelength
+        range and panel count, and the session's export size.  The caller
+        closes it after saving.
+        """
+        ts = self._pm.toggle_state
+        wave, flux, wave_obs = self._load_spectrum_data()
+        xlim_range, n_panels = self._export_range()
+        plot = self._create_standalone_plot(
             wave, flux, wave_obs,
-            line_list=line_list_df,
-            atomic_lines=atomic_lines_df,
+            line_list=self.line_data if ts.get("saved_lines", False) else None,
+            atomic_lines=load_atomic_lines() if ts.get("atomic_lines", False) else None,
             figsize=(DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT),
             xlim_range=xlim_range,
             n_panels=n_panels,
             display_options=toggle_state_display_kwargs(ts),
         )
-        apply_export_size(standalone, get_export_settings(self._pm))
-        standalone.generate_plot()
-        draw_toggle_state_markers(standalone.fig, ts)
+        try:
+            apply_export_size(plot, get_export_settings(self._pm))
+            plot.generate_plot()
+            draw_toggle_state_markers(plot.fig, ts)
 
-        # Safety net for factory overrides whose plot ignores display_options:
-        # hide toggled-off artists on every axes (idempotent for FullSpectrumPlot).
-        hidden_tags = [
-            tag for tag, key in ((SUMMED_TAG, "summed"), (OBSERVED_TAG, "observed"))
-            if not ts.get(key, True)
-        ]
-        if hidden_tags:
-            for ax in standalone.fig.axes:
-                set_tagged_visible(ax, hidden_tags, False)
-
-        if rasterized:
-            for ax in standalone.fig.axes:
-                ax.set_rasterized(True)
-
-        save_kw: dict = {"bbox_inches": "tight", "format": file_format}
-        if dpi is not None:
-            save_kw["dpi"] = dpi
-        elif rasterized:
-            save_kw["dpi"] = 300
-        else:
-            save_kw["dpi"] = 300  # high-quality default for all exports
-        save_kw.update(kwargs)
-
-        standalone.fig.savefig(save_path, **save_kw)
-        standalone.close()
-
-        # Notify user via data field
-        if hasattr(self._islat, "GUI") and hasattr(self._islat.GUI, "data_field"):
-            self._islat.GUI.data_field.insert_text(f"Spectrum output saved to: {save_path}")
-
-        return save_path
+            # Safety net for factory overrides whose plot ignores display_options:
+            # hide toggled-off artists on every axes (idempotent for FullSpectrumPlot).
+            hidden_tags = [
+                tag for tag, key in ((SUMMED_TAG, "summed"), (OBSERVED_TAG, "observed"))
+                if not ts.get(key, True)
+            ]
+            if hidden_tags:
+                for ax in plot.fig.axes:
+                    set_tagged_visible(ax, hidden_tags, False)
+        except Exception:
+            plot.close()
+            raise
+        return plot
 
     # ==================================================================
-    # Canvas / drawing
+    # Figure (draw and get_canvas come from OwnedCanvasMixin)
     # ==================================================================
-    def draw(self) -> None:
-        if self._canvas is not None:
-            self._canvas.draw_idle()
-
-    def get_canvas(self) -> "FigureCanvasTkAgg":
-        return self._canvas  # type: ignore[return-value]
-
     def get_figure(self) -> "Figure":
         return self.fig  # type: ignore[return-value]
 
@@ -1810,10 +1643,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
     # ==================================================================
     def destroy(self) -> None:
         """Permanently dispose of the full spectrum plot and canvas."""
-        if self._canvas is not None:
-            self._canvas.get_tk_widget().pack_forget()
-            self._canvas.get_tk_widget().destroy()
-            self._canvas = None
+        self._destroy_canvas()
         if self._plot is not None:
             self._plot.close()
             self._plot = None
@@ -2042,30 +1872,19 @@ def output_full_spectrum(
     standalone.generate_plot()
     draw_toggle_state_markers(standalone.fig, ts)
 
-    from tkinter import filedialog
-    default_name = Path(islat_ref.loaded_spectrum_file).stem + "_full_output.pdf"
-    save_path = filedialog.asksaveasfilename(
-        title="Save Spectrum Output",
-        defaultextension=".pdf",
-        initialfile=default_name,
+    save_path = ask_save_path(
+        FullSpectrumView.SAVE_DIALOG_TITLE, "pdf",
+        initialfile=default_save_name(islat_ref, FullSpectrumView.SAVE_FILE_SUFFIX, "pdf"),
         initialdir=absolute_data_files_path,
-        filetypes=[("PDF files", "*.pdf")],
     )
     if not save_path:
         standalone.close()
         return None
 
-    if rasterized:
-        for ax in standalone.fig.axes:
-            ax.set_rasterized(True)
-
-    standalone.fig.savefig(
-        save_path,
-        bbox_inches="tight",
-        format="pdf",
-        dpi=300 if rasterized else None,
-    )
-    standalone.close()
+    try:
+        save_figure_file(standalone.fig, save_path, file_format="pdf", rasterized=rasterized)
+    finally:
+        standalone.close()
 
     # Write companion parameters CSV
     file_name = str(Path(save_path).with_suffix("")) + "_parameters.csv"
@@ -2075,7 +1894,6 @@ def output_full_spectrum(
         file_name=file_name,
     )
 
-    if hasattr(islat_ref, "GUI") and hasattr(islat_ref.GUI, "data_field"):
-        islat_ref.GUI.data_field.insert_text(f"Spectrum output saved to: {save_path}")
+    notify_user(islat_ref, FullSpectrumView.SAVE_MESSAGE.format(path=save_path))
 
     return save_path

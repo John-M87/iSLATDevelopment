@@ -14,23 +14,14 @@ from .ArtistTags import SUMMED_TAG, iter_tagged, remove_tagged
 from .SpectrumPanelView import SpectrumPanelView
 from .LineInspectionPlot import LineInspectionPlot
 from .LineInspectionContextMixin import LineInspectionContextMixin
+from .PlotDebug import debug_config
+from .PlotView import notify_user
 
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
     from typing import Dict
-
-try:
-    from iSLAT.Modules.Debug import debug_config
-except ImportError:
-    class _FallbackDebug:
-        def verbose(self, *a, **kw): pass
-        def info(self, *a, **kw): pass
-        def warning(self, *a, **kw): print(f"WARNING: {kw or a}")
-        def error(self, *a, **kw): print(f"ERROR: {kw or a}")
-        def trace(self, *a, **kw): pass
-    debug_config = _FallbackDebug()
 
 class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     """
@@ -295,20 +286,16 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     # ==================================================================
     # Pick event - active line interaction
     # ==================================================================
-    def _ensure_canvas(self) -> None:
-        """Build the canvas and keep the pick handler attached to it.
+    def _on_canvas_created(self, canvas: Any) -> None:
+        """Keep the pick handler attached to every new canvas.
 
-        Every selection change creates a fresh figure, so the base class
-        replaces the canvas.  The old pick connection dies with the old
-        canvas, so forget its id and connect again on the new one;
-        otherwise clicks on line markers stop working after the first
-        rebuild.
+        Every selection change creates a fresh figure, so the canvas is
+        replaced.  The old pick connection dies with the old canvas, so
+        forget its id and connect again on the new one; otherwise clicks on
+        line markers stop working after the first rebuild.
         """
-        old_canvas = self._canvas
-        super()._ensure_canvas()
-        if self._canvas is not old_canvas:
-            self._pick_cid = None
-            self._connect_pick_event()
+        self._pick_cid = None
+        self._connect_pick_event()
 
     def _connect_pick_event(self) -> None:
         """Connect a pick-event handler to the current canvas (idempotent)."""
@@ -409,14 +396,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
             molecule=getattr(islat, 'active_molecule', None),
         )
         info_str = _LIP.format_line_info(info)
-
-        if (hasattr(islat, 'GUI') and hasattr(islat.GUI, 'data_field') and
-                islat.GUI.data_field is not None):
-            try:
-                if hasattr(islat.GUI.data_field, 'text') and islat.GUI.data_field.text.winfo_exists():
-                    islat.GUI.data_field.insert_text(info_str, clear_after=True)
-            except Exception as exc:
-                debug_config.warning("line_inspection_view", f"data_field update failed: {exc}")
+        notify_user(islat, info_str, clear_after=True)
 
     # ==================================================================
     # PlotView - lifecycle
@@ -441,12 +421,22 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         self.sync_toggle_state(self._pm.toggle_state)
         self._register_control_fields()
         self._connect_pick_event()
+        self._show_canvas()
+        self.draw()
 
-        if self._canvas is not None:
-            self._canvas.get_tk_widget().pack(
-                fill="both", expand=True, padx=0, pady=0
-            )
-            self._canvas.draw_idle()
+    def _rebuild_and_show(self) -> None:
+        """Rebuild the figure (once the view has been shown) and show it, themed, on its new canvas.
+
+        Before the first activation the view is only marked stale; the
+        next :meth:`activate` builds it.
+        """
+        self._needs_refresh = True
+        if not self._initialised:
+            return
+        self._build_plot()
+        self._needs_refresh = False
+        self._show_canvas()
+        self.apply_theme(self._pm.theme)
 
     # ==================================================================
     # PlotView - interaction context
@@ -459,16 +449,9 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         return menu
 
     def deactivate(self) -> None:
-        """Unregister controls, disconnect pick event, and unpack the canvas."""
+        """Disconnect the pick event, then unregister controls and unpack the canvas."""
         self._disconnect_pick_event()
-        bus = getattr(self._pm, 'control_bus', None)
-        if bus is not None:
-            bus.unregister_owner(self)
-        if self._canvas is not None:
-            try:
-                self._canvas.get_tk_widget().pack_forget()
-            except Exception:
-                pass
+        super().deactivate()
 
     def clear_active_lines(self) -> None:
         """Clear vline markers from the plot."""
@@ -490,18 +473,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         **kwargs: Any,
     ) -> None:
         """Rebuild the inspection plot from current iSLAT data."""
-        self._needs_refresh = True
-        if self._initialised:
-            self._build_plot()
-            self._needs_refresh = False
-            self._ensure_canvas()
-            self.apply_theme(self._pm.theme)
-            if self._canvas is not None:
-                if self._parent_frame is not None:
-                    self._canvas.get_tk_widget().pack(
-                        fill="both", expand=True, padx=0, pady=0
-                    )
-                self._canvas.draw_idle()
+        self._rebuild_and_show()
 
     # ==================================================================
     # PlotView - selection (override base no-ops)
@@ -509,33 +481,12 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     def on_selection(self, xmin: float, xmax: float) -> None:
         """Update the displayed wavelength range when the user makes a new selection."""
         self._current_selection = (xmin, xmax)
-        self._needs_refresh = True
-        if self._initialised:
-            self._build_plot()
-            self._needs_refresh = False
-            self._ensure_canvas()
-            self.apply_theme(self._pm.theme)
-            if self._canvas is not None:
-                if self._parent_frame is not None:
-                    self._canvas.get_tk_widget().pack(
-                        fill="both", expand=True, padx=0, pady=0
-                    )
-                self._canvas.draw_idle()
+        self._rebuild_and_show()
 
     def clear_selection(self) -> None:
         """Clear the selection and show the placeholder."""
         self._current_selection = None
-        self._needs_refresh = True
-        if self._initialised:
-            self._build_plot()
-            self._needs_refresh = False
-            self._ensure_canvas()
-            if self._canvas is not None:
-                if self._parent_frame is not None:
-                    self._canvas.get_tk_widget().pack(
-                        fill="both", expand=True, padx=0, pady=0
-                    )
-                self._canvas.draw_idle()
+        self._rebuild_and_show()
 
     # ==================================================================
     # PlotView - molecule lifecycle (override to preserve selection)

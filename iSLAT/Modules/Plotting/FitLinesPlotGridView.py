@@ -27,26 +27,21 @@ from .PlotView import PlotView
 from .ArtistTags import MOLECULE_TAG, SUMMED_TAG, iter_tagged, set_tagged_visible
 from .BasePlot import BasePlot
 from .ModelOverlays import MoleculeTrace, plot_molecule_trace
+from .OwnedCanvasMixin import popup_menu
+from .PlotDebug import debug_config
 from .SavedLineLabels import labels_visible
 from .Theming import apply_figure_theme
+from .ToggleMixin import ToggleMixin
 from .FitLinesPlotGrid import FitLinesPlotGrid
+
+import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
+from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 
 if TYPE_CHECKING:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.Molecule import Molecule
-
-try:
-    from iSLAT.Modules.Debug import debug_config
-except ImportError:
-    class _FallbackDebug:
-        def verbose(self, *a, **kw): pass
-        def info(self, *a, **kw): pass
-        def warning(self, *a, **kw): print(f"WARNING: {kw or a}")
-        def error(self, *a, **kw): print(f"ERROR: {kw or a}")
-        def trace(self, *a, **kw): pass
-    debug_config = _FallbackDebug()
 
 try:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -61,7 +56,7 @@ except ImportError:
 SUBPLOT_WIDTH_INCHES = 1.8
 SUBPLOT_HEIGHT_INCHES = 1.8
 
-class FitLinesPlotGridView(PlotView):
+class FitLinesPlotGridView(ToggleMixin, PlotView):
     """
     Embedded fit-lines plot grid view.
 
@@ -71,6 +66,10 @@ class FitLinesPlotGridView(PlotView):
     Each tab is scrollable to accommodate grids that exceed the frame height.
 
     When no plot grids have been set a placeholder message is displayed.
+
+    The atomic-line, saved-line and summed-model toggles act on every fit
+    panel through :class:`ToggleMixin`; the main plot's observed-data and
+    Y-axis settings do not apply (each panel keeps its own scale).
 
     Call :meth:`set_plot_grids` to push a new list of
     :class:`FitLinesPlotGrid` objects into the view; the view will
@@ -105,6 +104,9 @@ class FitLinesPlotGridView(PlotView):
         self._plot_grids: List[FitLinesPlotGrid] = []
 
         self._show_model_lines: bool = False
+
+        # Saved lines drawn on the panels (set by ToggleMixin._set_saved_line_data)
+        self.line_data: Any = None
 
     # ==================================================================
     # Public API
@@ -832,25 +834,17 @@ class FitLinesPlotGridView(PlotView):
                     label=f"Open in Three Panel  [{label}]",
                     command=_open_three_panel,
                 )
-                menu.add_separator()
-                menu.add_command(label="Save Figure…", command=self.save_figure)
-                # Convert matplotlib canvas coords to screen coords.
-                x_root = canvas_widget.winfo_rootx() + int(event.x)
-                y_root = (
-                    canvas_widget.winfo_rooty()
-                    + int(canvas_widget.winfo_height() - event.y)
-                )
-                menu.tk_popup(x_root, y_root)
+                self._append_save_figure_item(menu)
             except Exception as exc:
                 debug_config.warning(
                     "fit_lines_grid_view",
                     f"_connect_panel_context_menu popup failed: {exc}",
                 )
-            finally:
-                try:
-                    menu.grab_release()
-                except Exception:
-                    pass
+                return
+            if not popup_menu(menu, canvas_widget, event):
+                debug_config.warning(
+                    "fit_lines_grid_view", "_connect_panel_context_menu popup failed",
+                )
 
         fig_canvas.mpl_connect("button_press_event", _on_button_press)
 
@@ -952,68 +946,114 @@ class FitLinesPlotGridView(PlotView):
         self._refresh_summed_spectrum()
 
     # ==================================================================
-    # PlotView - toggle helpers (toggle_legend keeps PlotView's no-op)
+    # ToggleMixin hooks - the overlays go on every fit panel
     # ==================================================================
-    def sync_toggle_state(self, toggle_state: dict) -> None:
-        """Apply the summed-spectrum toggle state when this view becomes active."""
-        summed = toggle_state.get("summed", False)
-        if summed:
-            self.toggle_summed_spectrum(True)
+    # sync_toggle_state, toggle_summed_spectrum, toggle_saved_lines,
+    # toggle_atomic_lines and toggle_legend come from ToggleMixin.
+    def _toggle_ready(self) -> bool:
+        """Toggles apply once there are grids to draw on."""
+        return bool(self._plot_grids)
 
-    def toggle_summed_spectrum(self, visible: bool) -> None:
-        """Show or hide the summed model fill on all fit-lines panel axes."""
-        if not self._plot_grids:
+    def _iter_panels(self):
+        """Every panel of every displayed grid."""
+        for plot_grid in self._plot_grids:
+            yield from plot_grid.iter_panels()
+
+    def _iter_panel_axes(self):
+        """``(panel, ax)`` for every panel that has been rendered."""
+        for panel in self._iter_panels():
+            ax = getattr(panel, "ax", None)
+            if ax is not None:
+                yield panel, ax
+
+    def _iter_toggle_axes(self):
+        for _panel, ax in self._iter_panel_axes():
+            yield ax
+
+    # The main plot's observed-data and Y-axis settings and the wavelength
+    # markers do not apply to the fit panels: each keeps its own scale.
+    def _iter_observed_axes(self):
+        return iter(())
+
+    def _iter_y_axes(self):
+        return iter(())
+
+    def _add_atomic_line_artists(self) -> None:
+        """Draw the atomic lines on every panel."""
+        atomic_data = load_atomic_lines()
+        for panel in self._iter_panels():
+            if hasattr(panel, "plot_atomic_lines"):
+                panel.plot_atomic_lines(atomic_data)
+
+    def _remove_atomic_line_artists(self) -> None:
+        for panel in self._iter_panels():
+            if hasattr(panel, "remove_atomic_lines"):
+                panel.remove_atomic_lines()
+
+    def _add_saved_line_artists(self) -> None:
+        """Draw the saved lines on every panel, replacing any drawn before."""
+        line_data = getattr(self, "line_data", None)
+        if line_data is None:
+            line_data = self.line_data = self._load_saved_line_data()
+        show_labels = labels_visible(self.VIEW_NAME)
+        for panel in self._iter_panels():
+            if hasattr(panel, "plot_saved_lines"):
+                panel.remove_saved_lines()
+                panel.plot_saved_lines(line_data, show_labels=show_labels)
+
+    def _remove_saved_line_artists(self) -> None:
+        for panel in self._iter_panels():
+            if hasattr(panel, "remove_saved_lines"):
+                panel.remove_saved_lines()
+
+    def _load_saved_line_data(self) -> Any:
+        """The saved lines of the current line list (an empty table when there are none)."""
+        return ifh.read_line_saves(file_name=getattr(self._islat, "input_line_list", None))
+
+    def _set_summed_visibility(self, visible: bool) -> None:
+        """Show or hide the summed model fill on every panel, drawing it where it is missing."""
+        if not visible:
+            for ax in self._iter_toggle_axes():
+                set_tagged_visible(ax, SUMMED_TAG, False, lines=False)
             return
 
-        # Check if any panel already has the summed fill rendered
-        all_axes = []
-        for plot_grid in self._plot_grids:
-            for panel in plot_grid.iter_panels():
-                ax = getattr(panel, "ax", None)
-                if ax is not None:
-                    all_axes.append((ax, panel))
+        # Compute summed spectrum data once
+        wave = getattr(self._islat, "wave_data", None)
+        mols = getattr(self._islat, "molecules_dict", None)
+        s_wave, s_flux = None, None
+        if mols is not None and wave is not None and len(wave) > 0:
+            try:
+                s_wave, s_flux = mols.get_summed_flux(wave)
+            except Exception as exc:
+                debug_config.warning(
+                    "fit_lines_grid_view",
+                    f"toggle_summed_spectrum: get_summed_flux failed: {exc}",
+                )
 
-        if visible:
-            # Compute summed spectrum data once
-            wave = getattr(self._islat, "wave_data", None)
-            mols = getattr(self._islat, "molecules_dict", None)
-            s_wave, s_flux = None, None
-            if mols is not None and wave is not None and len(wave) > 0:
+        for panel, ax in self._iter_panel_axes():
+            if set_tagged_visible(ax, SUMMED_TAG, True, lines=False):
+                continue
+            if s_wave is None or s_flux is None:
+                continue
+            # Render the fill into this panel's range
+            xlim = getattr(panel, "xlim", None)
+            if xlim is None:
+                xdata = getattr(panel, "wave_data", None)
+                if xdata is not None and len(xdata) > 0:
+                    xlim = (float(xdata[0]), float(xdata[-1]))
+            if xlim is None:
+                continue
+            mask = (s_wave >= xlim[0]) & (s_wave <= xlim[1])
+            if np.any(mask):
                 try:
-                    s_wave, s_flux = mols.get_summed_flux(wave)
+                    panel._plot_summed_spectrum(
+                        ax, s_wave[mask], s_flux[mask], deduplicate=True
+                    )
                 except Exception as exc:
                     debug_config.warning(
                         "fit_lines_grid_view",
-                        f"toggle_summed_spectrum: get_summed_flux failed: {exc}",
+                        f"toggle_summed_spectrum: _plot_summed_spectrum failed: {exc}",
                     )
-
-            for ax, panel in all_axes:
-                if set_tagged_visible(ax, SUMMED_TAG, True, lines=False):
-                    continue
-                if s_wave is not None and s_flux is not None:
-                    # Render the fill into this panel's range
-                    xlim = getattr(panel, "xlim", None)
-                    if xlim is None:
-                        xdata = getattr(panel, "wave_data", None)
-                        if xdata is not None and len(xdata) > 0:
-                            xlim = (float(xdata[0]), float(xdata[-1]))
-                    if xlim is not None:
-                        mask = (s_wave >= xlim[0]) & (s_wave <= xlim[1])
-                        if np.any(mask):
-                            try:
-                                panel._plot_summed_spectrum(
-                                    ax, s_wave[mask], s_flux[mask], deduplicate=True
-                                )
-                            except Exception as exc:
-                                debug_config.warning(
-                                    "fit_lines_grid_view",
-                                    f"toggle_summed_spectrum: _plot_summed_spectrum failed: {exc}",
-                                )
-        else:
-            for ax, _ in all_axes:
-                set_tagged_visible(ax, SUMMED_TAG, False, lines=False)
-
-        self.draw()
 
     def _is_summed_visible(self) -> bool:
         """Return ``True`` if the summed-spectrum toggle is currently on."""
@@ -1031,48 +1071,13 @@ class FitLinesPlotGridView(PlotView):
         """
         if not (self._plot_grids and self._is_summed_visible()):
             return
-        for plot_grid in self._plot_grids:
-            for panel in plot_grid.iter_panels():
-                ax = getattr(panel, "ax", None)
-                if ax is None:
-                    continue
-                for coll in iter_tagged(ax, SUMMED_TAG, lines=False):
-                    try:
-                        coll.remove()
-                    except Exception:
-                        pass
+        for ax in self._iter_toggle_axes():
+            for coll in iter_tagged(ax, SUMMED_TAG, lines=False):
+                try:
+                    coll.remove()
+                except Exception:
+                    pass
         self.toggle_summed_spectrum(True)
-
-    def toggle_saved_lines(self, show: bool, loaded_lines: Any = None) -> None:
-        """Show or hide saved-line annotations on every panel."""
-        if not self._plot_grids:
-            return
-        for plot_grid in self._plot_grids:
-            for panel in plot_grid.iter_panels():
-                if not hasattr(panel, 'plot_saved_lines'):
-                    continue
-                if show and loaded_lines is not None:
-                    panel.remove_saved_lines()
-                    panel.plot_saved_lines(loaded_lines, show_labels=labels_visible("Line Grid"))
-                else:
-                    panel.remove_saved_lines()
-        self.draw()
-
-    def toggle_atomic_lines(self, show: bool) -> None:
-        """Show or hide atomic-line markers on every panel."""
-        if not self._plot_grids:
-            return
-        islat = getattr(self, '_islat', None)
-        atomic_data = getattr(islat, 'atomic_lines', None) if islat is not None else None
-        for plot_grid in self._plot_grids:
-            for panel in plot_grid.iter_panels():
-                if not hasattr(panel, 'plot_atomic_lines'):
-                    continue
-                if show and atomic_data is not None:
-                    panel.plot_atomic_lines(atomic_data)
-                else:
-                    panel.remove_atomic_lines()
-        self.draw()
 
     # ==================================================================
     # PlotView - canvas / drawing

@@ -3,13 +3,13 @@ SpectrumPanelView - intermediate abstract base class for standalone single-panel
 
 Provides the common infrastructure shared by :class:`LineInspectionView` and :class:`PopulationDiagramView`:
 
-* Private :class:`~matplotlib.figure.Figure` /
-  :class:`~matplotlib.backends.backend_tkagg.FigureCanvasTkAgg` lifecycle
-  (``_ensure_canvas``, ``_apply_theme_to_fig``, ``_on_canvas_button_press``)
-* Concrete ``deactivate``, ``apply_theme``, ``toggle_legend``, canvas
-  accessors and molecule-lifecycle callbacks (each rebuilds via
-  ``update_model_plot``), so subclasses only need to supply
-  ``activate``, ``_build_plot``, and ``update_model_plot``.
+* The private :class:`~matplotlib.figure.Figure` (``_fig``) shown in a
+  canvas whose lifecycle comes from :class:`OwnedCanvasMixin`
+  (``_ensure_canvas``, the right-click menu, ``deactivate``, ``draw``)
+* Concrete ``apply_theme``, ``toggle_legend``, ``get_figure`` and
+  molecule-lifecycle callbacks (each rebuilds via ``update_model_plot``),
+  so subclasses only need to supply ``activate``, ``_build_plot``, and
+  ``update_model_plot``.
 
 Selection and the remaining overlay toggles use the no-op defaults from :class:`PlotView`.
 """
@@ -18,40 +18,24 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
+from .OwnedCanvasMixin import OwnedCanvasMixin
 from .PlotView import PlotView
 from .Theming import apply_canvas_theme, apply_figure_theme
 
 if TYPE_CHECKING:
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
 
-try:
-    from iSLAT.Modules.Debug import debug_config
-except ImportError:
-    class _FallbackDebug:
-        def verbose(self, *a, **kw): pass
-        def info(self, *a, **kw): pass
-        def warning(self, *a, **kw): print(f"WARNING: {kw or a}")
-        def error(self, *a, **kw): print(f"ERROR: {kw or a}")
-        def trace(self, *a, **kw): pass
-    debug_config = _FallbackDebug()
-
-try:
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as _FigureCanvasTkAgg
-except ImportError:
-    _FigureCanvasTkAgg = None
-
-class SpectrumPanelView(PlotView):
+class SpectrumPanelView(OwnedCanvasMixin, PlotView):
     """
     Intermediate abstract base for standalone spectrum-panel views.
 
     Concrete subclasses must implement :meth:`activate`,
     :meth:`_build_plot`, and :meth:`update_model_plot`.  All other
-    :class:`PlotView` abstract methods are given sensible defaults here so
-    subclasses only need to override the behaviour that is genuinely
-    different.
+    :class:`PlotView` abstract methods are given sensible defaults here
+    (the canvas ones by :class:`OwnedCanvasMixin`) so subclasses only need
+    to override the behaviour that is genuinely different.
 
     Instance attributes (set by ``super().__init__(plot_manager)`` in the
     subclass ``__init__``):
@@ -59,7 +43,8 @@ class SpectrumPanelView(PlotView):
     * ``_pm``, ``_islat``, ``_parent_frame``, ``_canvas``, ``_initialised``,
       ``_needs_refresh`` - see :class:`PlotView`
     * ``_fig`` - :class:`~matplotlib.figure.Figure` (or ``None``)
-    * ``_right_click_cid`` - matplotlib connection id (or ``None``)
+    * ``_right_click_cid`` - matplotlib connection id (or ``None``), see
+      :class:`OwnedCanvasMixin`
     """
     def __init__(self, plot_manager: Any) -> None:
         super().__init__(plot_manager)
@@ -94,34 +79,8 @@ class SpectrumPanelView(PlotView):
         ...
 
     # ==================================================================
-    # Common canvas helpers
+    # Theme
     # ==================================================================
-    def _ensure_canvas(self) -> None:
-        """Build (or rebuild) the :class:`FigureCanvasTkAgg`."""
-        if self._canvas is not None:
-            if self._fig is not None and self._canvas.figure is self._fig:
-                return
-            # Disconnect the right-click handler before destroying the old canvas
-            if self._right_click_cid is not None:
-                try:
-                    self._canvas.mpl_disconnect(self._right_click_cid)
-                except Exception:
-                    pass
-                self._right_click_cid = None
-            self._canvas.get_tk_widget().destroy()
-            self._canvas = None
-
-        if (
-            self._fig is not None
-            and _FigureCanvasTkAgg is not None
-            and self._parent_frame is not None
-        ):
-            self._canvas = _FigureCanvasTkAgg(self._fig, master=self._parent_frame)
-            self._right_click_cid = self._canvas.mpl_connect(
-                "button_press_event", self._on_canvas_button_press
-            )
-            self._notify_canvas_changed()
-
     def _apply_theme_to_fig(self) -> None:
         """Apply ``self._pm.theme`` to the owned figure and canvas widget."""
         if self._fig is None:
@@ -129,47 +88,6 @@ class SpectrumPanelView(PlotView):
         apply_figure_theme(self._fig, self._pm.theme)
         apply_canvas_theme(self._canvas, self._pm.theme)
 
-    def _on_canvas_button_press(self, event: Any) -> None:
-        """Route right-click events to :meth:`build_context_menu`."""
-        if event.button != 3:
-            return
-        if self._canvas is None:
-            return
-        try:
-            canvas_widget = self._canvas.get_tk_widget()
-        except Exception:
-            return
-        menu = self.build_context_menu(event, canvas_widget)
-        if menu is None:
-            return
-        try:
-            x_root = canvas_widget.winfo_rootx() + int(event.x)
-            y_root = canvas_widget.winfo_rooty() + int(
-                canvas_widget.winfo_height() - event.y
-            )
-            menu.tk_popup(x_root, y_root)
-        except Exception:
-            pass
-        finally:
-            menu.grab_release()
-
-    # ==================================================================
-    # PlotView - lifecycle (concrete defaults)
-    # ==================================================================
-    def deactivate(self) -> None:
-        """Unregister ControlBus fields and unpack the canvas."""
-        bus = getattr(self._pm, "control_bus", None)
-        if bus is not None:
-            bus.unregister_owner(self)
-        if self._canvas is not None:
-            try:
-                self._canvas.get_tk_widget().pack_forget()
-            except Exception:
-                pass
-
-    # ==================================================================
-    # PlotView - theme (concrete default)
-    # ==================================================================
     def apply_theme(self, theme: dict) -> None:
         self._pm.theme = theme
         self._apply_theme_to_fig()
@@ -177,15 +95,8 @@ class SpectrumPanelView(PlotView):
             self._canvas.draw_idle()
 
     # ==================================================================
-    # PlotView - canvas / drawing (concrete)
+    # PlotView - figure (the canvas methods come from OwnedCanvasMixin)
     # ==================================================================
-    def draw(self) -> None:
-        if self._canvas is not None:
-            self._canvas.draw_idle()
-
-    def get_canvas(self) -> "FigureCanvasTkAgg":
-        return self._canvas
-
     def get_figure(self) -> "Figure":
         return self._fig
 

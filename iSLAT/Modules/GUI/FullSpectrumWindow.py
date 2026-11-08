@@ -12,8 +12,7 @@ sit on one compact bar above the plot.
 import copy
 import re
 import tkinter as tk
-from tkinter import ttk, filedialog
-from pathlib import Path
+from tkinter import ttk
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -208,41 +207,17 @@ class WindowFullSpectrumView(FullSpectrumView):
         menu.add_command(label="Save Figure\u2026", command=self.save_figure)
         return menu
 
-    def save_figure(
-        self,
-        save_path: Optional[str] = None,
-        file_format: str = "pdf",
-        dpi: Optional[int] = None,
-        rasterized: bool = False,
-        **kwargs: Any,
-    ) -> Optional[str]:
+    # Save dialog: any file type, the dialog's own start folder (title, file
+    # name and message as in the Full Spectrum view).
+    SAVE_INITIAL_DIR: Optional[str] = None
+    SAVE_ANY_FILE_TYPE: bool = True
+
+    def _can_save_figure(self) -> bool:
+        return self.get_figure() is not None
+
+    def _build_export_figure(self):
         """Save the figure exactly as displayed (residuals, data density and all)."""
-        if self._plot is None or self.fig is None:
-            return None
-        if save_path is None:
-            try:
-                stem = Path(self._islat.loaded_spectrum_file).stem
-            except Exception:
-                stem = "full"
-            save_path = filedialog.asksaveasfilename(
-                title="Save Spectrum Output",
-                defaultextension=f".{file_format}",
-                initialfile=f"{stem}_full_output.{file_format}",
-                filetypes=[(f"{file_format.upper()} files", f"*.{file_format}"), ("All files", "*.*")],
-            )
-        if not save_path:
-            return None
-        if rasterized:
-            for ax in self.fig.axes:
-                ax.set_rasterized(True)
-        self._plot.save(save_path, dpi=dpi, **kwargs)
-        data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
-        if data_field is not None:
-            data_field.insert_text(f"Spectrum output saved to: {save_path}")
-        return str(save_path)
-
-
-
+        return self.get_figure(), None
 
 class FullSpectrumWindow(tk.Toplevel):
     """
@@ -254,7 +229,6 @@ class FullSpectrumWindow(tk.Toplevel):
     main window.  *kwargs* may override the initial ``n_panels``,
     ``xlim_range`` and ``ymax_factor``.
     """
-
     def __init__(self, parent, islat_ref: "iSLAT", **kwargs):
         super().__init__(parent)
         self.islat_ref = islat_ref
