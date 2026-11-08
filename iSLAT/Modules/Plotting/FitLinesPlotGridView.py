@@ -813,9 +813,8 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
                 # Create a span matching the grid panel's wavelength range so the line inspection panels populate immediately.
                 try:
                     ih = getattr(pm, "interaction_handler", None)
-                    if ih is not None and ih.span_selector is not None:
-                        ih.span_selector.extents = (xmin, xmax)
-                        ih.span_selector.set_visible(True)
+                    if ih is not None:
+                        ih.show_span(xmin, xmax)
                     pm.onselect(xmin, xmax)
                 except Exception as exc:
                     debug_config.warning(

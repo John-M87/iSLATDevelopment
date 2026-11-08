@@ -20,16 +20,76 @@ class SingleDrawSpanSelector(SpanSelector):
     non-animated selector artists, or other animated artists in the figure
     (another widget's draw callback may already have drawn them into the
     buffer).
+
+    The background is the axes as last drawn, so it is only blitted while the
+    axes limits and size are still the ones it was captured at.  Other views
+    hand a selection to the main plot by moving its range and then setting the
+    span; blitting the old background would paint the previous wavelength
+    range under the new selection until the next full draw.  See
+    :meth:`update` and :meth:`show_span`.
+
+    Where the background lives depends on the matplotlib version: up to 3.10
+    in ``self.background``, from 3.11 on the canvas
+    (``_save_blit_background`` / ``_load_blit_background``), and the stock
+    ``update`` blits only from there.  :meth:`_store_background` and
+    :meth:`_stored_background` use whichever the installed version reads.
     """
+    _background_view: Optional[Tuple[float, ...]] = None
+
+    def _store_background(self, background: Any) -> None:
+        """Save *background* where the stock ``update`` will restore it from."""
+        save = getattr(self, "_save_blit_background", None)
+        if save is not None:
+            save(background)  # matplotlib >= 3.11
+        else:
+            self.background = background
+
+    def _stored_background(self) -> Any:
+        """The background the stock ``update`` would restore, or None."""
+        load = getattr(self, "_load_blit_background", None)
+        if load is not None:
+            return load()  # matplotlib >= 3.11
+        return getattr(self, "background", None)
+
+    def _axes_view(self) -> Tuple[float, ...]:
+        """The axes data limits and on-screen box, which a blitted background must match."""
+        return tuple(self.ax.viewLim.bounds) + tuple(self.ax.bbox.bounds)
+
     def update_background(self, event):
         if not self._frame_is_clean_background(event):
             super().update_background(event)
+        else:
+            self._store_background(self.canvas.copy_from_bbox(self.ax.bbox))
+            artists = sorted(self.artists, key=lambda a: a.get_zorder())
+            if any(artist.get_visible() for artist in artists):
+                for artist in artists:
+                    self.ax.draw_artist(artist)
+        self._background_view = self._axes_view() if self._stored_background() is not None else None
+
+    def update(self):
+        """Blit the selector, or request a full draw when the background shows another view.
+
+        After the axes limits or size changed without a draw, the background
+        holds the old view.  The draw captures a fresh background and draws
+        the selector on it (see :meth:`update_background`).
+        """
+        if (self.useblit and self._stored_background() is not None
+                and self._background_view != self._axes_view()):
+            self.canvas.draw_idle()
             return
-        self.background = self.canvas.copy_from_bbox(self.ax.bbox)
-        artists = sorted(self.artists, key=lambda a: a.get_zorder())
-        if any(artist.get_visible() for artist in artists):
-            for artist in artists:
-                self.ax.draw_artist(artist)
+        super().update()
+
+    def show_span(self, xmin: float, xmax: float) -> None:
+        """Show ``[xmin, xmax]`` as the finished selection, as a drag by the user leaves it.
+
+        For selections set by code (another view, a restored selection): makes
+        the span visible before setting :attr:`extents` (which marks the
+        selection completed and updates once, through :meth:`update`).
+        ``onselect`` is not called.
+        """
+        lo, hi = sorted((float(xmin), float(xmax)))
+        self.set_visible(True)
+        self.extents = (lo, hi)
 
     def _frame_is_clean_background(self, event) -> bool:
         """True when the canvas holds a fresh render with no animated artist drawn on it."""
@@ -1250,6 +1310,15 @@ class InteractionHandler:
         """Programmatically set a selection"""
         self.selected_range = (xmin, xmax)
         self._on_span_select(xmin, xmax)
+
+    def show_span(self, xmin: float, xmax: float) -> None:
+        """Show ``[xmin, xmax]`` on the main plot's span selector without running selection callbacks.
+
+        The one way for code (other views, restoring a selection) to put a span
+        on the main plot; see :meth:`SingleDrawSpanSelector.show_span`.
+        """
+        if self.span_selector is not None:
+            self.span_selector.show_span(xmin, xmax)
     
     def clear_current_selection(self):
         """Clear the current selection"""

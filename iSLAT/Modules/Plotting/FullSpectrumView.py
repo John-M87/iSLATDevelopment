@@ -907,15 +907,14 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             selection_center + view_padding,
         )
 
-        if hasattr(main_plot, "interaction_handler"):
-            span = getattr(main_plot.interaction_handler, "span_selector", None)
-            if span is not None:
-                try:
-                    span.set_visible(True)
-                    span.extents = (xmin, xmax)
-                    span.update()
-                except Exception as exc:
-                    debug_config.warning("full_spectrum_view", f"Could not set span extents: {exc}")
+        # show_span keeps the main plot's span selector consistent with the
+        # range just set (no blit of the background from before the move).
+        ih = getattr(main_plot, "interaction_handler", None)
+        if ih is not None:
+            try:
+                ih.show_span(xmin, xmax)
+            except Exception as exc:
+                debug_config.warning("full_spectrum_view", f"Could not show the selection span: {exc}")
 
         main_plot.onselect(xmin, xmax)
         main_plot.canvas.draw_idle()
@@ -962,9 +961,8 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                 '''# Fire the span-selector so line inspection populates.
                 try:
                     ih = getattr(pm, "interaction_handler", None)
-                    if ih is not None and ih.span_selector is not None:
-                        ih.span_selector.extents = (xmin, xmax)
-                        ih.span_selector.set_visible(True)
+                    if ih is not None:
+                        ih.show_span(xmin, xmax)
                     pm.onselect(xmin, xmax)
                 except Exception as exc:
                     debug_config.warning(

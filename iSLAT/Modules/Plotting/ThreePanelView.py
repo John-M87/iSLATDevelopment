@@ -1201,16 +1201,15 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             xmin, xmax = sel
             # Rebuild span selector so it exists on the (possibly-cleared) axes
             self._pm.make_span_selector()
-            # Restore the visual span extents
-            if hasattr(self._pm, 'interaction_handler'):
-                span = getattr(self._pm.interaction_handler, 'span_selector', None)
-                if span is not None:
-                    try:
-                        span.set_visible(True)
-                        span.extents = (xmin, xmax)
-                        span.update()
-                    except Exception:
-                        pass
+            # Restore the visual span
+            ih = getattr(self._pm, 'interaction_handler', None)
+            if ih is not None:
+                try:
+                    ih.show_span(xmin, xmax)
+                except Exception as exc:
+                    debug_config.warning(
+                        "three_panel_view", f"_restore_line_selection: could not show span: {exc}",
+                    )
             # Re-run the line inspection / population diagram
             self.on_selection(xmin, xmax)
         self._canvas.draw_idle()
