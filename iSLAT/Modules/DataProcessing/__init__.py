@@ -32,6 +32,7 @@ from .LineRangeSearch import (
     LineSearchResult,
     search_line_lists,
 )
+from .SampleStack import SampleSpectrum, SampleStackBuilder
 
 __all__ = [
     "Chi2Spectrum",
@@ -56,4 +57,6 @@ __all__ = [
     "LineSearchError",
     "LineSearchResult",
     "search_line_lists",
+    "SampleSpectrum",
+    "SampleStackBuilder",
 ]

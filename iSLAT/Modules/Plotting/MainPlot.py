@@ -17,7 +17,7 @@ from .PlotView import (
     fit_y_limits_to_data, normalize_y_data_sync,
 )
 from .ThreePanelView import ThreePanelView
-from .FullSpectrumView import FullSpectrumView
+from .FullSpectrumView import FullSpectrumView, SAMPLE_STACK_DEFAULTS
 from .PopulationDiagramView import PopulationDiagramView
 from .LineInspectionView import LineInspectionView
 from .FitLinesPlotGridView import FitLinesPlotGridView
@@ -96,6 +96,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             "observed":     True,        # observed-spectrum artists visible
             "wavelength_markers": [],    # user marks: [{"start", "end", "label", "color"}, ...]
             **TAU_OPTION_DEFAULTS,       # Optical Depth view: log axis, profile / stem, stacking
+            **SAMPLE_STACK_DEFAULTS,     # Full Spectrum view: stack the sample's spectra (layout, models)
         }
 
         # Session-only size overrides for full-spectrum exports (inches; None = default).
@@ -1123,6 +1124,20 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         # Only trigger a rebuild when the full-spectrum view is active
         if self.is_full_spectrum:
             self._full_spectrum_view.toggle_residuals(self.residual_toggle)
+        elif self.residual_toggle and self.toggle_state.get("sample_stack", False):
+            # Residuals and the sample stack are exclusive (the view enforces
+            # this itself when it is showing).
+            self.toggle_state["sample_stack"] = False
+
+    def on_sample_changed(self) -> None:
+        """Called by iSLAT when the sample (spectra, parameter files, overrides) changes.
+
+        Lets the Full Spectrum view refresh its stack of sample spectra.
+        """
+        view = getattr(self, "_full_spectrum_view", None)
+        handler = getattr(view, "on_sample_changed", None)
+        if callable(handler):
+            handler()
 
     def _on_line_list_changed(self, new_path) -> None:
         """Callback fired when ``islat.input_line_list`` is assigned a new value.

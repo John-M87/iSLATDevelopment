@@ -21,7 +21,8 @@ Class hierarchy::
     ├── CompositePlot (ABC)         — owns an ordered child-panel registry
     │   ├── StackedSpectralPanel (ABC) — composer for vertically stacked panels
     │   │   ├── FullSpectrumPlot       — multi-panel full spectrum overview
-    │   │   │   └── ResidualSpectrumPlot — ...with per-panel residuals & chi^2
+    │   │   │   ├── ResidualSpectrumPlot — ...with per-panel residuals & chi^2
+    │   │   │   └── SampleStackPlot    — ...with every spectrum of a sample stacked
     │   │   ├── OpticalDepthSpectrumPlot — multi-panel optical depth overview
     │   │   └── CompositeStackedPanel  — merged cells from 2 source plots
     │   ├── MainPlotGrid               — 3-panel composite (spectrum + inspection + pop-diagram)
@@ -60,6 +61,7 @@ from .LineInspectionPlot import LineInspectionPlot
 from .PopulationDiagramPlot import PopulationDiagramPlot
 from .FullSpectrumPlot import FullSpectrumPlot
 from .ResidualSpectrumPlot import ResidualSpectrumPlot
+from .SampleStackPlot import SampleStackPlot
 from .OpticalDepthPanel import OpticalDepthPanel
 from .OpticalDepthSpectrumPlot import OpticalDepthSpectrumPlot
 from .MainPlotGrid import MainPlotGrid
@@ -105,6 +107,7 @@ __all__ = [
     "LineInspectionView",
     "FitLinesPlotGridView",
     "ResidualSpectrumPlot",
+    "SampleStackPlot",
     "OpticalDepthPanel",
     "OpticalDepthSpectrumPlot",
 ]

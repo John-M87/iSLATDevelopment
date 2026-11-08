@@ -223,7 +223,8 @@ class TestFullSpectrumViewControlFields:
         view._register_control_fields()
 
         vm_keys = [f.key for f in vm_surface.fields()]
-        assert vm_keys == ["show_residuals", "data_density"]
+        assert vm_keys == ["show_residuals", "data_density",
+                           "sample_stack", "sample_stack_layout", "sample_stack_models"]
 
     def test_show_residuals_is_toggle_field(self):
         view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()

@@ -5,6 +5,7 @@ This view **composes** a :class:`StackedSpectralPanel` subclass (by default a :c
 
 * Span selectors on every panel (click-to-inspect)
 * Dynamic overlay toggles (atomic / saved lines, summed spectrum)
+* *Stack Sample Spectra*: every spectrum of the sample, each with its own parameter set (:class:`SampleStackPlot`)
 * Canvas lifecycle management for the Tk GUI
 
 The view is generic: it can drive **any** :class:`StackedSpectralPanel` implementation that exposes the standard stacked-panel interface
@@ -32,6 +33,9 @@ from ..GUI.KeyBindings import shortcut_text
 from .StackedSpectralPanel import StackedSpectralPanel
 from .FullSpectrumPlot import FullSpectrumPlot
 from .ResidualSpectrumPlot import ResidualSpectrumPlot
+from .SampleStackPlot import (
+    SampleStackPlot, normalize_stack_layout, normalize_stack_model_mode,
+)
 from .BasePlot import BasePlot
 from .ToggleMixin import ToggleMixin
 from .SpectralPanel import GapMode
@@ -62,6 +66,36 @@ DEFAULT_EXPORT_HEIGHT: float = 16.0
 #: Upper bounds accepted for the export size overrides (inches).
 MAX_EXPORT_WIDTH: float = 200.0
 MAX_EXPORT_PANEL_HEIGHT: float = 20.0
+
+#: ``toggle_state`` keys (and defaults) for stacking the sample's spectra in the Full Spectrum view.
+SAMPLE_STACK_DEFAULTS: Dict[str, Any] = {
+    "sample_stack": False,              # draw every sample spectrum (SampleStackPlot)
+    "sample_stack_layout": "offset",    # "offset" (same panel, offset) or "rows" (one row each)
+    "sample_stack_models": "total",     # "data", "total" or "molecules"
+}
+
+#: Views-menu labels of the stack layouts and model modes (value -> label).
+SAMPLE_STACK_LAYOUT_LABELS: Dict[str, str] = {
+    "offset": "Offset in Each Panel",
+    "rows": "One Row per Spectrum",
+}
+SAMPLE_STACK_MODEL_LABELS: Dict[str, str] = {
+    "data": "Data Only",
+    "total": "Total Model",
+    "molecules": "Each Molecule + Total",
+}
+
+#: Tooltip of the *Stack Sample Spectra* toggle.
+SAMPLE_STACK_TIP: str = (
+    "Show every spectrum of the sample (Manage Sample)\n"
+    "in the panels, each with the models of its own\n"
+    "parameter set: its parameter file and overrides,\n"
+    "or the current parameters (plus its overrides)\n"
+    "when it has no parameter file.  The active\n"
+    "spectrum uses the current parameters.\n"
+    "Choose the layout and models below.\n"
+    "Turns 'Residuals' off (and vice versa)."
+)
 
 #: Tooltip of the *Skip Data Gaps* toggle (Full Spectrum and Optical Depth views).
 SKIP_GAPS_TIP: str = (
@@ -109,6 +143,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
     #: Name this view is registered under in the Views menu (``iSLATPlot.views``).
     VIEW_NAME: str = "Full Spectrum"
 
+    #: Whether the view offers *Stack Sample Spectra* (subclasses with another plot turn it off).
+    SUPPORTS_SAMPLE_STACK: bool = True
+
     def __init__(self, plot_manager: Any) -> None:
         # Shared view state (_pm, _islat, _parent_frame, _initialised,
         # _needs_refresh, and the lazily built _canvas) comes from PlotView.
@@ -123,6 +160,12 @@ class FullSpectrumView(ToggleMixin, PlotView):
 
         # Line data (for saved-line annotations in interactive mode)
         self.line_data: Optional[pd.DataFrame] = None
+
+        # Stack Sample Spectra: cached spectra / parameter sets and the
+        # sample configuration they were built from.
+        self._sample_stack_builder: Any = None
+        self._sample_stack_spectra: List[Any] = []
+        self._sample_stack_signature: Any = None
 
     # --- helpers used by _register_control_fields ---
     def _get_n_panels(self):
@@ -180,6 +223,125 @@ class FullSpectrumView(ToggleMixin, PlotView):
         self._plot.x_scaling = XScaling.DATA_DENSITY if value else XScaling.WAVELENGTH
         self._plot._compute_panel_layout()
         self._regenerate_layout()
+
+    # --- Stack Sample Spectra -------------------------------------------
+    def _sample_stack_on(self, toggle_state: Optional[dict] = None) -> bool:
+        """Whether this view draws the whole sample (*Stack Sample Spectra* on, residuals off)."""
+        ts = toggle_state if isinstance(toggle_state, dict) else self._pm.toggle_state
+        return (
+            self.SUPPORTS_SAMPLE_STACK
+            and bool(ts.get("sample_stack", False))
+            and not ts.get("show_residuals", False)
+        )
+
+    def _stack_layout(self) -> str:
+        return normalize_stack_layout(self._pm.toggle_state.get("sample_stack_layout", "offset"))
+
+    def _stack_model_mode(self) -> str:
+        return normalize_stack_model_mode(self._pm.toggle_state.get("sample_stack_models", "total"))
+
+    def _get_sample_stack(self) -> bool:
+        return bool(self._pm.toggle_state.get("sample_stack", False))
+
+    def _set_sample_stack(self, value: bool) -> None:
+        """Turn *Stack Sample Spectra* on or off (turning it on turns *Residuals* off)."""
+        value = bool(value)
+        ts = self._pm.toggle_state
+        if value == self._get_sample_stack():
+            return
+        ts["sample_stack"] = value
+        if value and ts.get("show_residuals", False):
+            ts["show_residuals"] = False
+        if not value:
+            self._release_sample_stack()
+        if self._initialised:
+            self._replace_plot()
+        if value and self._initialised and len(self._sample_stack_spectra) < 2:
+            data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
+            if data_field is not None:
+                try:
+                    data_field.insert_text(
+                        "The sample has no other spectra to stack yet: add them with "
+                        "Spectral Functions > Manage Sample...\n",
+                        clear_after=False,
+                    )
+                except Exception:
+                    pass
+
+    def _get_stack_layout_label(self) -> str:
+        return SAMPLE_STACK_LAYOUT_LABELS[self._stack_layout()]
+
+    def _set_stack_layout_label(self, label: str) -> None:
+        value = next((k for k, v in SAMPLE_STACK_LAYOUT_LABELS.items() if v == label), None)
+        if value is None or value == self._stack_layout():
+            return
+        self._pm.toggle_state["sample_stack_layout"] = value
+        if isinstance(self._plot, SampleStackPlot):
+            self._plot.set_options(layout=value)
+            self._regenerate_layout()
+
+    def _get_stack_models_label(self) -> str:
+        return SAMPLE_STACK_MODEL_LABELS[self._stack_model_mode()]
+
+    def _set_stack_models_label(self, label: str) -> None:
+        value = next((k for k, v in SAMPLE_STACK_MODEL_LABELS.items() if v == label), None)
+        if value is None or value == self._stack_model_mode():
+            return
+        self._pm.toggle_state["sample_stack_models"] = value
+        if isinstance(self._plot, SampleStackPlot):
+            self._plot.set_options(model_mode=value)
+            self._regenerate_layout()
+
+    def _build_sample_spectra(self) -> List[Any]:
+        """(Re)build the sample's spectra and parameter sets, reporting entries that were skipped."""
+        from iSLAT.Modules.DataProcessing.SampleStack import SampleStackBuilder, sample_signature
+        if self._sample_stack_builder is None:
+            self._sample_stack_builder = SampleStackBuilder()
+        spectra = self._sample_stack_builder.build(self._islat)
+        self._sample_stack_spectra = spectra
+        self._sample_stack_signature = sample_signature(self._islat)
+        problems = self._sample_stack_builder.warnings
+        if problems:
+            msg = "Could not stack some sample spectra:\n  " + "\n  ".join(problems)
+            debug_config.warning("full_spectrum_view", msg)
+            data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
+            if data_field is not None:
+                try:
+                    data_field.insert_text(msg + "\n", clear_after=False)
+                except Exception:
+                    pass
+        return spectra
+
+    def _release_sample_stack(self) -> None:
+        """Free the stacked spectra and their parameter sets."""
+        if self._sample_stack_builder is not None:
+            self._sample_stack_builder.release()
+        self._sample_stack_spectra = []
+        self._sample_stack_signature = None
+
+    def _refresh_sample_stack(self) -> None:
+        """Rebuild the stacked spectra (their parameter sets follow the live molecules) and redraw."""
+        if not isinstance(self._plot, SampleStackPlot):
+            return
+        spectra = self._build_sample_spectra()
+        if spectra:
+            self._plot.set_spectra(spectra)
+        self._regenerate_layout()
+
+    def on_sample_changed(self) -> None:
+        """React to a change of the sample (spectra, parameter files, overrides)."""
+        if not self._sample_stack_on():
+            return
+        from iSLAT.Modules.DataProcessing.SampleStack import sample_signature
+        if sample_signature(self._islat) == self._sample_stack_signature:
+            return
+        if not self._initialised or getattr(self._pm, "active_view", None) is not self:
+            self._needs_refresh = True
+            return
+        if isinstance(self._plot, SampleStackPlot):
+            self._refresh_sample_stack()
+        else:
+            self._replace_plot()
 
     def _gap_mode(self) -> GapMode:
         """``GapMode.SKIP`` while *Skip Data Gaps* (``toggle_state["skip_gaps"]``) is on, else ``CONNECT``."""
@@ -253,21 +415,64 @@ class FullSpectrumView(ToggleMixin, PlotView):
         return self._iter_all_axes()
 
     def _iter_observed_axes(self):
-        """The spectrum axes of every panel (residual panels carry no observed data)."""
+        """The spectrum axes of every panel (residual panels carry no observed data).
+
+        A sample stack draws observed data on every axes.
+        """
+        if isinstance(self._plot, SampleStackPlot):
+            return iter(self._iter_all_axes())
         return iter(self.subplots.values())
 
     def _iter_y_axes(self):
-        """The spectrum axes of every panel share the Y policy."""
+        """The spectrum axes of every panel share the Y policy.
+
+        In a sample stack every row follows it (with its own spectrum's
+        data); offset stacks keep the limits that fit the stack.
+        """
+        if isinstance(self._plot, SampleStackPlot):
+            if self._plot.layout == "rows":
+                return iter(self._iter_all_axes())
+            return iter(())
         return iter(self.subplots.values())
+
+    def _sync_stack_y_options(self) -> None:
+        """Give the sample stack the controller's auto-scale source and data-sync scope."""
+        plot = self._plot
+        ts = self._pm.toggle_state
+        plot.y_limits = None    # manual limits are applied by apply_y_limits
+        plot.y_data_sync = self._y_data_sync_scope(ts) if ts.get("y_autoscale", True) else None
+        plot.y_autoscale_source = self._y_autoscale_source()
+
+    def _data_synced_y_limits_by_axes(self, scope: str):
+        """Sample-stack rows sync to their own spectrum's data min / max."""
+        if not isinstance(self._plot, SampleStackPlot):
+            return super()._data_synced_y_limits_by_axes(scope)
+        from .PlotView import data_synced_y_limits
+        if self._plot.layout != "rows":
+            return []
+        pairs = []
+        for spectrum, axes in self._plot.axes_by_spectrum():
+            limits = data_synced_y_limits(axes, spectrum.wave, spectrum.flux, scope)
+            pairs.extend(zip(axes, limits))
+        return pairs
 
     def _autoscale_y_axes(self) -> bool:
         """Re-fit every panel with the composed plot's own per-panel rule.
 
         Uses the same ``_compute_panel_ylims`` the plot applies when it
         renders, so turning auto-scale back on restores exactly the
-        layout's limits (including the uniform-ylim option).
+        layout's limits (including the uniform-ylim option).  A sample
+        stack re-fits each axes with its own rule.
         """
         plot = self._plot
+        if isinstance(plot, SampleStackPlot):
+            self._sync_stack_y_options()
+            changed = False
+            for ax, lims in plot.stack_ylims():
+                if lims is not None:
+                    ax.set_ylim(*lims)
+                    changed = True
+            return changed
         if plot is None or not hasattr(plot, "_compute_panel_ylims"):
             return super()._autoscale_y_axes()
         if self._y_autoscale_source() == "model":
@@ -344,7 +549,8 @@ class FullSpectrumView(ToggleMixin, PlotView):
     def _create_plot(self) -> StackedSpectralPanel:
         """Build a fresh stacked-panel plot from the current iSLAT state.
 
-        When ``show_residuals`` is active in the toggle state a :class:`ResidualSpectrumPlot` (spectrum + residual sub-panels) is returned; otherwise a plain :class:`FullSpectrumPlot`.
+        When ``show_residuals`` is active in the toggle state a :class:`ResidualSpectrumPlot` (spectrum + residual sub-panels) is returned;
+        with *Stack Sample Spectra* on a :class:`SampleStackPlot` of the whole sample; otherwise a plain :class:`FullSpectrumPlot`.
 
         Subclasses can override this to return a different :class:`StackedSpectralPanel` implementation.
         """
@@ -367,6 +573,19 @@ class FullSpectrumView(ToggleMixin, PlotView):
             if self._pm.toggle_state.get("data_density", False)
             else XScaling.WAVELENGTH
         )
+
+        if self._sample_stack_on():
+            spectra = self._build_sample_spectra()
+            if spectra:
+                return SampleStackPlot(
+                    spectra,
+                    layout=self._stack_layout(),
+                    model_mode=self._stack_model_mode(),
+                    figsize=figsize,
+                    theme=self._pm.theme,
+                    x_scaling=x_scaling,
+                    gap_mode=self._gap_mode(),
+                )
 
         if show_residuals:
             model_flux = self._compute_model_flux(wave_obs, wave)
@@ -462,6 +681,78 @@ class FullSpectrumView(ToggleMixin, PlotView):
 
         return (12, max_fig_h)
 
+    @staticmethod
+    def _plot_kind(plot: Any) -> str:
+        """``"stack"``, ``"residual"`` or ``"plain"`` for a composed plot."""
+        if isinstance(plot, SampleStackPlot):
+            return "stack"
+        if isinstance(plot, ResidualSpectrumPlot):
+            return "residual"
+        return "plain"
+
+    def _wanted_plot_kind(self) -> str:
+        """The plot kind the toggle state asks for (see :meth:`_create_plot`)."""
+        if self._sample_stack_on():
+            return "stack"
+        if self._pm.toggle_state.get("show_residuals", False):
+            return "residual"
+        return "plain"
+
+    def _replace_plot(self) -> None:
+        """Replace the composed plot with a new one from :meth:`_create_plot`, keeping the panel layout.
+
+        Used when the axes layout changes (residual sub-panels, sample
+        stack).  The canvas is rebuilt for the new figure and the overlays
+        are re-applied.
+        """
+        if not self._initialised:
+            return
+
+        # Preserve panel layout from the current plot so the user
+        # sees the same wavelength ranges after the switch.
+        old_edges = getattr(self._plot, "_panel_edges", None)
+        old_ends = getattr(self._plot, "_panel_ends", None)
+        old_step = getattr(self._plot, "_step", None)
+        old_xlim = (
+            getattr(self._plot, "_xlim_start", None),
+            getattr(self._plot, "_xlim_end", None),
+        )
+
+        # Force a full teardown so the new figure replaces the old one
+        old_fig = self.fig
+        self.span_selectors.clear()
+        self._plot = self._create_plot()
+
+        # Restore the panel layout from the previous plot.
+        if old_edges is not None and old_ends is not None:
+            self._plot._panel_edges = old_edges
+            self._plot._panel_ends = old_ends
+            self._plot.n_panels = len(old_edges)
+            self._plot._step = old_step
+            if old_xlim[0] is not None:
+                self._plot._xlim_start = old_xlim[0]
+            if old_xlim[1] is not None:
+                self._plot._xlim_end = old_xlim[1]
+
+        self._plot.generate_plot()
+        self._install_span_selectors()
+
+        # If the figure object changed (it will), rebuild the canvas
+        if self.fig is not old_fig:
+            if self._canvas is not None:
+                self._canvas.get_tk_widget().pack_forget()
+                self._canvas.get_tk_widget().destroy()
+                self._canvas = None
+            self._ensure_canvas()
+            if self._canvas is not None and self._parent_frame is not None:
+                self._canvas.get_tk_widget().pack(
+                    fill="both", expand=True, padx=0, pady=0,
+                )
+
+        # Re-apply overlays
+        self.sync_toggle_state(self._pm.toggle_state)
+        self.draw()
+
     def _rebuild_plot(self) -> None:
         """Refresh data and regenerate the composed plot.
 
@@ -484,13 +775,19 @@ class FullSpectrumView(ToggleMixin, PlotView):
             self._install_span_selectors()
             return
 
-        # Detect a plot-type mismatch (e.g. FSP is active but show_residuals is now True).
-        # Force a full rebuild.
-        show_residuals = self._pm.toggle_state.get("show_residuals", False)
-        type_mismatch = (
-            (show_residuals and not isinstance(self._plot, ResidualSpectrumPlot))
-            or (not show_residuals and isinstance(self._plot, ResidualSpectrumPlot))
-        )
+        # Detect a plot-type mismatch (e.g. FSP is active but show_residuals is now True,
+        # or Stack Sample Spectra was turned on).  Force a full rebuild.
+        type_mismatch = self._plot_kind(self._plot) != self._wanted_plot_kind()
+        if not type_mismatch and isinstance(self._plot, SampleStackPlot):
+            # Same kind: refresh the sample (spectra, parameter sets) in place.
+            spectra = self._build_sample_spectra()
+            if spectra:
+                self._plot.set_spectra(spectra)
+            self._plot.set_options(layout=self._stack_layout(), model_mode=self._stack_model_mode())
+            self.span_selectors.clear()
+            self._plot.generate_plot()
+            self._install_span_selectors()
+            return
         if type_mismatch:
             # Preserve the panel wavelength ranges so the user sees the same layout after the toggle.
             old_edges = getattr(self._plot, "_panel_edges", None)
@@ -558,8 +855,14 @@ class FullSpectrumView(ToggleMixin, PlotView):
     def _span_selector_axes(self):
         """Yield ``(key, panel_idx, ax)`` for every axes that gets a span selector.
 
-        Defaults to the primary axes of each panel, keyed by panel index.
+        Defaults to the primary axes of each panel, keyed by panel index;
+        a sample stack in rows gets one per row, keyed ``(panel, row)``.
         """
+        if isinstance(self._plot, SampleStackPlot) and self._plot.layout == "rows":
+            for idx, cell in self._plot.subplots.items():
+                for k, ax in enumerate(cell if isinstance(cell, tuple) else (cell,)):
+                    yield (idx, k), idx, ax
+            return
         for idx, ax in self.subplots.items():
             yield idx, idx, ax
 
@@ -727,8 +1030,32 @@ class FullSpectrumView(ToggleMixin, PlotView):
                 command=_open_in_three_panel,
             )
 
+        # Sample stack: switch to the spectrum that was clicked.
+        if isinstance(plot, SampleStackPlot):
+            spectrum = plot.spectrum_at(event.inaxes, getattr(event, "ydata", None))
+            if spectrum is not None and not getattr(spectrum, "is_active", False) and spectrum.path:
+                menu.add_command(
+                    label=f"Make {spectrum.name} the Active Spectrum",
+                    command=lambda s=spectrum: self._activate_sample_spectrum(s),
+                )
+
         self._append_save_figure_item(menu)
         return menu
+
+    def _activate_sample_spectrum(self, spectrum: Any) -> None:
+        """Make *spectrum* (a sample entry) the loaded spectrum, as the Sample Manager does."""
+        from iSLAT.Modules.DataProcessing.SampleStack import same_path
+        sample = list(getattr(self._islat, "sample_spectra", None) or [])
+        index = next((i for i, p in enumerate(sample) if same_path(p, spectrum.path)), None)
+        if index is None:
+            return
+        self._islat.switch_to_spectrum(index)
+        pane = getattr(getattr(self._islat, "GUI", None), "file_interaction_pane", None)
+        if pane is not None and hasattr(pane, "update_sample_spectra_label"):
+            try:
+                pane.update_sample_spectra_label()
+            except Exception:
+                pass
 
     # ==================================================================
     # PlotView lifecycle
@@ -781,7 +1108,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
         if bus is None:
             return
 
-        from iSLAT.Modules.GUI.ControlField import EntryField, DisplayRangeField, ToggleField
+        from iSLAT.Modules.GUI.ControlField import (
+            DisplayRangeField, DropdownField, EntryField, ToggleField,
+        )
 
         # First unregister any stale fields from a previous activation
         bus.unregister_owner(self)
@@ -838,6 +1167,47 @@ class FullSpectrumView(ToggleMixin, PlotView):
         )
 
         #bus.register(self._skip_gaps_field(ToggleField), "views_menu")
+
+        if self.SUPPORTS_SAMPLE_STACK:
+            bus.register_many([
+                ToggleField(
+                    "sample_stack", "Stack Sample Spectra",
+                    getter=self._get_sample_stack,
+                    setter=self._set_sample_stack,
+                    owner=self,
+                    tip=SAMPLE_STACK_TIP,
+                ),
+                DropdownField(
+                    "sample_stack_layout", "Stack Layout",
+                    getter=self._get_stack_layout_label,
+                    setter=self._set_stack_layout_label,
+                    options=list(SAMPLE_STACK_LAYOUT_LABELS.values()),
+                    owner=self,
+                    tip=(
+                        "How the sample's spectra are stacked:\n"
+                        "Offset in Each Panel: all in the same panel,\n"
+                        "  shifted up so they do not overlap (the Y-axis\n"
+                        "  options do not apply).\n"
+                        "One Row per Spectrum: each panel split into\n"
+                        "  one row per spectrum, each with its own\n"
+                        "  Y scale (fewer N Panels give taller rows)."
+                    ),
+                ),
+                DropdownField(
+                    "sample_stack_models", "Stack Models",
+                    getter=self._get_stack_models_label,
+                    setter=self._set_stack_models_label,
+                    options=list(SAMPLE_STACK_MODEL_LABELS.values()),
+                    owner=self,
+                    tip=(
+                        "Models drawn with each stacked spectrum,\n"
+                        "from that spectrum's parameter set:\n"
+                        "Data Only, the Total Model (filled), or\n"
+                        "Each Molecule + Total.  The molecules shown\n"
+                        "follow the control panel's visibility."
+                    ),
+                ),
+            ], "views_menu")
 
     def _skip_gaps_field(self, toggle_field_cls: Any) -> Any:
         """The *Skip Data Gaps* Views-menu toggle (shared with :class:`OpticalDepthView`)."""
@@ -955,6 +1325,12 @@ class FullSpectrumView(ToggleMixin, PlotView):
             self._needs_refresh = True
             return
 
+        if isinstance(self._plot, SampleStackPlot):
+            # Copies of the current parameters must follow the change, and
+            # the stack offsets depend on every model: rebuild the stack.
+            self._refresh_sample_stack()
+            return
+
         # Active view with a visible molecule - update in-place now.
         self._plot.update_panels_inplace()
         # update_panels_inplace always rebuilds the legend; re-hide it when
@@ -1048,6 +1424,11 @@ class FullSpectrumView(ToggleMixin, PlotView):
         force_rerender: bool = False,
     ) -> None:
         if not self._initialised or not self.subplots:
+            return
+
+        if isinstance(self._plot, SampleStackPlot):
+            # Visibility applies to every spectrum of the stack.
+            self._refresh_sample_stack()
             return
 
         # Use the same RV-corrected wavelengths as the rendered panels
@@ -1190,54 +1571,12 @@ class FullSpectrumView(ToggleMixin, PlotView):
 
         Triggers a full plot rebuild because the axes layout changes (RSP has paired spectrum + residual sub-panels).
         The canvas is destroyed and re-created so the Tk widget reflects the new figure dimensions.
+        Turning residuals on turns *Stack Sample Spectra* off (the two are exclusive).
         """
-        if not self._initialised:
-            return
-
-        # Preserve panel layout from the current plot so the user
-        # sees the same wavelength ranges after the toggle.
-        old_edges = getattr(self._plot, "_panel_edges", None)
-        old_ends = getattr(self._plot, "_panel_ends", None)
-        old_step = getattr(self._plot, "_step", None)
-        old_xlim = (
-            getattr(self._plot, "_xlim_start", None),
-            getattr(self._plot, "_xlim_end", None),
-        )
-
-        # Force a full teardown so the new figure replaces the old one
-        old_fig = self.fig
-        self.span_selectors.clear()
-        self._plot = self._create_plot()
-
-        # Restore the panel layout from the previous plot.
-        if old_edges is not None and old_ends is not None:
-            self._plot._panel_edges = old_edges
-            self._plot._panel_ends = old_ends
-            self._plot.n_panels = len(old_edges)
-            self._plot._step = old_step
-            if old_xlim[0] is not None:
-                self._plot._xlim_start = old_xlim[0]
-            if old_xlim[1] is not None:
-                self._plot._xlim_end = old_xlim[1]
-
-        self._plot.generate_plot()
-        self._install_span_selectors()
-
-        # If the figure object changed (it will), rebuild the canvas
-        if self.fig is not old_fig:
-            if self._canvas is not None:
-                self._canvas.get_tk_widget().pack_forget()
-                self._canvas.get_tk_widget().destroy()
-                self._canvas = None
-            self._ensure_canvas()
-            if self._canvas is not None and self._parent_frame is not None:
-                self._canvas.get_tk_widget().pack(
-                    fill="both", expand=True, padx=0, pady=0,
-                )
-
-        # Re-apply overlays
-        self.sync_toggle_state(self._pm.toggle_state)
-        self.draw()
+        if show and self._pm.toggle_state.get("sample_stack", False):
+            self._pm.toggle_state["sample_stack"] = False
+            self._release_sample_stack()
+        self._replace_plot()
 
     # ==================================================================
     # Overlay artist helpers (interactive-only)
@@ -1330,6 +1669,14 @@ class FullSpectrumView(ToggleMixin, PlotView):
             kw["n_panels"] = n_panels
         if display_options:
             kw.update(display_options)
+        if self._sample_stack_on():
+            spectra = self._sample_stack_spectra or self._build_sample_spectra()
+            if spectra:
+                for key in ("wave_data", "flux_data", "molecules", "wave_data_obs"):
+                    kw.pop(key, None)
+                return SampleStackPlot(
+                    spectra, layout=self._stack_layout(), model_mode=self._stack_model_mode(), **kw,
+                )
         return FullSpectrumPlot(**kw)
 
     def save_figure(
@@ -1493,6 +1840,7 @@ class FullSpectrumView(ToggleMixin, PlotView):
         if self._plot is not None:
             self._plot.close()
             self._plot = None
+        self._release_sample_stack()
         self._initialised = False
         self._needs_refresh = True
 

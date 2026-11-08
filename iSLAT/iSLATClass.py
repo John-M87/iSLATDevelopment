@@ -651,7 +651,11 @@ class iSLAT:
                 print(f"[SampleManager] Failed to apply override {key}={value}: {exc}")
 
     def save_sample_state(self) -> None:
-        """Persist the current sample (files, param files, overrides) to SampleConfig.json."""
+        """Persist the current sample (files, param files, overrides) to SampleConfig.json.
+
+        Every change to the sample goes through here, so the plot is told
+        about it too (the Full Spectrum view can stack the sample's spectra).
+        """
         if self._suppress_sample_save:
             return
         config = {
@@ -669,6 +673,17 @@ class iSLAT:
             save_sample_config(config)
         except Exception as exc:
             print(f"[SampleManager] Could not save sample config: {exc}")
+        self._notify_sample_changed()
+
+    def _notify_sample_changed(self) -> None:
+        """Tell the GUI plot (if any) that the sample changed."""
+        plot = getattr(getattr(self, "GUI", None), "plot", None)
+        handler = getattr(plot, "on_sample_changed", None)
+        if callable(handler):
+            try:
+                handler()
+            except Exception as exc:
+                print(f"[SampleManager] Plot refresh after sample change failed: {exc}")
 
     def restore_sample_state(self) -> None:
         """Restore the sample list, parameter files and overrides from SampleConfig.json.

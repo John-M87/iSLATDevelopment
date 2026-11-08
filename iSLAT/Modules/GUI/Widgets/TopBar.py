@@ -4,7 +4,7 @@ import traceback
 import tkinter as tk
 import tkinter.ttk as ttk
 from tkinter import messagebox, filedialog
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 import iSLAT.Constants as c
@@ -98,8 +98,9 @@ class ViewsMenuSurface(ControlSurface):
 
     The section is a separator, a disabled header naming the view (its
     ``VIEW_NAME``, e.g. "Optical Depth Controls") and one entry per field
-    (:meth:`ControlField.build_menu_entry`, a check-button for a
-    :class:`ToggleField`).  It is hidden while no registered field has a
+    (:meth:`ControlField.build_menu_entry`: a check-button for a
+    :class:`ToggleField`, a submenu of choices for a :class:`DropdownField`).
+    It is hidden while no registered field has a
     menu form.  The surface must be created after the menu's static entries,
     and nothing else may be appended to the menu afterwards: the section is
     always the last entries of the menu.
@@ -117,6 +118,10 @@ class ViewsMenuSurface(ControlSurface):
         self._menu = menu
         self._tips = tips if tips is not None else {}
         self._added_tips: list = []
+        # Submenus of cascade entries (e.g. a DropdownField) are widgets of
+        # their own; tracked here because unregistering drops a field's refs
+        # before the rebuild that removes its entry.
+        self._submenus: List[tk.Menu] = []
         end = menu.index("end")
         self._start = 0 if end is None else end + 1
 
@@ -132,6 +137,12 @@ class ViewsMenuSurface(ControlSurface):
         for label in self._added_tips:
             self._tips.pop(label, None)
         self._added_tips = []
+        for submenu in self._submenus:
+            try:
+                submenu.destroy()
+            except tk.TclError:
+                pass
+        self._submenus = []
         self._widget_refs.clear()
 
     def _rebuild(self) -> None:
@@ -152,6 +163,7 @@ class ViewsMenuSurface(ControlSurface):
             except Exception:
                 refs = []
             self._widget_refs[field.key] = refs
+            self._submenus.extend(ref for ref in refs if isinstance(ref, tk.Menu))
             if field.tip and field.label not in self._tips:
                 self._tips[field.label] = field.tip
                 self._added_tips.append(field.label)

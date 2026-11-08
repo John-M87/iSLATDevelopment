@@ -216,27 +216,44 @@ class FullSpectrumPlot(StackedSpectralPanel):
         Returns ``(mol_cache, mol_labels, mol_colors)`` where each entry in *mol_cache* is ``(wavelengths, flux, color, label, name)``.
         Sub-classes override or reuse this to avoid duplicating the molecule-caching logic.
         """
+        return self.molecule_cache(
+            self.molecules, self.wave_data, getattr(self, "wave_data_obs", self.wave_data),
+        )
+
+    @classmethod
+    def molecule_cache(
+        cls,
+        molecules: Optional["MoleculeDict"],
+        wave_data: Optional[np.ndarray],
+        wave_data_obs: Optional[np.ndarray] = None,
+    ) -> Tuple[List[tuple], List[str], List[str]]:
+        """The :meth:`_build_mol_cache` result for any molecule set and spectrum.
+
+        *wave_data* are the display (rest-frame) wavelengths and
+        *wave_data_obs* the observer-frame ones used for matched spectral
+        sampling (default: *wave_data*).
+        """
         mol_cache: List[tuple] = []
         mol_labels: List[str] = []
         mol_colors: List[str] = []
-        if self.molecules is not None:
-            visible = self.molecules.get_visible_molecules(return_objects=True)
-            mol_labels = [self.get_molecule_display_name(m) for m in visible]
-            mol_colors = [self.get_molecule_color(m) for m in visible]
+        if molecules is not None:
+            visible = molecules.get_visible_molecules(return_objects=True)
+            mol_labels = [cls.get_molecule_display_name(m) for m in visible]
+            mol_colors = [cls.get_molecule_color(m) for m in visible]
 
             use_interp = False
             target_wave = None
-            ref_wave = getattr(self, 'wave_data_obs', self.wave_data)
-            if ref_wave is not None and hasattr(self.molecules, 'get_matched_sampling_wavelengths'):
+            ref_wave = wave_data_obs if wave_data_obs is not None else wave_data
+            if ref_wave is not None and hasattr(molecules, 'get_matched_sampling_wavelengths'):
                 use_interp, target_wave = (
-                    self.molecules.get_matched_sampling_wavelengths(ref_wave)
+                    molecules.get_matched_sampling_wavelengths(ref_wave)
                 )
                 if not use_interp:
                     target_wave = None
 
             for mol in visible:
-                lam, flux = self.get_molecule_spectrum_data(
-                    mol, self.wave_data,
+                lam, flux = cls.get_molecule_spectrum_data(
+                    mol, wave_data,
                     interpolate_to_input=use_interp,
                     target_wavelengths=target_wave,
                     extend_to_range=True,
@@ -244,8 +261,8 @@ class FullSpectrumPlot(StackedSpectralPanel):
                 if lam is not None and flux is not None and len(flux) > 0:
                     mol_cache.append((
                         lam, flux,
-                        self.get_molecule_color(mol),
-                        self.get_molecule_display_name(mol),
+                        cls.get_molecule_color(mol),
+                        cls.get_molecule_display_name(mol),
                         getattr(mol, "name", "unknown"),
                     ))
         return mol_cache, mol_labels, mol_colors

@@ -57,6 +57,9 @@ class OpticalDepthView(FullSpectrumView):
 
     VIEW_NAME: str = "Optical Depth"
 
+    #: Stacking the sample's spectra is a Full Spectrum view option.
+    SUPPORTS_SAMPLE_STACK: bool = False
+
     # ==================================================================
     # Display options (stored in the controller's toggle_state)
     # ==================================================================

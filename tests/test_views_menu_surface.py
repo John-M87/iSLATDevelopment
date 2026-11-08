@@ -16,7 +16,7 @@ matplotlib.use("Agg")
 
 import pytest
 
-from iSLAT.Modules.GUI.ControlField import EntryField, ToggleField
+from iSLAT.Modules.GUI.ControlField import DropdownField, EntryField, ToggleField
 from iSLAT.Modules.GUI.ControlSurface import ControlBus
 
 
@@ -179,11 +179,14 @@ class TestViewsRegisterOnTheMenu:
         assert _entries(menu)[n:] == [
             ("separator", None), ("command", "Full Spectrum Controls"),
             ("checkbutton", "Residuals"), ("checkbutton", "Data Density X-Scale"),
+            ("checkbutton", "Stack Sample Spectra"),
+            ("cascade", "Stack Layout"), ("cascade", "Stack Models"),
         ]
-        assert _checked(menu, n + 2) and not _checked(menu, n + 3)
+        assert _checked(menu, n + 2) and not _checked(menu, n + 3) and not _checked(menu, n + 4)
 
         view.deactivate()
         assert _entries(menu) == STATIC
+        assert menu.winfo_children() == []      # the submenus went with their entries
 
 
 class TestTopBarSync:
@@ -200,3 +203,41 @@ class TestTopBarSync:
         state["x"] = True
         bar._sync_plot_option_vars()
         assert _checked(menu, menu.index("end"))
+
+
+def _dropdown(state, owner):
+    return DropdownField(
+        "pick", "Pick", getter=lambda: state["v"], setter=lambda v: state.__setitem__("v", v),
+        options=["A", "B", "C"], owner=owner, tip="pick tip",
+    )
+
+
+class TestDropdownMenuEntry:
+    def test_dropdown_is_a_cascade_of_choices(self, menu, surface):
+        surf, tips = surface
+        state = {"v": "B"}
+        surf.register(_dropdown(state, _View()))
+        idx = menu.index("end")
+        assert menu.type(idx) == "cascade" and menu.entrycget(idx, "label") == "Pick"
+        sub = menu.nametowidget(menu.entrycget(idx, "menu"))
+        assert [sub.entrycget(i, "label") for i in range(sub.index("end") + 1)] == ["A", "B", "C"]
+        var = sub.entrycget(0, "variable")
+        assert menu.getvar(var) == "B"
+        sub.invoke(2)
+        assert state["v"] == "C"
+        state["v"] = "A"          # changed elsewhere
+        surf.refresh_all()
+        assert menu.getvar(var) == "A"
+        assert tips["Pick"] == "pick tip"
+
+    def test_rebuilding_destroys_the_old_submenus(self, menu, surface):
+        surf, _ = surface
+        view = _View()
+        field = _dropdown({"v": "A"}, view)
+        surf.register(field)
+        assert len(menu.winfo_children()) == 1
+        for _ in range(3):
+            surf.register(field)
+        assert len(menu.winfo_children()) == 1
+        surf.unregister_owner(view)
+        assert menu.winfo_children() == []

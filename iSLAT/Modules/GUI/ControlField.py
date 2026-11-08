@@ -322,7 +322,10 @@ class DisplayRangeField(ControlField):
 # ---------------------------------------------------------------------------
 
 class DropdownField(ControlField):
-    """A labelled combobox for selecting one item from a fixed option list."""
+    """A labelled combobox for selecting one item from a fixed option list.
+
+    In a menu (:meth:`build_menu_entry`) it is a cascade of radio buttons.
+    """
 
     def __init__(
         self,
@@ -365,7 +368,42 @@ class DropdownField(ControlField):
         return [lbl, combo]
 
     # ------------------------------------------------------------------
-    def refresh(self, widget_refs: List[tk.Widget]) -> None:
+    def build_menu_entry(self, menu: tk.Menu) -> List[Any]:
+        """Add a cascade entry whose submenu has one radio button per option.
+
+        The submenu copies *menu*'s colors.  Returns ``[variable, submenu]``;
+        the owner of *menu* should destroy the submenu when it removes the entry.
+        """
+        var = tk.StringVar(master=menu, value=str(self.getter()))
+        sub = tk.Menu(menu, tearoff=0)
+        for option in ("bg", "fg", "activebackground", "activeforeground", "selectcolor"):
+            try:
+                sub.configure(**{option: menu.cget(option)})
+            except tk.TclError:
+                pass
+
+        def _on_select() -> None:
+            self.setter(var.get())
+            # The setter may refuse the choice; show the real one.
+            try:
+                var.set(str(self.getter()))
+            except Exception:
+                pass
+
+        for option in self.options:
+            sub.add_radiobutton(label=option, value=option, variable=var, command=_on_select)
+        menu.add_cascade(label=self.label, menu=sub)
+        return [var, sub]
+
+    # ------------------------------------------------------------------
+    def refresh(self, widget_refs: List[Any]) -> None:
+        if widget_refs and isinstance(widget_refs[0], tk.Variable):
+            # Menu entry: the variable itself
+            try:
+                widget_refs[0].set(str(self.getter()))
+            except Exception:
+                pass
+            return
         for w in widget_refs:
             if isinstance(w, ttk.Combobox):
                 var: Optional[tk.StringVar] = getattr(w, "_field_var", None)
