@@ -1,5 +1,3 @@
-import scipy.constants as con
-
 def write_line_data(fh, Htbl):
     """
     Write line data to a file.
@@ -16,6 +14,10 @@ def write_line_data(fh, Htbl):
     fh : file handle
         The file handle after writing the data.
     """
+    # Imported here: this module is loaded with the FileHandling package at
+    # startup, and importing scipy costs ~0.5 s.
+    import scipy.constants as con
+
     numlines = len(Htbl['molec_id'])
 
     fh.write("Number of lines\n")

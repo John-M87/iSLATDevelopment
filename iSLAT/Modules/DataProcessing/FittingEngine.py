@@ -3,8 +3,8 @@ FittingEngine - LMFIT operations and model fitting functionality
 """
 
 import numpy as np
-from lmfit.models import GaussianModel
-from lmfit import Parameters
+# lmfit (and the scipy.stats it pulls in, ~1 s) is imported in the fit
+# methods, so creating a FittingEngine at GUI startup does not load it.
 from iSLAT.Modules.DataProcessing.Slabfit import SlabFit
 import iSLAT.Constants as c
 import sys
@@ -102,7 +102,8 @@ class FittingEngine:
         x_fit = wave_data
         flux_fit = flux_data
         calc_err_data = err_data #if err_data is not None else self.islat.err_data
-        
+        from lmfit.models import GaussianModel
+
         try:
             # Use gaussian model from LMFIT
             model = GaussianModel()
@@ -175,6 +176,9 @@ class FittingEngine:
         line_threshold : float, optional
             Threshold fraction for filtering weak lines
         """
+        from lmfit import Parameters
+        from lmfit.models import GaussianModel
+
         # Estimate number of components and line centers based on detection strategy
         n_components, line_centers = self._estimate_components_from_user_selection(
             wave_data, flux_data, xmin, xmax,

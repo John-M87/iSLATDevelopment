@@ -49,7 +49,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
-from scipy.optimize import minimize
 
 from iSLAT.Modules.DataProcessing import Chi2Spectrum
 from iSLAT.Modules.DataTypes.Intensity import Intensity
@@ -58,6 +57,15 @@ from iSLAT.Modules.DataTypes.Molecule import Molecule
 from iSLAT.Modules.DataTypes.MoleculeLineList import MoleculeLineList
 import iSLAT.Constants as c
 from iSLAT.Modules.FileHandling import line_saves_file_path
+
+def minimize(*args: Any, **kwargs: Any) -> Any:
+    """``scipy.optimize.minimize``, imported on first use.
+
+    scipy.optimize takes ~0.8 s to import and this module is loaded at GUI
+    startup (through FittingEngine), long before any slab fit runs.
+    """
+    from scipy.optimize import minimize as _minimize
+    return _minimize(*args, **kwargs)
 
 # ---------------------------------------------------------------------------
 # FitParameter

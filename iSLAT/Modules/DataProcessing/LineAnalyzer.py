@@ -3,7 +3,6 @@ LineAnalyzer - Line detection, identification, and analysis functionality
 """
 
 import numpy as np
-from scipy.signal import find_peaks
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 import pandas as pd
 import iSLAT.Constants as c
@@ -57,9 +56,11 @@ class LineAnalyzer:
             List of dictionaries containing isolated line information
         """
         #continuum, noise_std = self.estimate_continuum_and_noise(wave_data, flux_data)
-        
+        # Imported here: scipy.signal takes ~0.3 s to import and LineAnalyzer is created at GUI startup.
+        from scipy.signal import find_peaks
+
         detected_lines = []
-        
+
         max_intensity = np.max(flux_data)
 
         # Detect both emission and absorption lines in one pass
