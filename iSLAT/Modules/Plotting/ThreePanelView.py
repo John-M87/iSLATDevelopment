@@ -65,8 +65,9 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         plot_manager : iSLATPlot
             The main controller that owns fig, canvas, ax1-3.
         """
-        self._pm = plot_manager  # short alias for the controller
-        self._needs_refresh: bool = True  # Set True when data changes; cleared after re-render
+        # Shared view state (_pm, _islat, _needs_refresh, ...) comes from
+        # PlotView; _canvas is overridden below to borrow the controller's.
+        super().__init__(plot_manager)
 
         # MainPlotGrid in borrowed-axes mode - created lazily in
         # _ensure_grid() because wave_data/flux_data are not available
@@ -137,11 +138,8 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         return self._grid
 
     @property
-    def _islat(self):
-        return self._pm.islat
-
-    @property
     def _canvas(self) -> "FigureCanvasTkAgg":
+        """The controller's canvas (this view draws on the controller's figure)."""
         return self._pm.canvas
 
     @property

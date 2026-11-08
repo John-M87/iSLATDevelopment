@@ -78,13 +78,10 @@ class FitLinesPlotGridView(PlotView):
         The main controller (``iSLAT.Modules.Plotting.MainPlot.iSLATPlot``).
     """
     def __init__(self, plot_manager: Any) -> None:
-        self._pm = plot_manager
-        self._islat = plot_manager.islat
+        super().__init__(plot_manager)
 
-        self._parent_frame: Any = None
-
-        # Primary canvas / figure references (point at first tab or placeholder)
-        self._canvas: Optional["FigureCanvasTkAgg"] = None
+        # Primary figure reference; it and PlotView's _canvas point at the
+        # first tab or the placeholder.
         self._fig: Optional["Figure"] = None
 
         # Placeholder figure (shown when _plot_grids is empty)
@@ -99,8 +96,6 @@ class FitLinesPlotGridView(PlotView):
         # The list of FitLinesPlotGrid objects to display
         self._plot_grids: List[FitLinesPlotGrid] = []
 
-        self._initialised: bool = False
-        self._needs_refresh: bool = True
         self._show_model_lines: bool = False
 
     # ==================================================================
@@ -942,23 +937,11 @@ class FitLinesPlotGridView(PlotView):
         self._refresh_model_line_overlays()
         self._refresh_summed_spectrum()
 
-    # ==================================================================
-    # PlotView - selection / line inspection (no-ops)
-    # ==================================================================
-    def on_selection(self, xmin: float, xmax: float) -> None:
-        """No-op - this view does not respond to span-selector events."""
-        pass
-
-    def clear_selection(self) -> None:
-        """No-op."""
-        pass
-
-    def clear_active_lines(self) -> None:
-        """No-op - no active-line markers in this view."""
-        pass
+    # Selection (on_selection, clear_selection, clear_active_lines) keeps
+    # PlotView's no-op defaults: this view has no span selector.
 
     # ==================================================================
-    # PlotView - molecule lifecycle (no-ops)
+    # PlotView - molecule lifecycle
     # ==================================================================
     def on_active_molecule_changed(
         self,
@@ -984,7 +967,7 @@ class FitLinesPlotGridView(PlotView):
         self._refresh_summed_spectrum()
 
     # ==================================================================
-    # PlotView - toggle helpers (all no-ops for this view)
+    # PlotView - toggle helpers (toggle_legend keeps PlotView's no-op)
     # ==================================================================
     def sync_toggle_state(self, toggle_state: dict) -> None:
         """Apply the summed-spectrum toggle state when this view becomes active."""
@@ -1079,10 +1062,6 @@ class FitLinesPlotGridView(PlotView):
                     except Exception:
                         pass
         self.toggle_summed_spectrum(True)
-
-    def toggle_legend(self, visible: Optional[bool] = None) -> None:
-        """No-op."""
-        pass
 
     def toggle_saved_lines(self, show: bool, loaded_lines: Any = None) -> None:
         """Show or hide saved-line annotations on every panel."""

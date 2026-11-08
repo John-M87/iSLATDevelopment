@@ -354,7 +354,37 @@ class PlotView(ABC):
 
     Each view owns a matplotlib *Figure* and a Tk *FigureCanvasTkAgg*.
     The controller (:class:`iSLATPlot`) calls these methods without knowing which concrete view is active.
+
+    Subclasses must implement the lifecycle (:meth:`activate`,
+    :meth:`deactivate`), rendering (:meth:`update_model_plot`), molecule
+    callbacks, theme and canvas methods.  Selection and overlay-toggle
+    methods default to no-ops, so views without those features need not
+    override them.
     """
+
+    #: The Tk canvas showing this view (``None`` until built).  Views that
+    #: own their canvas assign it; :class:`ThreePanelView` overrides it with a
+    #: property returning the controller's canvas.
+    _canvas: Optional["FigureCanvasTkAgg"] = None
+
+    def __init__(self, plot_manager: Any) -> None:
+        """
+        Parameters
+        ----------
+        plot_manager : iSLATPlot
+            The controller that owns this view (or a stand-in providing
+            ``islat``, ``theme``, ``toggle_state`` and ``control_bus``).
+        """
+        self._pm = plot_manager
+        self._parent_frame: Any = None  # Tk frame the canvas is packed into
+        self._initialised: bool = False  # True once the content has been built
+        self._needs_refresh: bool = True  # Data changed since the last render
+
+    @property
+    def _islat(self) -> Any:
+        """The top-level iSLAT object, read from the controller."""
+        return self._pm.islat
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -420,26 +450,20 @@ class PlotView(ABC):
         ...
 
     # ------------------------------------------------------------------
-    # Selection & line-inspection
+    # Selection & line-inspection (no-op defaults)
     # ------------------------------------------------------------------
-    @abstractmethod
     def on_selection(self, xmin: float, xmax: float) -> None:
         """Handle a wavelength-range selection (span selector drag).
 
         The view should render the line inspection panel, populate the population diagram scatter points, and highlight the strongest line.
-        Views that do not support interactive selection (e.g. :class:`FullSpectrumView`) should implement this as a no-op or as a deferred switch back to the three-panel view.
+        The default is a no-op for views that do not support interactive selection (e.g. :class:`FullSpectrumView`).
         """
-        ...
 
-    @abstractmethod
     def clear_selection(self) -> None:
-        """Clear the current line-inspection selection and reset panels."""
-        ...
+        """Clear the current line-inspection selection and reset panels.  Default: no-op."""
 
-    @abstractmethod
     def clear_active_lines(self) -> None:
-        """Remove all active-line artists (vlines, text, scatter) from the view."""
-        ...
+        """Remove all active-line artists (vlines, text, scatter) from the view.  Default: no-op."""
 
     # ------------------------------------------------------------------
     # Molecule lifecycle callbacks
@@ -490,9 +514,8 @@ class PlotView(ABC):
         ...
 
     # ------------------------------------------------------------------
-    # Toggle helpers
+    # Toggle helpers (no-op defaults)
     # ------------------------------------------------------------------
-    @abstractmethod
     def sync_toggle_state(self, toggle_state: dict) -> None:
         """
         Reconcile the view's visual state with the canonical *toggle_state* dict from the controller.
@@ -500,28 +523,20 @@ class PlotView(ABC):
         Called by the controller when this view is **activated** so that
         overlays (atomic lines, saved lines, summed spectrum, legend) match
         the state the user set while a different view was visible.
+        The default is a no-op for views without such overlays.
         """
-        ...
 
-    @abstractmethod
     def toggle_summed_spectrum(self, visible: bool) -> None:
-        """Show or hide the summed model fill across all relevant axes."""
-        ...
+        """Show or hide the summed model fill across all relevant axes.  Default: no-op."""
 
-    @abstractmethod
     def toggle_legend(self, visible: Optional[bool] = None) -> None:
-        """Toggle the legend visibility on all relevant axes."""
-        ...
+        """Toggle the legend visibility on all relevant axes.  Default: no-op."""
 
-    @abstractmethod
     def toggle_saved_lines(self, show: bool, loaded_lines: Any = None) -> None:
-        """Add or remove saved line annotations."""
-        ...
+        """Add or remove saved line annotations.  Default: no-op."""
 
-    @abstractmethod
     def toggle_atomic_lines(self, show: bool) -> None:
-        """Add or remove atomic line annotations."""
-        ...
+        """Add or remove atomic line annotations.  Default: no-op."""
 
     # ------------------------------------------------------------------
     # Observed-data visibility and Y-axis policy (shared implementation)

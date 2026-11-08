@@ -110,12 +110,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
     VIEW_NAME: str = "Full Spectrum"
 
     def __init__(self, plot_manager: Any) -> None:
-        self._pm = plot_manager
-        self._islat = plot_manager.islat
-        self._parent_frame: Any = None
-
-        # Canvas -- built lazily
-        self._canvas: Optional[FigureCanvasTkAgg] = None
+        # Shared view state (_pm, _islat, _parent_frame, _initialised,
+        # _needs_refresh, and the lazily built _canvas) comes from PlotView.
+        super().__init__(plot_manager)
 
         # The composed plot -- created on first activation.
         # Typed as the abstract base so the view can drive any subclass.
@@ -126,9 +123,6 @@ class FullSpectrumView(ToggleMixin, PlotView):
 
         # Line data (for saved-line annotations in interactive mode)
         self.line_data: Optional[pd.DataFrame] = None
-
-        self._initialised: bool = False  # True after first generate
-        self._needs_refresh: bool = True  # Set True when data changes; cleared after re-render
 
     # --- helpers used by _register_control_fields ---
     def _get_n_panels(self):
@@ -919,20 +913,9 @@ class FullSpectrumView(ToggleMixin, PlotView):
         self.sync_toggle_state(self._pm.toggle_state)
         self.draw()
 
-    # ------------------------------------------------------------------
-    # Selection & line-inspection (no-ops - FSV doesn't own these panels)
-    # ------------------------------------------------------------------
-    def on_selection(self, xmin: float, xmax: float) -> None:
-        """No-op - FullSpectrumView uses its own span-selector flow."""
-        pass
-
-    def clear_selection(self) -> None:
-        """No-op - FullSpectrumView has no line-inspection panel."""
-        pass
-
-    def clear_active_lines(self) -> None:
-        """No-op - FullSpectrumView has no active-line artists."""
-        pass
+    # on_selection, clear_selection and clear_active_lines keep PlotView's
+    # no-op defaults: this view has no line-inspection panel and selects
+    # through its own span selectors (see _on_span_select).
 
     # ------------------------------------------------------------------
     # Molecule lifecycle callbacks

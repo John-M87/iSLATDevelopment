@@ -112,7 +112,7 @@ class TestPlotViewRegisterFields:
             def get_canvas(self): ...
             def get_figure(self): ...
 
-        view = StubView()
+        view = StubView(MagicMock())
         # Must not raise; returns None
         result = view._register_control_fields()
         assert result is None
