@@ -7,6 +7,7 @@ import numpy as np
 from typing import Optional, List, Tuple, Any, TYPE_CHECKING
 
 import iSLAT.Constants as c
+from .CachedLayout import CachedConstrainedLayoutEngine
 from .LegendStrategy import StandardLegend
 from .MainPlotGrid import MainPlotGrid
 from .Theming import apply_canvas_theme, apply_figure_theme
@@ -86,7 +87,8 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         self.full_spectrum_export_settings: dict = {"width": None, "panel_height": None}
 
         #self.fig = plt.Figure(figsize=(15, 8.5))
-        self.fig = plt.Figure(constrained_layout=True)
+        # Constrained layout, re-run only when something that sizes the margins changes.
+        self.fig = plt.Figure(layout=CachedConstrainedLayoutEngine())
         # Use shared 3-panel layout helper from MainPlotGrid
         self.ax1, self.ax2, self.ax3 = MainPlotGrid.create_three_panel_axes(self.fig)
 
