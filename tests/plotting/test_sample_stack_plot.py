@@ -423,6 +423,38 @@ class TestView:
         assert isinstance(created[0], SampleStackPlot) and created[0].layout == "rows"
         assert len(created[0].spectra) == 3
 
+    def test_export_settings_outputs_draw_the_stack(self, view_setup, tmp_path, monkeypatch):
+        # The Full Spectrum Export Settings dialog's exports: the multi-page PDF and Output Full Spectrum.
+        import tkinter.filedialog
+        import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
+        from iSLAT.Modules.Plotting.FullSpectrumView import output_full_spectrum, output_full_spectrum_pages
+        make, islat, _paths = view_setup
+        view, pm = make(sample_stack=True, sample_stack_layout="rows")
+        pm._full_spectrum_view = view
+        pm.full_spectrum_export_settings = {"width": None, "panel_height": None}
+        islat.GUI = SimpleNamespace(plot=pm, data_field=MagicMock())
+        monkeypatch.setattr(ifh, "write_molecules_to_csv", lambda *a, **k: None)
+        created = []
+        original = view._create_standalone_plot
+
+        def capture(*args, **kwargs):
+            plot = original(*args, **kwargs)
+            created.append(plot)
+            return plot
+
+        monkeypatch.setattr(view, "_create_standalone_plot", capture)
+        pages = tmp_path / "pages.pdf"
+        assert output_full_spectrum_pages(islat, [(4.9, 5.05), (5.05, 5.2)], [1, 2], save_path=str(pages))
+        assert pages.exists()
+        assert [type(p) for p in created] == [SampleStackPlot] * 2
+        assert all(p.layout == "rows" and len(p.spectra) == 3 for p in created)
+        assert [len(p._panel_edges) for p in created] == [1, 2]
+
+        single = tmp_path / "single.pdf"
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: str(single))
+        assert output_full_spectrum(islat) == str(single)
+        assert len(created) == 3 and isinstance(created[-1], SampleStackPlot)
+
     def test_context_menu_offers_to_activate_another_spectrum(self, view_setup):
         make, islat, paths = view_setup
         view, pm = make(sample_stack=True, sample_stack_layout="rows")

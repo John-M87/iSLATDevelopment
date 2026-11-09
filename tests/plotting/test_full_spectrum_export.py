@@ -11,7 +11,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from iSLAT.Modules.Plotting import FullSpectrumPlot
+from iSLAT.Modules.Plotting import FullSpectrumPlot, ResidualSpectrumPlot
+from iSLAT.Modules.Plotting.SpectralPanel import XScaling
 from iSLAT.Modules.Plotting.FullSpectrumView import (
     DEFAULT_EXPORT_HEIGHT,
     DEFAULT_EXPORT_WIDTH,
@@ -52,6 +53,9 @@ class _Molecules:
 
     def get_summed_flux(self, wave, **_kw):
         return WAVE, self._summed
+
+    def get_summed_flux_resampled(self, wave, **_kw):
+        return np.asarray(wave), np.interp(wave, WAVE, self._summed)
 
     def get_visible_molecules(self, return_objects=False):
         return []
@@ -275,6 +279,10 @@ class TestToggleStateDisplayKwargs:
         assert "y_limits" not in kw
         assert kw["y_autoscale_source"] == "data"
 
+    def test_data_density_x_scale(self):
+        assert toggle_state_display_kwargs({"data_density": True})["x_scaling"] == "data_density"
+        assert "x_scaling" not in toggle_state_display_kwargs({"data_density": False})
+
     def test_data_sync_only_while_autoscaling(self):
         assert toggle_state_display_kwargs({"y_data_sync": "Panel"})["y_data_sync"] == "panel"
         assert "y_data_sync" not in toggle_state_display_kwargs({"y_data_sync": None})
@@ -422,6 +430,125 @@ class TestViewSaveFigure:
         assert view.save_figure(str(tmp_path / "view.pdf"))
         (snap,) = recorder
         assert snap["xlims"] == ranges
+
+
+# ======================================================================
+# The exports draw what the Full Spectrum view shows
+# ======================================================================
+def _cells(plot):
+    """Each panel's axes, as a tuple (spectrum and residual axes, or one per stacked row)."""
+    return [cell if isinstance(cell, tuple) else (cell,) for cell in plot.subplots.values()]
+
+
+@pytest.fixture
+def built_plots(monkeypatch):
+    """Every plot the Full Spectrum view builds for a file, with what it showed when it was closed."""
+    built = []
+    original = fsv.FullSpectrumView._create_standalone_plot
+
+    def recording(view, *args, **kwargs):
+        plot = original(view, *args, **kwargs)
+        entry = {"plot": plot}
+        built.append(entry)
+        close = plot.close
+
+        def snapshot_then_close():
+            if plot.fig is not None:
+                primary = [cell[0] for cell in _cells(plot)]
+                entry.update(
+                    cell_sizes=[len(cell) for cell in _cells(plot)],
+                    xlims=[ax.get_xlim() for ax in primary],
+                    observed=[a.get_visible() for ax in primary for a in list(ax.lines) + list(ax.collections)
+                              if hasattr(a, "_islat_observed")],
+                )
+            close()
+
+        plot.close = snapshot_then_close
+        return plot
+
+    monkeypatch.setattr(fsv.FullSpectrumView, "_create_standalone_plot", recording)
+    monkeypatch.setattr(fsv.ifh, "write_molecules_to_csv", lambda *a, **k: None)
+    return built
+
+
+class TestExportsFollowTheView:
+    """Output Full Spectrum, the multi-page PDF and Save Figure draw the Full Spectrum view's kind of plot."""
+
+    @staticmethod
+    def _islat(**toggles):
+        pm = MagicMock()
+        pm.theme = None
+        pm.control_bus = None
+        pm._plot = None             # iSLATPlot has no plot of its own
+        pm.toggle_state = _toggle_state(**{"show_residuals": False, "data_density": False, **toggles})
+        pm.full_spectrum_export_settings = {"width": None, "panel_height": None}
+        islat = SimpleNamespace(
+            wave_data_original=WAVE, flux_data=FLUX, err_data=np.full_like(WAVE, 0.1),
+            molecules_dict=_Molecules(), loaded_spectrum_file="spec.csv", input_line_list="unused.csv",
+            root=None, GUI=SimpleNamespace(plot=pm, data_field=MagicMock()),
+        )
+        pm.islat = islat
+        pm._full_spectrum_view = fsv.FullSpectrumView(pm)
+        return islat
+
+    @pytest.fixture
+    def save_to(self, monkeypatch, tmp_path):
+        target = tmp_path / "out.pdf"
+        import tkinter.filedialog
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: str(target))
+        return target
+
+    def test_output_full_spectrum_has_residual_panels(self, built_plots, save_to):
+        assert fsv.output_full_spectrum(self._islat(show_residuals=True)) == str(save_to)
+        assert save_to.exists()
+        ((entry),) = built_plots
+        assert isinstance(entry["plot"], ResidualSpectrumPlot)
+        assert entry["cell_sizes"] and set(entry["cell_sizes"]) == {2}      # spectrum + residuals
+
+    def test_pages_have_residual_panels(self, built_plots, tmp_path):
+        out = tmp_path / "pages.pdf"
+        islat = self._islat(show_residuals=True)
+        fsv.output_full_spectrum_pages(islat, [(5.0, 7.0), (8.0, 11.0)], [2, 3], save_path=str(out))
+        assert _pdf_page_count(out) == 2
+        assert [type(e["plot"]) for e in built_plots] == [ResidualSpectrumPlot] * 2
+        assert [e["cell_sizes"] for e in built_plots] == [[2, 2], [2, 2, 2]]
+        first, second = (e["xlims"] for e in built_plots)
+        assert first[0][0] == pytest.approx(5.0) and first[-1][1] == pytest.approx(7.0)
+        assert second[0][0] == pytest.approx(8.0) and second[-1][1] == pytest.approx(11.0)
+
+    def test_residual_pages_keep_the_display_options(self, built_plots, tmp_path):
+        islat = self._islat(show_residuals=True, observed=False)
+        fsv.output_full_spectrum_pages(islat, [(5.0, 11.0)], 2, save_path=str(tmp_path / "p.pdf"))
+        ((entry),) = built_plots
+        assert entry["observed"] and not any(entry["observed"])
+
+    def test_save_figure_has_residual_panels(self, built_plots, tmp_path):
+        view = self._islat(show_residuals=True).GUI.plot._full_spectrum_view
+        assert view.save_figure(str(tmp_path / "view.pdf"))
+        ((entry),) = built_plots
+        assert isinstance(entry["plot"], ResidualSpectrumPlot)
+
+    def test_panel_ranges_apply_to_output_but_not_to_pages(self, built_plots, save_to, tmp_path):
+        islat = self._islat(show_residuals=True)
+        ranges = [(9.0, 10.0), (5.5, 6.5)]
+        islat.GUI.plot._full_spectrum_view.set_panel_ranges(ranges)
+        fsv.output_full_spectrum(islat)
+        assert built_plots[0]["xlims"] == ranges
+        fsv.output_full_spectrum_pages(islat, [(5.0, 8.0)], 3, save_path=str(tmp_path / "p.pdf"))
+        page = built_plots[1]["xlims"]
+        assert len(page) == 3 and page[0][0] == pytest.approx(5.0) and page[-1][1] == pytest.approx(8.0)
+
+    def test_plain_spectrum_otherwise(self, built_plots, tmp_path):
+        fsv.output_full_spectrum_pages(self._islat(), [(5.0, 11.0)], 3, save_path=str(tmp_path / "p.pdf"))
+        ((entry),) = built_plots
+        assert type(entry["plot"]) is FullSpectrumPlot
+        assert entry["cell_sizes"] == [1, 1, 1]
+
+    def test_data_density_x_scale(self, built_plots, tmp_path):
+        islat = self._islat(show_residuals=True, data_density=True)
+        fsv.output_full_spectrum_pages(islat, [(5.0, 11.0)], 3, save_path=str(tmp_path / "p.pdf"))
+        ((entry),) = built_plots
+        assert entry["plot"].x_scaling is XScaling.DATA_DENSITY
 
 
 # ======================================================================

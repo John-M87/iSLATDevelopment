@@ -54,7 +54,7 @@ from .BasePlot import BasePlot
 from .ModelOverlays import draw_summed_fill, plot_molecule_trace
 from .Theming import apply_canvas_theme
 from .ToggleMixin import ToggleMixin
-from .SpectralPanel import GapMode
+from .SpectralPanel import GapMode, XScaling
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -1778,9 +1778,14 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         n_panels: Optional[int] = None,
         display_options: Optional[Dict[str, Any]] = None,
     ) -> StackedSpectralPanel:
-        """Build a fresh standalone :class:`StackedSpectralPanel` for export.
+        """Build a fresh standalone :class:`StackedSpectralPanel` for export, of the kind the view shows.
 
-        Subclasses can override this to return a different stacked-panel implementation (e.g. :class:`ResidualSpectrumPlot`) when the user saves the figure from a residual-backed view.
+        As :meth:`_create_plot` picks for the GUI: a :class:`SampleStackPlot`
+        of the whole sample with *Stack Sample Spectra* on, a
+        :class:`ResidualSpectrumPlot` (residual sub-panels against the summed
+        visible model) with *Residuals* on, otherwise a :class:`FullSpectrumPlot`.
+        Subclasses can override this to return a different stacked-panel
+        implementation.
 
         *display_options* are the :class:`FullSpectrumPlot` display keywords
         (see :func:`toggle_state_display_kwargs`).
@@ -1810,6 +1815,12 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                 return SampleStackPlot(
                     spectra, layout=self._stack_layout(), model_mode=self._stack_model_mode(), **kw,
                 )
+        if self._pm.toggle_state.get("show_residuals", False):
+            return ResidualSpectrumPlot(
+                model_flux=self._compute_model_flux(wave_obs, wave),
+                error_data=getattr(self._islat, "err_data", None),
+                **kw,
+            )
         return FullSpectrumPlot(**kw)
 
     def _can_save_figure(self) -> bool:
@@ -1845,17 +1856,37 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     def _create_export_plot(self) -> StackedSpectralPanel:
         """Build and render the standalone plot that :meth:`save_figure` writes.
 
-        It follows the toggle state (saved / atomic lines, observed data,
-        summed model, Y-axis policy, wavelength marks), the live wavelength
-        range and panel count (or the explicit panel ranges), and the
-        session's export size.  The caller closes it after saving.
+        The live wavelength range and panel count (or the explicit panel
+        ranges), otherwise as :meth:`_create_output_plot`.  The caller closes
+        it after saving.
+        """
+        xlim_range, n_panels = self._export_range()
+        return self._create_output_plot(xlim_range, n_panels, panel_ranges=self.panel_ranges)
+
+    def _create_output_plot(
+        self,
+        xlim_range: Optional[Tuple[float, float]] = None,
+        n_panels: Optional[int] = None,
+        *,
+        panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
+        export_settings: Optional[Dict[str, Optional[float]]] = None,
+    ) -> StackedSpectralPanel:
+        """Build and render a standalone figure of what the view shows, for saving to a file.
+
+        The plot is the kind the view shows (the sample stack, residual
+        sub-panels or the plain spectrum, see :meth:`_create_standalone_plot`)
+        and follows the toggle state: saved / atomic lines, observed data,
+        summed model, Y-axis policy, data-density X scale and wavelength
+        marks.  *xlim_range* and *n_panels*, or *panel_ranges* (one panel
+        each), set the panels; *export_settings* the size (default: the
+        session's export settings).  Used by *Save Figure*, *Output Full
+        Spectrum* and the pages of the multi-page PDF.  The caller closes it.
         """
         ts = self._pm.toggle_state
         wave, flux, wave_obs = self._load_spectrum_data()
-        xlim_range, n_panels = self._export_range()
-        plot = self._new_standalone_plot(
+        plot = self._create_standalone_plot(
             wave, flux, wave_obs,
-            line_list=self.line_data if ts.get("saved_lines", False) else None,
+            line_list=self._load_line_data() if ts.get("saved_lines", False) else None,
             atomic_lines=load_atomic_lines() if ts.get("atomic_lines", False) else None,
             figsize=(DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT),
             xlim_range=xlim_range,
@@ -1863,7 +1894,11 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             display_options=toggle_state_display_kwargs(ts),
         )
         try:
-            apply_export_size(plot, get_export_settings(self._pm))
+            if panel_ranges:
+                plot.set_panel_ranges(panel_ranges)
+            apply_export_size(
+                plot, export_settings if export_settings is not None else get_export_settings(self._pm),
+            )
             plot.generate_plot()
             draw_toggle_state_markers(plot.fig, ts)
 
@@ -1939,7 +1974,8 @@ def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
     visibility, manual Y limits while auto-scaling is off, and otherwise the
     data min / max sync scope (``y_data_sync``, only when set) or the
     ``"data"`` / ``"model"`` auto-scale source.  *Skip Data Gaps*
-    (``skip_gaps``) adds ``gap_mode="skip"``.
+    (``skip_gaps``) adds ``gap_mode="skip"`` and *Data Density X-Scale*
+    (``data_density``) ``x_scaling="data_density"``.
     """
     ts = toggle_state if isinstance(toggle_state, dict) else {}
     kw: Dict[str, Any] = {
@@ -1949,6 +1985,8 @@ def toggle_state_display_kwargs(toggle_state: Optional[dict]) -> Dict[str, Any]:
     }
     if ts.get("skip_gaps", False):
         kw["gap_mode"] = GapMode.SKIP.value
+    if ts.get("data_density", False):
+        kw["x_scaling"] = XScaling.DATA_DENSITY.value
     sync = normalize_y_data_sync(ts.get("y_data_sync"))
     if ts.get("y_autoscale", True) and sync is not None:
         kw["y_data_sync"] = sync
@@ -2060,11 +2098,14 @@ def output_full_spectrum(
     """
     Create a fresh full-spectrum PDF and a companion parameters CSV.
 
-    The figure follows the GUI's toggle state (saved / atomic lines, summed
-    model, observed data, Y auto-scale / manual limits) and is sized from the
-    session's export settings (see :func:`set_export_settings`).  It has the
-    Full Spectrum view's panel count, or its explicit panel ranges when set
-    (Views menu > *Panel Ranges...*).
+    The figure is the kind of plot the Full Spectrum view shows (the sample
+    stack with *Stack Sample Spectra*, residual sub-panels with *Residuals*,
+    otherwise the plain spectrum), follows the GUI's toggle state (saved /
+    atomic lines, summed model, observed data, Y auto-scale / manual limits,
+    data-density X scale) and is sized from the session's export settings
+    (see :func:`set_export_settings`).  It has the Full Spectrum view's panel
+    count, or its explicit panel ranges when set (Views menu > *Panel
+    Ranges...*).
 
     Parameters
     ----------
@@ -2228,9 +2269,11 @@ def output_full_spectrum_pages(
     (rest frame, as the plots show it), split into stacked panels;
     *rows_per_page* gives the panel count for every page or for each page
     (see :func:`rows_per_page_list`).  The pages look like *Output Full
-    Spectrum*: the GUI's toggle state (saved / atomic lines, summed model,
-    observed data, Y axis), wavelength marks, theme and the session's export
-    size (*panel_height* x rows sets each page's height when given).
+    Spectrum*: the kind of plot the Full Spectrum view shows (sample stack,
+    residual sub-panels or plain spectrum), the GUI's toggle state (saved /
+    atomic lines, summed model, observed data, Y axis, data-density X
+    scale), wavelength marks, theme and the session's export size
+    (*panel_height* x rows sets each page's height when given).
 
     Parameters
     ----------
@@ -2318,21 +2361,27 @@ def _output_inputs(
     if panel_height is not None:
         export_settings["panel_height"] = _validate_export_dim("Panel height", panel_height, MAX_EXPORT_PANEL_HEIGHT)
 
+    # The GUI's Full Spectrum view draws the figures when there is one (see
+    # _render_output_plot) and loads the overlays itself.
+    view = getattr(gui_plot, "_full_spectrum_view", None)
+    if not isinstance(view, FullSpectrumView):
+        view = None
+
     line_list_df: Optional[pd.DataFrame] = None
-    if ts.get("saved_lines", False):
+    if view is None and ts.get("saved_lines", False):
         try:
             line_list_df = pd.read_csv(islat_ref.input_line_list, sep=",")
         except Exception:
             pass
 
     atomic_lines_df: Optional[pd.DataFrame] = None
-    if ts.get("atomic_lines", False):
+    if view is None and ts.get("atomic_lines", False):
         atomic_lines_df = load_atomic_lines()
 
     return SimpleNamespace(
         wave=wave, flux=flux, wave_obs=wave_obs, molecules=islat_ref.molecules_dict,
         toggle_state=ts, theme=theme, export_settings=export_settings,
-        line_list=line_list_df, atomic_lines=atomic_lines_df,
+        line_list=line_list_df, atomic_lines=atomic_lines_df, view=view,
     )
 
 
@@ -2341,12 +2390,22 @@ def _render_output_plot(
     xlim_range: Optional[Tuple[float, float]] = None,
     n_panels: Optional[int] = None,
     panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
-) -> FullSpectrumPlot:
+) -> StackedSpectralPanel:
     """Build, size and render one standalone export figure from :func:`_output_inputs`; the caller closes it.
 
     *panel_ranges* (one ``(start, end)`` per panel) take the place of
-    *xlim_range* / *n_panels* when given.
+    *xlim_range* / *n_panels* when given.  The GUI's Full Spectrum view
+    draws it when there is one, so it is the kind of plot the view shows
+    (the sample stack, residual sub-panels or the plain spectrum, see
+    :meth:`FullSpectrumView._create_output_plot`); otherwise it is a plain
+    :class:`FullSpectrumPlot`.
     """
+    view = getattr(inputs, "view", None)
+    if view is not None:
+        return view._create_output_plot(
+            xlim_range, n_panels, panel_ranges=panel_ranges, export_settings=inputs.export_settings,
+        )
+
     # Uses BasePlot._ensure_figure (non-pyplot MplFigure).
     kwargs: Dict[str, Any] = dict(
         wave_data=inputs.wave,

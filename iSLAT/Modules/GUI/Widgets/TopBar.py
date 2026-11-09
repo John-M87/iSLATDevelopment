@@ -1751,6 +1751,9 @@ class TopBar(ResizableFrame):
         fields use the defaults.  The values are remembered for the session
         and used by *Output Full Spectrum* (Ctrl+Shift+F) and the Full
         Spectrum view's *Save Figure…*.
+        The exports are the kind of plot the Full Spectrum view shows
+        (residual sub-panels, the sample stack or the plain spectrum) with
+        its display options.
         """
         pm = self.main_plot
         current = get_export_settings(pm)
@@ -1785,7 +1788,9 @@ class TopBar(ResizableFrame):
             win,
             text=("Figure height = panel height \u00d7 number of panels.\n"
                   "Used by Output Full Spectrum, the multi-page PDF below and\n"
-                  "the Full Spectrum view's Save Figure; remembered for this session."),
+                  "the Full Spectrum view's Save Figure; remembered for this session.\n"
+                  "The figures show what the Full Spectrum view shows: its residual\n"
+                  "panels or stacked sample spectra, and its display options."),
             justify="left", fg="gray",
         ).grid(row=2, column=0, columnspan=3, sticky="w", **pad)
 
