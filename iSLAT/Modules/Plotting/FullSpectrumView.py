@@ -16,10 +16,12 @@ The concrete plot class is determined by :meth:`_create_plot`, which subclasses 
 from __future__ import annotations
 
 import os
+import re
 import warnings
 from os.path import dirname
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -28,7 +30,7 @@ import matplotlib
 from matplotlib.figure import Figure as MplFigure
 from matplotlib.widgets import SpanSelector
 
-from .FigureExport import save_figure_file
+from .FigureExport import save_figure_file, save_figures_to_pdf
 from .OwnedCanvasMixin import OwnedCanvasMixin
 from .PlotDebug import debug_config
 from .PlotView import (
@@ -79,6 +81,11 @@ DEFAULT_EXPORT_HEIGHT: float = 16.0
 #: Upper bounds accepted for the export size overrides (inches).
 MAX_EXPORT_WIDTH: float = 200.0
 MAX_EXPORT_PANEL_HEIGHT: float = 20.0
+#: Upper bounds for a multi-page export (see :func:`output_full_spectrum_pages`),
+#: and the rows per page offered before the Full Spectrum view was shown.
+MAX_EXPORT_PAGES: int = 100
+MAX_ROWS_PER_PAGE: int = 50
+DEFAULT_ROWS_PER_PAGE: int = 10
 
 #: ``toggle_state`` keys (and defaults) for stacking the sample's spectra in the Full Spectrum view.
 SAMPLE_STACK_DEFAULTS: Dict[str, Any] = {
@@ -1915,6 +1922,221 @@ def output_full_spectrum(
 
     This is the backward-compatible replacement for the function that previously lived in ``OutputFullSpectrum.py``.
     """
+    inputs = _output_inputs(islat_ref, figure_width, panel_height)
+
+    # Respect the GUI's wavelength range so the saved figure matches
+    # what is shown on screen rather than always spanning all data.
+    xlim_range: Optional[Tuple[float, float]] = None
+    mol_range = getattr(islat_ref.molecules_dict, '_global_wavelength_range', None)
+    if mol_range is not None:
+        xlim_range = (float(mol_range[0]), float(mol_range[1]))
+    standalone = _render_output_plot(inputs, xlim_range, live_panel_count(islat_ref))
+
+    save_path = ask_save_path(
+        FullSpectrumView.SAVE_DIALOG_TITLE, "pdf",
+        initialfile=default_save_name(islat_ref, FullSpectrumView.SAVE_FILE_SUFFIX, "pdf"),
+        initialdir=absolute_data_files_path,
+    )
+    if not save_path:
+        standalone.close()
+        return None
+
+    try:
+        save_figure_file(standalone.fig, save_path, file_format="pdf", rasterized=rasterized)
+    finally:
+        standalone.close()
+
+    _write_output_parameters(islat_ref, save_path)
+    notify_user(islat_ref, FullSpectrumView.SAVE_MESSAGE.format(path=save_path))
+
+    return save_path
+
+
+# ======================================================================
+# Multi-page PDF export
+# ======================================================================
+_PAGE_SETTINGS_ATTR = "full_spectrum_page_settings"
+
+#: File-name suffix, dialog title and message of the multi-page export.
+PAGES_FILE_SUFFIX = "full_output_pages"
+PAGES_DIALOG_TITLE = "Save Multi-page Spectrum Output"
+PAGES_MESSAGE = "Multi-page spectrum output ({pages} pages) saved to: {path}"
+
+
+def get_page_settings(plot_manager: Any) -> Dict[str, str]:
+    """The session's multi-page export entries, as typed: ``{"pages": ..., "rows": ...}``.
+
+    ``"pages"`` holds the page ranges (one ``start end`` per line, as in the
+    Display Full Spectrum window's *Ranges* dialog) and ``"rows"`` the rows
+    per page.  Unset entries are ``""``.
+    """
+    settings = {"pages": "", "rows": ""}
+    raw = getattr(plot_manager, _PAGE_SETTINGS_ATTR, None)
+    if isinstance(raw, dict):
+        for key in settings:
+            if isinstance(raw.get(key), str):
+                settings[key] = raw[key]
+    return settings
+
+
+def set_page_settings(plot_manager: Any, pages: Optional[str] = "", rows: Optional[str] = "") -> None:
+    """Remember the multi-page export entries (as typed) for the session."""
+    setattr(plot_manager, _PAGE_SETTINGS_ATTR, {"pages": str(pages or ""), "rows": str(rows or "")})
+
+
+def rows_per_page_list(rows_per_page: Union[int, str, Sequence[int]], n_pages: int) -> List[int]:
+    """One panel count per page.
+
+    *rows_per_page* is one count for every page, or one per page: an int, a
+    sequence of ints, or text such as ``"8"`` or ``"8, 6, 10"``.
+
+    Raises
+    ------
+    ValueError
+        For counts that are not whole numbers from 1 to
+        :data:`MAX_ROWS_PER_PAGE`, or a list whose length is not *n_pages*.
+    """
+    if isinstance(rows_per_page, str):
+        parts = [p for p in re.split(r"[\s,;]+", rows_per_page.strip()) if p]
+        if not parts:
+            raise ValueError("Enter the number of rows per page.")
+        values: List[Any] = parts
+    elif isinstance(rows_per_page, (int, np.integer)):
+        values = [rows_per_page]
+    else:
+        values = list(rows_per_page)
+    counts: List[int] = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = float("nan")
+        if not np.isfinite(number) or number != int(number):
+            raise ValueError("Rows per page must be whole numbers, e.g. 8 or 8, 6, 10.")
+        if not 1 <= number <= MAX_ROWS_PER_PAGE:
+            raise ValueError(f"Rows per page must be between 1 and {MAX_ROWS_PER_PAGE}.")
+        counts.append(int(number))
+    if len(counts) == 1:
+        counts = counts * n_pages
+    if len(counts) != n_pages:
+        raise ValueError(
+            f"Give one number of rows for every page, or one per page "
+            f"({n_pages} pages, {len(counts)} numbers)."
+        )
+    return counts
+
+
+def observed_wavelength_bounds(islat_ref: Any) -> Tuple[Optional[float], Optional[float]]:
+    """First and last observed wavelength as the plots show them (rest frame), or ``(None, None)``.
+
+    What the ``DATASTART`` / ``DATAEND`` page-range keywords stand for.
+    """
+    try:
+        wave = islat_ref.molecules_dict.apply_stellar_rv(np.asarray(islat_ref.wave_data_original, dtype=float))
+        wave = np.asarray(wave, dtype=float)
+        wave = wave[np.isfinite(wave)]
+    except Exception:
+        return None, None
+    if wave.size == 0:
+        return None, None
+    return float(wave.min()), float(wave.max())
+
+
+def validate_page_ranges(page_ranges: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """*page_ranges* as floats; raises ``ValueError`` for none, too many, or a start not below its end."""
+    pages = [(float(lo), float(hi)) for lo, hi in page_ranges]
+    if not pages:
+        raise ValueError("Enter at least one page range.")
+    if len(pages) > MAX_EXPORT_PAGES:
+        raise ValueError(f"At most {MAX_EXPORT_PAGES} pages can be exported at once.")
+    for number, (lo, hi) in enumerate(pages, start=1):
+        if not (np.isfinite(lo) and np.isfinite(hi)) or lo >= hi:
+            raise ValueError(f"Page {number}: start must be less than end.")
+    return pages
+
+
+def output_full_spectrum_pages(
+    islat_ref: Any,
+    page_ranges: Sequence[Tuple[float, float]],
+    rows_per_page: Union[int, str, Sequence[int]],
+    rasterized: bool = False,
+    figure_width: Optional[float] = None,
+    panel_height: Optional[float] = None,
+    save_path: Optional[str] = None,
+) -> Optional[str]:
+    """Save a multi-page full-spectrum PDF and a companion parameters CSV.
+
+    Each page shows one ``(start, end)`` wavelength range of *page_ranges*
+    (rest frame, as the plots show it), split into stacked panels;
+    *rows_per_page* gives the panel count for every page or for each page
+    (see :func:`rows_per_page_list`).  The pages look like *Output Full
+    Spectrum*: the GUI's toggle state (saved / atomic lines, summed model,
+    observed data, Y axis), wavelength marks, theme and the session's export
+    size (*panel_height* x rows sets each page's height when given).
+
+    Parameters
+    ----------
+    islat_ref : iSLAT
+        The running iSLAT instance.
+    page_ranges : sequence of (float, float)
+        One wavelength range per page, in page order.
+    rows_per_page : int, str or sequence of int
+        Panels per page.
+    rasterized : bool
+        Rasterize the axes (smaller PDFs for very dense data).
+    figure_width, panel_height : float, optional
+        Override the session's export width / per-panel height (inches).
+    save_path : str, optional
+        Write here instead of asking with a file dialog.
+
+    Returns the saved path, or ``None`` when the dialog was cancelled.
+
+    Raises
+    ------
+    ValueError
+        For invalid page ranges, rows per page or export size, before
+        anything is drawn or saved.
+    """
+    pages = validate_page_ranges(page_ranges)
+    rows = rows_per_page_list(rows_per_page, len(pages))
+    inputs = _output_inputs(islat_ref, figure_width, panel_height)
+
+    if save_path is None:
+        save_path = ask_save_path(
+            PAGES_DIALOG_TITLE, "pdf",
+            initialfile=default_save_name(islat_ref, PAGES_FILE_SUFFIX, "pdf"),
+            initialdir=absolute_data_files_path,
+        )
+        if not save_path:
+            return None
+
+    def _figures() -> Iterator[Any]:
+        # One page at a time: each is closed once the next one is asked for.
+        for page_range, n_rows in zip(pages, rows):
+            plot = _render_output_plot(inputs, page_range, n_rows)
+            try:
+                yield plot.fig
+            finally:
+                plot.close()
+
+    save_figures_to_pdf(_figures(), save_path, rasterized=rasterized)
+    _write_output_parameters(islat_ref, save_path)
+    notify_user(islat_ref, PAGES_MESSAGE.format(pages=len(pages), path=save_path))
+    return save_path
+
+
+# ----------------------------------------------------------------------
+# Shared by output_full_spectrum and output_full_spectrum_pages
+# ----------------------------------------------------------------------
+def _output_inputs(
+    islat_ref: Any,
+    figure_width: Optional[float] = None,
+    panel_height: Optional[float] = None,
+) -> SimpleNamespace:
+    """What the full-spectrum PDF exports draw from: the data, the GUI's toggle state, theme, export size and overlays.
+
+    Raises ``ValueError`` for an invalid *figure_width* / *panel_height*.
+    """
     # Use in-memory data instead of re-reading the CSV from disk.
     # Delegate the stellar RV correction to MoleculeDict so the formula lives in one place.
     wave_obs = np.array(islat_ref.wave_data_original, copy=True)
@@ -1949,25 +2171,49 @@ def output_full_spectrum(
     if ts.get("atomic_lines", False):
         atomic_lines_df = load_atomic_lines()
 
-    # Create standalone plot - uses BasePlot._ensure_figure (non-pyplot MplFigure)
-    standalone_kwargs = dict(
-        wave_data=wave,
-        flux_data=flux,
-        molecules=islat_ref.molecules_dict,
-        line_list=line_list_df,
-        atomic_lines=atomic_lines_df,
-        figsize=(DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT),
-        wave_data_obs=wave_obs,
-        **toggle_state_display_kwargs(ts),
+    return SimpleNamespace(
+        wave=wave, flux=flux, wave_obs=wave_obs, molecules=islat_ref.molecules_dict,
+        toggle_state=ts, theme=theme, export_settings=export_settings,
+        line_list=line_list_df, atomic_lines=atomic_lines_df,
     )
-    if theme is not None:
-        standalone_kwargs["theme"] = theme
-    # Respect the GUI's wavelength range so the saved figure matches
-    # what is shown on screen rather than always spanning all data.
-    mol_range = getattr(islat_ref.molecules_dict, '_global_wavelength_range', None)
-    if mol_range is not None:
-        standalone_kwargs["xlim_range"] = (float(mol_range[0]), float(mol_range[1]))
-    # Respect the GUI's panel count.
+
+
+def _render_output_plot(
+    inputs: SimpleNamespace,
+    xlim_range: Optional[Tuple[float, float]] = None,
+    n_panels: Optional[int] = None,
+) -> FullSpectrumPlot:
+    """Build, size and render one standalone export figure from :func:`_output_inputs`; the caller closes it."""
+    # Uses BasePlot._ensure_figure (non-pyplot MplFigure).
+    kwargs: Dict[str, Any] = dict(
+        wave_data=inputs.wave,
+        flux_data=inputs.flux,
+        molecules=inputs.molecules,
+        line_list=inputs.line_list,
+        atomic_lines=inputs.atomic_lines,
+        figsize=(DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT),
+        wave_data_obs=inputs.wave_obs,
+        **toggle_state_display_kwargs(inputs.toggle_state),
+    )
+    if inputs.theme is not None:
+        kwargs["theme"] = inputs.theme
+    if xlim_range is not None:
+        kwargs["xlim_range"] = xlim_range
+    if n_panels is not None:
+        kwargs["n_panels"] = n_panels
+    plot = FullSpectrumPlot(**kwargs)
+    try:
+        apply_export_size(plot, inputs.export_settings)
+        plot.generate_plot()
+        draw_toggle_state_markers(plot.fig, inputs.toggle_state)
+    except Exception:
+        plot.close()
+        raise
+    return plot
+
+
+def live_panel_count(islat_ref: Any) -> Optional[int]:
+    """The Full Spectrum view's current panel count, or ``None`` before it was shown."""
     try:
         gui_plot = islat_ref.GUI.plot
         live_fsv = getattr(gui_plot, '_full_spectrum_view', None) or getattr(gui_plot, 'current_view', None)
@@ -1976,38 +2222,17 @@ def output_full_spectrum(
             # ThreePanelView / direct attribute
             live_plot = getattr(gui_plot, '_plot', None)
         if live_plot is not None:
-            n_panels = getattr(live_plot, 'n_panels', None)
-            if n_panels is not None:
-                standalone_kwargs["n_panels"] = n_panels
+            return getattr(live_plot, 'n_panels', None)
     except Exception:
         pass
-    standalone = FullSpectrumPlot(**standalone_kwargs)
-    apply_export_size(standalone, export_settings)
-    standalone.generate_plot()
-    draw_toggle_state_markers(standalone.fig, ts)
+    return None
 
-    save_path = ask_save_path(
-        FullSpectrumView.SAVE_DIALOG_TITLE, "pdf",
-        initialfile=default_save_name(islat_ref, FullSpectrumView.SAVE_FILE_SUFFIX, "pdf"),
-        initialdir=absolute_data_files_path,
-    )
-    if not save_path:
-        standalone.close()
-        return None
 
-    try:
-        save_figure_file(standalone.fig, save_path, file_format="pdf", rasterized=rasterized)
-    finally:
-        standalone.close()
-
-    # Write companion parameters CSV
+def _write_output_parameters(islat_ref: Any, save_path: str) -> None:
+    """Write the companion ``<name>_parameters.csv`` next to an exported PDF."""
     file_name = str(Path(save_path).with_suffix("")) + "_parameters.csv"
     ifh.write_molecules_to_csv(
         islat_ref.molecules_dict,
         file_path=dirname(save_path),
         file_name=file_name,
     )
-
-    notify_user(islat_ref, FullSpectrumView.SAVE_MESSAGE.format(path=save_path))
-
-    return save_path

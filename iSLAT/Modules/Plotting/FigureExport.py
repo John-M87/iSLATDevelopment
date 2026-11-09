@@ -4,12 +4,14 @@ FigureExport - write a matplotlib figure to a file the same way everywhere.
 Every save path in the plotting package (the views' *Save Figure*, the
 full-spectrum PDF export and :meth:`BasePlot.save`) goes through
 :func:`save_figure_file`, so they share one rule for the resolution, the
-file format and rasterizing.
+file format and rasterizing.  :func:`save_figures_to_pdf` writes several
+figures as the pages of one PDF with the same rules.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, Optional, Union
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
@@ -77,12 +79,60 @@ def save_figure_file(
     kwargs = {"bbox_inches": bbox_inches, "dpi": dpi or default_export_dpi(), **savefig_kwargs}
     if fmt:
         kwargs["format"] = fmt
+    with _rasterized_axes(fig, rasterized):
+        fig.savefig(str(path), **kwargs)
+    return str(path)
+
+
+def save_figures_to_pdf(
+    figures: Iterable["Figure"],
+    path: Union[str, Path],
+    *,
+    dpi: Optional[int] = None,
+    rasterized: bool = False,
+    bbox_inches: Any = "tight",
+    **savefig_kwargs: Any,
+) -> int:
+    """Write *figures* as the pages of one PDF at *path*; return the page count.
+
+    *figures* may be a generator that builds each page when asked for it
+    (and closes it when asked for the next), so only one page is in memory
+    at a time.  The pages use the same resolution and rasterizing rules as
+    :func:`save_figure_file`.  If a page fails, the partly written file is
+    removed and the error raised.
+    """
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    kwargs = {"bbox_inches": bbox_inches, "dpi": dpi or default_export_dpi(), **savefig_kwargs}
+    iterator = iter(figures)
+    pages = 0
+    try:
+        with PdfPages(str(path)) as pdf:
+            for fig in iterator:
+                with _rasterized_axes(fig, rasterized):
+                    pdf.savefig(fig, **kwargs)
+                pages += 1
+    except BaseException:
+        try:
+            Path(str(path)).unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
+    return pages
+
+
+@contextmanager
+def _rasterized_axes(fig: "Figure", rasterized: bool) -> Iterator[None]:
+    """Rasterize every axes of *fig* inside the block (when *rasterized*), then restore each one's setting."""
     previous = [(ax, ax.get_rasterized()) for ax in fig.axes] if rasterized else []
     try:
         for ax, _was in previous:
             ax.set_rasterized(True)
-        fig.savefig(str(path), **kwargs)
+        yield
     finally:
         for ax, was in previous:
             ax.set_rasterized(was)
-    return str(path)

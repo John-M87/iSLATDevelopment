@@ -23,7 +23,9 @@ from iSLAT.Modules.GUI.Widgets.BulkApplyWindow import BulkApplyPropertiesWindow
 from iSLAT.Modules.GUI.Widgets.IntensitySettingsWindow import IntensitySettingsWindow
 from iSLAT.Modules.GUI.Widgets.LineSearchWindow import LineSearchWindow
 from iSLAT.Modules.GUI.PlotGridWindow import PlotGridWindow
-from iSLAT.Modules.GUI.FullSpectrumWindow import FullSpectrumWindow
+from iSLAT.Modules.GUI.FullSpectrumWindow import (
+    FullSpectrumWindow, parse_panel_ranges, DATA_START_KEYWORD, DATA_END_KEYWORD,
+)
 from iSLAT.Modules.FileHandling.iSLATFileHandling import (
     write_molecules_to_csv, generate_csv, line_saves_file_path,
     line_saves_file_name, example_data_folder_path, read_from_user_csv
@@ -31,7 +33,9 @@ from iSLAT.Modules.FileHandling.iSLATFileHandling import (
 from iSLAT.Modules.FileHandling import save_folder_path, models_folder_path
 from iSLAT.Modules.Plotting.FullSpectrumView import (
     output_full_spectrum, get_export_settings, set_export_settings,
-    DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT,
+    DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT, DEFAULT_ROWS_PER_PAGE,
+    output_full_spectrum_pages, get_page_settings, set_page_settings,
+    rows_per_page_list, validate_page_ranges, observed_wavelength_bounds, live_panel_count,
 )
 from iSLAT.Modules.DataProcessing.Slabfit import SlabModel
 from iSLAT.Modules.DataProcessing.BatchFittingService import BatchFittingService
@@ -307,7 +311,7 @@ class TopBar(ResizableFrame):
             "Line de-Blender":                  "Fit and de-blend overlapping\nspectral lines in the selection.",
             "Subtract Models from Data":        "Subtract all visible molecule models\nfrom the observed spectrum.",
             output_fs_label: "Save the full combined model spectrum\nto a file, matching the current overlay,\nobserved-data and Y-axis settings.",
-            "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth and per-panel height.\nRemembered for this session.",
+            "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth and per-panel height, and export\na multi-page PDF (one page per range).\nRemembered for this session.",
             display_fs_label:                   "Open the full combined model spectrum\nin a separate window.",
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
             center_view_label:                  "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: " + shortcut_text("open_center_view_dialog"),
@@ -1741,13 +1745,19 @@ class TopBar(ResizableFrame):
     def open_full_spectrum_export_settings(self) -> None:
         """Open the full-spectrum export settings dialog.
 
-        Sets the exported figure width and per-panel height (inches).  Blank
+        Sets the exported figure width and per-panel height (inches), and
+        exports multi-page PDFs: one page per wavelength range (one ``start
+        end`` per line, as in the Display Full Spectrum window's *Ranges*
+        dialog), each split into the given number of rows.  Blank size
         fields use the defaults.  The values are remembered for the session
         and used by *Output Full Spectrum* (Ctrl+Shift+F) and the Full
         Spectrum view's *Save Figure…*.
         """
         pm = self.main_plot
         current = get_export_settings(pm)
+        page_settings = get_page_settings(pm)
+        default_pages = f"{DATA_START_KEYWORD} {DATA_END_KEYWORD}"
+        default_rows = str(live_panel_count(self.islat) or DEFAULT_ROWS_PER_PAGE)
 
         win = tk.Toplevel(self)
         win.title("Full Spectrum Export Settings")
@@ -1767,20 +1777,45 @@ class TopBar(ResizableFrame):
 
         tk.Label(win, text="Panel height (in):").grid(row=1, column=0, sticky="w", **pad)
         height_var = tk.StringVar(value=_fmt(current["panel_height"]))
-        tk.Entry(win, textvariable=height_var, width=10).grid(row=1, column=1, sticky="w", **pad)
+        height_entry = tk.Entry(win, textvariable=height_var, width=10)
+        height_entry.grid(row=1, column=1, sticky="w", **pad)
         tk.Label(win, text=f"blank = auto ({DEFAULT_EXPORT_HEIGHT:g} in total)", fg="gray").grid(
             row=1, column=2, sticky="w", **pad)
 
         tk.Label(
             win,
             text=("Figure height = panel height \u00d7 number of panels.\n"
-                  "Used by Output Full Spectrum and the Full Spectrum view's\n"
-                  "Save Figure; remembered for this session."),
+                  "Used by Output Full Spectrum, the multi-page PDF below and\n"
+                  "the Full Spectrum view's Save Figure; remembered for this session."),
             justify="left", fg="gray",
         ).grid(row=2, column=0, columnspan=3, sticky="w", **pad)
 
-        status = tk.Label(win, text="", fg="red")
-        status.grid(row=3, column=0, columnspan=3, sticky="w", **pad)
+        # --- Multi-page PDF: one page per wavelength range ---------------
+        pages_frame = ttk.LabelFrame(win, text="Multi-page PDF")
+        pages_frame.grid(row=3, column=0, columnspan=3, sticky="ew", **pad)
+        tk.Label(
+            pages_frame,
+            text=("One page per line: start end (um), as in the Display Full\n"
+                  "Spectrum window's Ranges dialog. "
+                  f"{DATA_START_KEYWORD} / {DATA_END_KEYWORD} = first /\n"
+                  "last observed data point. Each page is split into rows."),
+            justify="left", fg="gray",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
+        pages_text = tk.Text(pages_frame, width=34, height=6, undo=True)
+        pages_text.grid(row=1, column=0, columnspan=3, sticky="ew", **pad)
+        pages_text.insert("1.0", page_settings["pages"] or default_pages)
+        tk.Label(pages_frame, text="Rows per page:").grid(row=2, column=0, sticky="w", **pad)
+        rows_var = tk.StringVar(value=page_settings["rows"] or default_rows)
+        rows_entry = tk.Entry(pages_frame, textvariable=rows_var, width=14)
+        rows_entry.grid(row=2, column=1, sticky="w", **pad)
+        tk.Label(pages_frame, text="one number, or one per page (8, 8, 6)", fg="gray").grid(
+            row=2, column=2, sticky="w", **pad)
+
+        status = tk.Label(win, text="", fg="red", justify="left")
+        status.grid(row=4, column=0, columnspan=3, sticky="w", **pad)
+
+        def _pages_entry() -> str:
+            return pages_text.get("1.0", "end").strip()
 
         def _store() -> bool:
             try:
@@ -1788,6 +1823,8 @@ class TopBar(ResizableFrame):
             except ValueError as exc:
                 status.config(text=str(exc))
                 return False
+            # The page entries are remembered as typed and checked on export.
+            set_page_settings(pm, _pages_entry(), rows_var.get())
             return True
 
         def _save(*_):
@@ -1799,18 +1836,39 @@ class TopBar(ResizableFrame):
                 win.destroy()
                 output_full_spectrum(self.islat)
 
+        def _export_pages():
+            if not _store():
+                return
+            try:
+                pages = validate_page_ranges(
+                    parse_panel_ranges(_pages_entry(), *observed_wavelength_bounds(self.islat)))
+                rows = rows_per_page_list(rows_var.get(), len(pages))
+            except ValueError as exc:
+                status.config(text=f"Multi-page PDF: {exc}")
+                return
+            win.destroy()
+            output_full_spectrum_pages(self.islat, pages, rows)
+
         def _reset():
             width_var.set("")
             height_var.set("")
+            pages_text.delete("1.0", "end")
+            pages_text.insert("1.0", default_pages)
+            rows_var.set(default_rows)
             status.config(text="")
 
+        ttk.Button(pages_frame, text="Export Multi-page PDF...", command=_export_pages).grid(
+            row=3, column=0, columnspan=3, sticky="w", **pad)
+
         btns = tk.Frame(win)
-        btns.grid(row=4, column=0, columnspan=3, pady=8)
+        btns.grid(row=5, column=0, columnspan=3, pady=8)
         ttk.Button(btns, text="Export\u2026", command=_export).pack(side="left", padx=4)
         ttk.Button(btns, text="Save", command=_save).pack(side="left", padx=4)
         ttk.Button(btns, text="Reset to Defaults", command=_reset).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=4)
 
-        win.bind("<Return>", _save)
+        # Return saves from the size and rows fields; in the page ranges it starts a new line.
+        for entry in (width_entry, height_entry, rows_entry):
+            entry.bind("<Return>", _save)
         win.bind("<Escape>", lambda _e: win.destroy())
         width_entry.focus_set()

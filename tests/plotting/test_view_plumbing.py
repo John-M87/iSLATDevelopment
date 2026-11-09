@@ -3,6 +3,7 @@
 save-figure template, data-field messages and the shared debug logger."""
 
 import importlib
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -14,7 +15,9 @@ import pandas as pd
 import pytest
 from matplotlib.figure import Figure
 
-from iSLAT.Modules.Plotting.FigureExport import default_export_dpi, export_format, save_figure_file
+from iSLAT.Modules.Plotting.FigureExport import (
+    default_export_dpi, export_format, save_figure_file, save_figures_to_pdf,
+)
 from iSLAT.Modules.Plotting.PlotView import PlotView, default_save_name, notify_user
 from iSLAT.Modules.Plotting.ToggleMixin import ToggleMixin
 
@@ -496,6 +499,53 @@ class TestFigureExport:
         fig.axes = []
         save_figure_file(fig, "out.png", file_format="pdf", dpi=50, format="svg")
         assert fig.savefig.call_args.kwargs == {"bbox_inches": "tight", "dpi": 50, "format": "svg"}
+
+
+def _pdf_page_count(path):
+    """Pages in a PDF written by matplotlib (its page objects, not the page tree)."""
+    return len(re.findall(rb"/Type\s*/Page[^s]", path.read_bytes()))
+
+
+def _recorded_pages(events, count, fail_after=None):
+    """Figures built on demand, logging when each is built and closed; raises after page *fail_after*."""
+    for number in range(count):
+        if number == fail_after:
+            raise RuntimeError(f"page {number} failed")
+        events.append(f"build {number}")
+        try:
+            yield _figure()
+        finally:
+            events.append(f"close {number}")
+
+
+class TestMultiPagePdf:
+    def test_one_page_per_figure(self, tmp_path):
+        out = tmp_path / "pages.pdf"
+        assert save_figures_to_pdf([_figure(), _figure(), _figure()], out, dpi=20) == 3
+        assert _pdf_page_count(out) == 3
+
+    def test_pages_are_built_one_at_a_time(self, tmp_path):
+        events = []
+        save_figures_to_pdf(_recorded_pages(events, 3), tmp_path / "pages.pdf", dpi=20)
+        assert events == ["build 0", "close 0", "build 1", "close 1", "build 2", "close 2"]
+
+    def test_rasterizing_does_not_stick_to_the_figures(self, tmp_path):
+        fig = _figure()
+        save_figures_to_pdf([fig], tmp_path / "pages.pdf", dpi=20, rasterized=True)
+        assert not fig.axes[0].get_rasterized()
+
+    def test_failed_page_removes_the_file_and_closes_the_last_page(self, tmp_path):
+        out = tmp_path / "broken.pdf"
+        events = []
+        with pytest.raises(RuntimeError):
+            save_figures_to_pdf(_recorded_pages(events, 3, fail_after=1), out, dpi=20)
+        assert not out.exists()
+        assert events == ["build 0", "close 0"]
+
+    def test_no_figures_writes_no_file(self, tmp_path):
+        out = tmp_path / "empty.pdf"
+        assert save_figures_to_pdf([], out) == 0
+        assert not out.exists()
 
 
 # ======================================================================

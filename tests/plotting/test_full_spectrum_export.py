@@ -15,10 +15,17 @@ from iSLAT.Modules.Plotting import FullSpectrumPlot
 from iSLAT.Modules.Plotting.FullSpectrumView import (
     DEFAULT_EXPORT_HEIGHT,
     DEFAULT_EXPORT_WIDTH,
+    MAX_EXPORT_PAGES,
+    MAX_ROWS_PER_PAGE,
     apply_export_size,
     get_export_settings,
+    get_page_settings,
+    observed_wavelength_bounds,
+    rows_per_page_list,
     set_export_settings,
+    set_page_settings,
     toggle_state_display_kwargs,
+    validate_page_ranges,
 )
 
 from tests.plotting import make_atomic_lines
@@ -289,6 +296,7 @@ def recorder(monkeypatch):
             if self.fig is not None:
                 snapshots.append({
                     "size": tuple(self.fig.get_size_inches()),
+                    "xlims": [ax.get_xlim() for ax in self.subplots.values()],
                     "ylims": [ax.get_ylim() for ax in self.subplots.values()],
                     "observed": [a.get_visible() for a in _tagged(self, "_islat_observed")],
                     "summed": [a.get_visible() for a in _tagged(self, "_islat_summed")],
@@ -387,3 +395,143 @@ class TestViewSaveFigure:
         assert snap["observed"] and not any(snap["observed"])
         assert all(yl == (0.0, 9.0) for yl in snap["ylims"])
         assert snap["size"] == pytest.approx((30.0, 1.5 * len(snap["ylims"])))
+
+
+# ======================================================================
+# Multi-page PDF export
+# ======================================================================
+def _pdf_page_count(path):
+    """Pages in a PDF written by matplotlib (its page objects, not the page tree)."""
+    import re
+    return len(re.findall(rb"/Type\s*/Page[^s]", path.read_bytes()))
+
+
+class TestRowsPerPage:
+    @pytest.mark.parametrize("value, expected", [
+        (8, [8, 8, 8]),
+        ("8", [8, 8, 8]),
+        (" 4, 6 10 ", [4, 6, 10]),
+        ("4;6;10", [4, 6, 10]),
+        ([4, 6, 10], [4, 6, 10]),
+        ((5.0,), [5, 5, 5]),
+    ])
+    def test_one_count_for_every_page_or_one_per_page(self, value, expected):
+        assert rows_per_page_list(value, 3) == expected
+
+    @pytest.mark.parametrize("value", [
+        "", "abc", "2.5", "0", str(MAX_ROWS_PER_PAGE + 1), [1, 2], "1, 2, 3, 4", [3, None, 3],
+    ])
+    def test_invalid_counts_raise(self, value):
+        with pytest.raises(ValueError):
+            rows_per_page_list(value, 3)
+
+
+class TestPageRanges:
+    def test_valid_ranges_become_floats(self):
+        assert validate_page_ranges([(5, 6), ("7", 8.5)]) == [(5.0, 6.0), (7.0, 8.5)]
+
+    @pytest.mark.parametrize("ranges", [
+        [], [(6.0, 5.0)], [(5.0, 5.0)], [(5.0, float("nan"))],
+        [(i, i + 1) for i in range(MAX_EXPORT_PAGES + 1)],
+    ])
+    def test_invalid_ranges_raise(self, ranges):
+        with pytest.raises(ValueError):
+            validate_page_ranges(ranges)
+
+    def test_observed_bounds_are_rest_frame_and_skip_nans(self):
+        class _Shifted(_Molecules):
+            def apply_stellar_rv(self, wave):
+                return np.asarray(wave) - 0.5
+
+        wave = np.array([np.nan, 5.0, 6.0, 11.0, np.nan])
+        islat = SimpleNamespace(wave_data_original=wave, molecules_dict=_Shifted())
+        assert observed_wavelength_bounds(islat) == (4.5, 10.5)
+        assert observed_wavelength_bounds(SimpleNamespace()) == (None, None)
+
+
+class TestPageSettings:
+    def test_unset_entries_are_blank(self):
+        assert get_page_settings(SimpleNamespace()) == {"pages": "", "rows": ""}
+        assert get_page_settings(None) == {"pages": "", "rows": ""}
+        assert get_page_settings(MagicMock()) == {"pages": "", "rows": ""}
+
+    def test_round_trip_keeps_the_entries_as_typed(self):
+        pm = SimpleNamespace()
+        set_page_settings(pm, "DATASTART 8\n8 DATAEND", " 8, 6 ")
+        assert get_page_settings(pm) == {"pages": "DATASTART 8\n8 DATAEND", "rows": " 8, 6 "}
+        set_page_settings(pm, None, None)
+        assert get_page_settings(pm) == {"pages": "", "rows": ""}
+
+
+class TestOutputFullSpectrumPages:
+    PAGES = [(5.0, 7.0), (7.0, 9.0), (9.0, 11.0)]
+
+    @pytest.fixture
+    def save_to(self, monkeypatch, tmp_path):
+        target = tmp_path / "pages.pdf"
+        import tkinter.filedialog
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: str(target))
+        return target
+
+    @pytest.fixture
+    def parameter_files(self, recorder, monkeypatch):
+        """Where the companion parameter CSVs were written (after the recorder's no-op)."""
+        written = []
+        monkeypatch.setattr(fsv.ifh, "write_molecules_to_csv",
+                            lambda _mols, file_path, file_name: written.append(file_name))
+        return written
+
+    def test_one_page_per_range_split_into_rows(self, recorder, save_to):
+        islat = TestOutputFullSpectrum._islat(_toggle_state())
+        assert fsv.output_full_spectrum_pages(islat, self.PAGES, 4) == str(save_to)
+        assert _pdf_page_count(save_to) == 3
+        assert [len(snap["xlims"]) for snap in recorder] == [4, 4, 4]
+        for snap, (lo, hi) in zip(recorder, self.PAGES):
+            assert snap["xlims"][0][0] == pytest.approx(lo)
+            assert snap["xlims"][-1][1] == pytest.approx(hi)
+
+    def test_rows_per_page_list(self, recorder, save_to):
+        fsv.output_full_spectrum_pages(TestOutputFullSpectrum._islat(_toggle_state()), self.PAGES, "2, 3, 5")
+        assert [len(snap["xlims"]) for snap in recorder] == [2, 3, 5]
+
+    def test_pages_follow_toggles_and_panel_height(self, recorder, save_to):
+        islat = TestOutputFullSpectrum._islat(
+            _toggle_state(observed=False, y_autoscale=False, y_limits=(0.0, 9.0)),
+            {"width": 30.0, "panel_height": 1.5},
+        )
+        fsv.output_full_spectrum_pages(islat, self.PAGES[:2], [2, 4])
+        assert [snap["size"] for snap in recorder] == [pytest.approx((30.0, 3.0)), pytest.approx((30.0, 6.0))]
+        for snap in recorder:
+            assert snap["observed"] and not any(snap["observed"])
+            assert all(yl == (0.0, 9.0) for yl in snap["ylims"])
+
+    def test_writes_parameters_and_reports(self, recorder, save_to, parameter_files):
+        islat = TestOutputFullSpectrum._islat(_toggle_state())
+        fsv.output_full_spectrum_pages(islat, self.PAGES, 2)
+        assert parameter_files == [str(save_to.with_suffix("")) + "_parameters.csv"]
+        islat.GUI.data_field.insert_text.assert_called_once()
+        assert "(3 pages)" in islat.GUI.data_field.insert_text.call_args.args[0]
+
+    def test_given_path_skips_the_dialog(self, recorder, monkeypatch, tmp_path):
+        import tkinter.filedialog
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename",
+                            lambda **_k: pytest.fail("the dialog was opened"))
+        out = tmp_path / "given.pdf"
+        islat = TestOutputFullSpectrum._islat(_toggle_state())
+        assert fsv.output_full_spectrum_pages(islat, self.PAGES[:1], 3, save_path=str(out)) == str(out)
+        assert _pdf_page_count(out) == 1
+
+    def test_cancelled_dialog_draws_nothing(self, recorder, monkeypatch):
+        import tkinter.filedialog
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: "")
+        assert fsv.output_full_spectrum_pages(TestOutputFullSpectrum._islat(_toggle_state()), self.PAGES, 2) is None
+        assert recorder == []
+
+    @pytest.mark.parametrize("pages, rows", [([], 2), ([(7.0, 5.0)], 2), (PAGES, "2, 3")])
+    def test_invalid_input_raises_before_the_dialog(self, recorder, monkeypatch, pages, rows):
+        import tkinter.filedialog
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename",
+                            lambda **_k: pytest.fail("the dialog was opened"))
+        with pytest.raises(ValueError):
+            fsv.output_full_spectrum_pages(TestOutputFullSpectrum._islat(_toggle_state()), pages, rows)
+        assert recorder == []
