@@ -4,6 +4,11 @@ from matplotlib.widgets import SpanSelector
 from typing import Optional, Tuple, Callable, Dict, Any
 from .KeyBindings import ActionRegistry, TEXT_INPUT_CLASSES, chord_from_event
 
+#: How far (pixels) another animated artist's clip box must stay from a
+#: selector's axes for the selector to treat its background as clean
+#: (covers Agg's pixel rounding of clip boxes and copied regions).
+BACKGROUND_CLEARANCE_PX = 2.0
+
 class SingleDrawSpanSelector(SpanSelector):
     """SpanSelector that does not render the whole figure twice on each draw.
 
@@ -17,9 +22,13 @@ class SingleDrawSpanSelector(SpanSelector):
     ``draw_event`` the canvas holds that just-rendered frame, which can be
     copied as the background directly.  Every other case uses the stock
     behaviour: no draw event (the buffer may hold blitted artists), saving,
-    non-animated selector artists, or other animated artists in the figure
-    (another widget's draw callback may already have drawn them into the
-    buffer).
+    non-animated selector artists, or other visible animated artists that
+    can reach this selector's axes (another widget's draw callback may
+    already have drawn them into the buffer there).  Animated artists
+    clipped to a box clear of these axes are allowed: in a stacked figure
+    with one selector per panel (the Full Spectrum view) the other panels'
+    selectors would otherwise make every selector re-render the figure, so
+    a visible span cost one extra render per panel on every draw.
 
     The background is the axes as last drawn, so it is only blitted while the
     axes limits and size are still the ones it was captured at.  Other views
@@ -92,7 +101,7 @@ class SingleDrawSpanSelector(SpanSelector):
         self.extents = (lo, hi)
 
     def _frame_is_clean_background(self, event) -> bool:
-        """True when the canvas holds a fresh render with no animated artist drawn on it."""
+        """True when the canvas holds a fresh render with no animated artist drawn into these axes."""
         if not self.useblit or self.canvas.is_saving():
             return False
         if getattr(event, "name", None) != "draw_event":
@@ -102,7 +111,23 @@ class SingleDrawSpanSelector(SpanSelector):
         get_animated = getattr(self, "_get_animated_artists", None)
         if get_animated is None:
             return False
-        return not get_animated()
+        return not any(self._may_have_drawn_here(artist) for artist in get_animated())
+
+    def _may_have_drawn_here(self, artist: Any) -> bool:
+        """Whether another animated *artist* may already be in the buffer inside these axes.
+
+        A hidden artist draws nothing.  A visible one clipped to a box clear
+        of these axes (another panel's selector in a stacked figure) cannot
+        reach them; anything else might.
+        """
+        if not artist.get_visible():
+            return False
+        if artist.axes is self.ax or not artist.get_clip_on():
+            return True
+        clip = artist.get_clip_box()
+        if clip is None:
+            return True
+        return bool(clip.overlaps(self.ax.bbox.padded(BACKGROUND_CLEARANCE_PX)))
 
 class InteractionHandler:
     """Mouse/keyboard events - handles all user interactions with plots"""

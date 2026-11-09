@@ -15,6 +15,7 @@ The concrete plot class is determined by :meth:`_create_plot`, which subclasses 
 """
 from __future__ import annotations
 
+import os
 import warnings
 from os.path import dirname
 from pathlib import Path
@@ -42,9 +43,10 @@ from .SampleStackPlot import (
     SampleStackPlot, normalize_stack_layout, normalize_stack_model_mode,
 )
 from .ArtistTags import (
-    OBSERVED_TAG, SUMMED_TAG,
+    ATOMIC_LINE_TAG, OBSERVED_TAG, SAVED_LINE_TAG, SUMMED_TAG, iter_tagged,
     remove_molecule_lines, remove_tagged, set_molecule_visible, set_tagged_visible,
 )
+from .SavedLineLabels import get_saved_line_label_settings
 from .BasePlot import BasePlot
 from .ModelOverlays import draw_summed_fill, plot_molecule_trace
 from .Theming import apply_canvas_theme
@@ -165,6 +167,12 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
 
         # Line data (for saved-line annotations in interactive mode)
         self.line_data: Optional[pd.DataFrame] = None
+
+        # What the last drawing of each overlay ("atomic_lines" /
+        # "saved_lines") made and depended on: (artists, key).  Lets
+        # sync_toggle_state keep overlays that are still current
+        # (see _overlay_drawn).
+        self._overlay_records: Dict[str, Tuple[Tuple[Any, ...], Any]] = {}
 
         # Stack Sample Spectra: cached spectra / parameter sets and the
         # sample configuration they were built from.
@@ -853,10 +861,19 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             yield idx, idx, ax
 
     def _install_span_selectors(self) -> None:
-        """Add span selectors (see :meth:`_span_selector_axes`) for click-to-inspect."""
+        """Add span selectors (see :meth:`_span_selector_axes`) for click-to-inspect.
+
+        :class:`SingleDrawSpanSelector`: with stock selectors a span left
+        visible in one panel made every selector re-render the figure on
+        each draw (one extra render per panel).
+        """
+        # Imported here: importing the GUI package while the Plotting package
+        # is still initialising is circular (GUI -> FullSpectrumWindow -> this module).
+        from ..GUI.InteractionHandler import SingleDrawSpanSelector
+
         self.span_selectors.clear()
         for key, idx, ax in self._span_selector_axes():
-            span = SpanSelector(
+            span = SingleDrawSpanSelector(
                 ax,
                 lambda xmin, xmax, i=idx: self._on_span_select(xmin, xmax, i),
                 direction="horizontal",
@@ -1419,8 +1436,9 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             self._plot.legend_strategy.update_visibility(legend_ax, visible)
 
     # sync_toggle_state, toggle_legend, toggle_summed_spectrum, toggle_saved_lines
-    # and toggle_atomic_lines come from ToggleMixin (which re-reads the saved
-    # lines from disk on every sync and shows / hides the legend through
+    # and toggle_atomic_lines come from ToggleMixin (which keeps overlays that
+    # _overlay_drawn reports as current, re-reads the saved lines from disk
+    # before drawing them, and shows / hides the legend through
     # _set_legend_visibility above).
 
     def toggle_residuals(self, show: bool) -> None:
@@ -1458,6 +1476,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             self.line_data["line"] = [""] * len(self.line_data)
 
         self._plot.plot_saved_lines(self.line_data, show_labels=self._saved_line_labels_visible())
+        self._record_overlay("saved_lines")
 
     def _saved_line_labels_visible(self) -> bool:
         """Whether this view labels its saved lines (its :attr:`VIEW_NAME` toggle)."""
@@ -1466,6 +1485,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
 
     def _remove_saved_line_artists(self) -> None:
         """Remove all ``_islat_saved_line`` artists."""
+        self._overlay_records.pop("saved_lines", None)
         if self._plot is not None:
             self._plot.remove_saved_lines()
 
@@ -1480,11 +1500,80 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
 
         atomic_data = load_atomic_lines()
         self._plot.plot_atomic_lines(atomic_data)
+        self._record_overlay("atomic_lines")
 
     def _remove_atomic_line_artists(self) -> None:
         """Remove all ``_islat_atomic_line`` artists."""
+        self._overlay_records.pop("atomic_lines", None)
         if self._plot is not None:
             self._plot.remove_atomic_lines()
+
+    # ------------------------------------------------------------------
+    # Overlay bookkeeping: sync_toggle_state keeps overlays that are current
+    # ------------------------------------------------------------------
+    _OVERLAY_TAGS = {"atomic_lines": ATOMIC_LINE_TAG, "saved_lines": SAVED_LINE_TAG}
+
+    def _overlay_artists(self, kind: str) -> Tuple[Any, ...]:
+        """The *kind* overlay's lines, collections and texts on every panel axes."""
+        tag = self._OVERLAY_TAGS[kind]
+        return tuple(
+            artist
+            for ax in self._iter_toggle_axes()
+            for artist in iter_tagged(ax, tag, lines=True, collections=True, texts=True)
+        )
+
+    def _overlay_key(self, kind: str) -> Any:
+        """Everything besides its artists that the *kind* overlay was drawn from.
+
+        The panels' x / y limits (the markers are drawn for the panel range
+        and the labels at the top of the y range they were drawn at), plus
+        the atomic-line table, or the saved-line file and label settings.
+        """
+        limits = tuple(
+            (tuple(ax.get_xlim()), tuple(ax.get_ylim())) for ax in self._iter_toggle_axes()
+        )
+        if kind == "atomic_lines":
+            return limits, id(load_atomic_lines())
+        return (
+            limits, self._saved_line_file_signature(),
+            get_saved_line_label_settings(), self._saved_line_labels_visible(),
+        )
+
+    def _saved_line_file_signature(self) -> Any:
+        """``(path, mtime, size)`` of the input line list, so an edited or replaced list is redrawn."""
+        path = getattr(self._islat, "input_line_list", None)
+        if not path:
+            return None
+        try:
+            stat = os.stat(path)
+        except (OSError, TypeError, ValueError):
+            return (str(path), None, None)
+        return (str(path), stat.st_mtime_ns, stat.st_size)
+
+    def _record_overlay(self, kind: str) -> None:
+        """Remember the artists the *kind* overlay drew and what they were drawn from."""
+        self._overlay_records[kind] = (self._overlay_artists(kind), self._overlay_key(kind))
+
+    def _overlay_drawn(self, kind: str) -> Optional[bool]:
+        """Whether the *kind* overlay is on the panels and still current (ToggleMixin hook).
+
+        ``True`` when exactly the artists of its last drawing are on the axes
+        and nothing they were drawn from changed, so :meth:`sync_toggle_state`
+        leaves them alone instead of re-creating them (and re-reading the
+        saved-line file).  ``False`` when none are on the axes.  ``None``
+        (remove, then redraw) otherwise: the line list was edited, the
+        panels' limits moved, a plot update removed some of them, ...
+        """
+        current = self._overlay_artists(kind)
+        record = self._overlay_records.get(kind)
+        if record is not None:
+            artists, key = record
+            if ({id(a) for a in current} == {id(a) for a in artists}
+                    and key == self._overlay_key(kind)):
+                return True
+            # Stale: drop it, so it does not keep a replaced figure's artists alive.
+            del self._overlay_records[kind]
+        return None if current else False
 
     # ==================================================================
     # File output: PlotView.save_figure saves what _build_export_figure builds

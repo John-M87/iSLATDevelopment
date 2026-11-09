@@ -154,6 +154,112 @@ class TestFallsBackToStock:
         assert _background(span) is None
 
 
+def _make_stacked(selector_cls, visible=(1,), n=4, hspace=0.4):
+    """Stacked panels with one selector each, as the Full Spectrum view installs them."""
+    fig = Figure(figsize=(6, 6), dpi=80)
+    FigureCanvasAgg(fig)
+    axs = fig.subplots(n, 1, gridspec_kw={"hspace": hspace})
+    x = np.linspace(10.0, 20.0, 500)
+    spans = []
+    for ax in axs:
+        ax.plot(x, np.sin(x))
+        spans.append(selector_cls(
+            ax, lambda lo, hi: None,
+            direction="horizontal",
+            useblit=True,
+            props=dict(alpha=0.3, facecolor="lime"),
+            interactive=True,
+            drag_from_anywhere=True,
+        ))
+    fig.canvas.draw()
+    for i in visible:
+        spans[i].extents = (12.0 + i, 13.0 + i)
+        spans[i].set_visible(True)
+    return fig, axs, spans
+
+
+class TestStackedPanels:
+    """One selector per panel: the other panels' (animated) selectors are not in the way."""
+
+    def test_span_in_one_panel_renders_figure_once(self):
+        fig, _axs, _spans = _make_stacked(SingleDrawSpanSelector)
+        renders = _count_renders(fig)
+        fig.canvas.draw()
+        assert len(renders) == 1
+
+    def test_stock_selectors_render_once_more_per_panel(self):
+        # The cost this removes: every stock selector re-renders the figure.
+        fig, axs, _spans = _make_stacked(SpanSelector)
+        renders = _count_renders(fig)
+        fig.canvas.draw()
+        assert len(renders) == 1 + len(axs)
+
+    def test_frame_matches_stock(self):
+        # Keep the selectors referenced: the canvas holds their callbacks weakly.
+        fig_a, _, spans_a = _make_stacked(SpanSelector, visible=(1, 3))
+        fig_b, _, spans_b = _make_stacked(SingleDrawSpanSelector, visible=(1, 3))
+        fig_a.canvas.draw()
+        fig_b.canvas.draw()
+        np.testing.assert_array_equal(_frame(fig_a), _frame(fig_b))
+        assert spans_a and spans_b
+
+    def test_backgrounds_match_stock(self):
+        fig_a, _, spans_a = _make_stacked(SpanSelector, visible=(1, 3))
+        fig_b, _, spans_b = _make_stacked(SingleDrawSpanSelector, visible=(1, 3))
+        fig_a.canvas.draw()
+        fig_b.canvas.draw()
+        for span_a, span_b in zip(spans_a, spans_b):
+            np.testing.assert_array_equal(np.asarray(_background(span_a)), np.asarray(_background(span_b)))
+
+    def test_backgrounds_exclude_every_span(self):
+        fig_hidden, _, spans_hidden = _make_stacked(SingleDrawSpanSelector, visible=())
+        fig_b, _, spans_b = _make_stacked(SingleDrawSpanSelector, visible=(0, 1, 2, 3))
+        fig_hidden.canvas.draw()
+        fig_b.canvas.draw()
+        for hidden, shown in zip(spans_hidden, spans_b):
+            np.testing.assert_array_equal(np.asarray(_background(hidden)), np.asarray(_background(shown)))
+
+    def test_touching_panels_fall_back_and_match_stock(self):
+        # Without a gap the neighbours' clip boxes reach this axes: re-render as stock does.
+        fig_a, _, spans_a = _make_stacked(SpanSelector, hspace=0.0)
+        fig_b, _, spans_b = _make_stacked(SingleDrawSpanSelector, hspace=0.0)
+        renders = _count_renders(fig_b)
+        fig_a.canvas.draw()
+        fig_b.canvas.draw()
+        assert len(renders) > 1
+        np.testing.assert_array_equal(_frame(fig_a), _frame(fig_b))
+        assert spans_a and spans_b
+
+    def test_overlapping_axes_fall_back(self):
+        fig = Figure(figsize=(6, 4), dpi=80)
+        FigureCanvasAgg(fig)
+        spans = []
+        for rect in ([0.1, 0.1, 0.8, 0.5], [0.1, 0.4, 0.8, 0.5]):
+            ax = fig.add_axes(rect)
+            spans.append(SingleDrawSpanSelector(ax, lambda lo, hi: None, "horizontal",
+                                                useblit=True, interactive=True))
+        fig.canvas.draw()
+        spans[0].extents = (0.2, 0.4)
+        spans[0].set_visible(True)
+        renders = _count_renders(fig)
+        fig.canvas.draw()
+        assert len(renders) == 2  # the other axes' selector cannot trust its background
+
+    def test_unclipped_animated_artist_on_another_axes_falls_back(self):
+        fig, axs, _spans = _make_stacked(SingleDrawSpanSelector, visible=())
+        axs[2].text(15.0, 0.0, "unclipped", animated=True, clip_on=False)
+        renders = _count_renders(fig)
+        fig.canvas.draw()
+        assert len(renders) == 1 + len(axs)
+
+    def test_hidden_animated_artist_on_same_axes_does_not_fall_back(self):
+        fig, ax, _span = _make(SingleDrawSpanSelector)
+        ax.plot([10.0, 20.0], [0.0, 0.5], animated=True, visible=False)
+        renders = _count_renders(fig)
+        fig.canvas.draw()
+        assert len(renders) == 1
+
+
 def test_interaction_handler_uses_single_draw_selector():
     h = InteractionHandler.__new__(InteractionHandler)
     fig = Figure()
