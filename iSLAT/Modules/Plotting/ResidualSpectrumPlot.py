@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.text import Text
 from matplotlib.ticker import MaxNLocator
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
@@ -126,6 +127,9 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
     figsize : tuple, optional
         Figure size.  Auto-scaled if *None*.
     """
+    #: The global chi^2 box from :meth:`_render_global_chi2_annotation`, if drawn.
+    _global_chi2_text: Optional[Text] = None
+
     def __init__(
         self,
         wave_data: np.ndarray,
@@ -573,7 +577,7 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
             alpha=0.85,
             linewidth=0.8,
         )
-        self.fig.text(
+        self._global_chi2_text = self.fig.text(
             0.52, 0.01, chi2_text,
             ha="center", va="bottom",
             fontsize=10, color=fg,
@@ -842,9 +846,13 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
             self._render_per_panel_chi2(ax_spec, xmin, xmax, fg)
 
         # --- 5. Update global chi^2 annotation -----------------------
-        # Clear the stale figure-level text then delegate to the helper.
-        for txt in self.fig.texts[:]:
-            txt.remove()
+        # Remove only the stale chi^2 box: fig.texts also lists the
+        # supxlabel / supylabel, and removing those leaves the figure
+        # holding detached labels the layout engine cannot measure.
+        old_chi2_text = self._global_chi2_text
+        self._global_chi2_text = None
+        if old_chi2_text is not None and old_chi2_text in self.fig.texts:
+            old_chi2_text.remove()
         self._render_global_chi2_annotation(fg)
 
     # ------------------------------------------------------------------

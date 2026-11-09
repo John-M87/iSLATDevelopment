@@ -165,6 +165,29 @@ class TestResidualPlot:
         assert all(t.get_window_extent(r).y1 < lowest for t in texts)
         plot.close()
 
+    def test_inplace_update_keeps_the_supylabel(self, molecules):
+        """Regression: the in-place update removed every figure text, the supylabel included.
+
+        The figure kept the detached label as ``_supylabel``, so the next draw
+        failed in the layout engine (``'NoneType' object has no attribute 'dpi'``).
+        """
+        plot = _rsp(molecules)
+        fig = _drawn(plot)
+        plot.update_panels_inplace()
+        fig.canvas.draw()
+        assert fig._supylabel in fig.texts
+        chi2_boxes = [t for t in fig.texts if t is not fig._supylabel and t.get_text()]
+        assert len(chi2_boxes) == 1
+        plot.close()
+
+    def test_detached_supylabel_does_not_break_the_layout(self, molecules):
+        plot = _rsp(molecules)
+        fig = _drawn(plot)
+        fig._supylabel.remove()
+        fig.set_size_inches(FIG_SIZE[0] / 2, FIG_SIZE[1])  # make the layout measure again
+        fig.canvas.draw()
+        plot.close()
+
 
 class TestSpacingAndCaching:
     def test_hspace_is_a_minimum_gap(self, molecules):

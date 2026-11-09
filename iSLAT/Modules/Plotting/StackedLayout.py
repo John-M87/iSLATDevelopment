@@ -97,7 +97,10 @@ class _StackedPanelLayout(LayoutEngine):
         # the top or bottom edge they sit nearer to.
         left_edge = pad
         sup = fig._supylabel
-        if sup is not None and sup.get_visible() and sup.get_text() and sup.get_in_layout():
+        # A supylabel taken off the figure (``remove()``) stays referenced
+        # here but has no figure to measure against: skip it.
+        if (sup is not None and sup.get_figure(root=False) is fig
+                and sup.get_visible() and sup.get_text() and sup.get_in_layout()):
             # Shift it so its drawn extent starts at the pad (it is rotated
             # and aligned around its x, so x alone does not say where it ends).
             ext = sup.get_window_extent(renderer)
