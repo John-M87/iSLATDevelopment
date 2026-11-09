@@ -246,6 +246,42 @@ class TestResidualSpectrumPlot:
         assert n_fit == 0
         assert chi2_raw == 0.0
 
+    def test_compute_chi2_skips_unusable_points(self):
+        """Regression: one NaN flux (the CITau NEW2 spectrum's last pixel) made the global chi^2 NaN."""
+        wave, flux, err = make_wave_flux(n=100)
+        model = flux + 0.01
+        rsp = ResidualSpectrumPlot(wave, flux, model, error_data=err, n_panels=2)
+        fit_mask = np.ones(len(wave), dtype=bool)
+        clean_raw, clean_adj, _ = rsp._compute_chi2(
+            flux[4:], model[4:], model[4:], err[4:], err[4:], fit_mask[4:],
+        )
+
+        bad_flux, bad_model, bad_err = flux.copy(), model.copy(), err.copy()
+        bad_flux[0] = np.nan
+        bad_model[1] = np.inf
+        bad_err[2] = 0.0
+        bad_err[3] = np.nan
+        chi2_raw, chi2_adj, n_fit = rsp._compute_chi2(
+            bad_flux, bad_model, bad_model, bad_err, bad_err, fit_mask,
+        )
+        assert n_fit == len(wave) - 4
+        assert chi2_raw == pytest.approx(clean_raw)
+        assert chi2_adj == pytest.approx(clean_adj)
+
+    def test_global_chi2_annotation_with_nan_flux(self):
+        wave, flux, err = make_wave_flux(n=200)
+        model = flux + 0.01
+        flux = flux.copy()
+        flux[-1] = np.nan
+        rsp = ResidualSpectrumPlot(wave, flux, model, error_data=err, n_panels=3)
+        rsp.generate_plot()
+        texts = [t.get_text() for t in rsp.fig.texts if t is not rsp.fig._supylabel]
+        texts += [t.get_text() for ax_spec, _ in rsp.subplots.values() for t in ax_spec.texts]
+        assert texts
+        assert not any("nan" in t for t in texts)
+        assert any(f"dof}} = {len(wave) - 1}" in t for t in texts)  # the NaN point is not counted
+        rsp.close()
+
     def test_format_chi2_annotation_simple(self):
         wave, flux, err = make_wave_flux(n=50)
         model = flux.copy()

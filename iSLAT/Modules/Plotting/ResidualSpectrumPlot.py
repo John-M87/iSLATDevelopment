@@ -310,24 +310,32 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
         chi2_adj : float
             chi^2 computed with *model_adj* and *error_adj*.
         n_fit : int
-            Number of True entries in *fit_mask*.
+            Number of points used: those in *fit_mask* whose flux, models
+            and errors are finite, with errors > 0.  Other points (e.g. a
+            NaN flux at a spectrum edge) would make the sums NaN, so both
+            chi^2 values leave them out.
         """
-        n_fit = int(np.sum(fit_mask))
-        if n_fit == 0 or error_adj is None:
-            return 0.0, 0.0, n_fit
+        if error_adj is None:
+            return 0.0, 0.0, int(np.sum(fit_mask))
+
+        with np.errstate(invalid="ignore"):  # NaN errors compare False below
+            use = (
+                np.asarray(fit_mask, dtype=bool)
+                & np.isfinite(flux) & np.isfinite(model_raw) & np.isfinite(model_adj)
+                & np.isfinite(error_adj) & (error_adj > 0)
+            )
+            if error_raw is not None:
+                use &= np.isfinite(error_raw) & (error_raw > 0)
+        n_fit = int(np.sum(use))
+        if n_fit == 0:
+            return 0.0, 0.0, 0
 
         chi2_raw = (
-            float(np.sum(
-                ((flux[fit_mask] - model_raw[fit_mask])
-                 / error_raw[fit_mask]) ** 2
-            ))
+            float(np.sum(((flux[use] - model_raw[use]) / error_raw[use]) ** 2))
             if error_raw is not None
             else 0.0
         )
-        chi2_adj = float(np.sum(
-            ((flux[fit_mask] - model_adj[fit_mask])
-             / error_adj[fit_mask]) ** 2
-        ))
+        chi2_adj = float(np.sum(((flux[use] - model_adj[use]) / error_adj[use]) ** 2))
         return chi2_raw, chi2_adj, n_fit
 
     def _format_chi2_annotation(
