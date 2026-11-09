@@ -411,6 +411,13 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
             self._current_selection = ctrl_sel
             self._needs_refresh = True
 
+        if self._initialised and self._shown_frame_is_current():
+            # Unchanged while hidden: re-pack the canvas (it keeps its last frame) without redrawing.
+            self._register_control_fields()
+            self._connect_pick_event()
+            self._show_canvas()
+            return
+
         if not self._initialised or self._needs_refresh:
             self._build_plot()
             self._initialised = True
@@ -450,6 +457,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
 
     def deactivate(self) -> None:
         """Disconnect the pick event, then unregister controls and unpack the canvas."""
+        self._remember_shown_frame()
         self._disconnect_pick_event()
         super().deactivate()
 

@@ -1022,8 +1022,34 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     # ==================================================================
     # PlotView lifecycle
     # ==================================================================
+    #: The current selection is only handed on from here, never drawn.
+    _DISPLAY_IGNORED_STATE = frozenset({"current_selection"})
+
+    def _display_inputs(self):
+        """Adds the saved-line file and label settings and the atomic-line table (the overlays)."""
+        values, objects = super()._display_inputs()
+        values = values + (
+            self._saved_line_file_signature(),
+            get_saved_line_label_settings(),
+            self._saved_line_labels_visible(),
+        )
+        return values, objects + (load_atomic_lines(),)
+
+    def deactivate(self) -> None:
+        """Remember what the panels show, then unregister the controls and unpack the canvas."""
+        self._remember_shown_frame()
+        super().deactivate()
+
     def activate(self, parent_frame: Any) -> None:
         self._parent_frame = parent_frame
+
+        if self._initialised and self._shown_frame_is_current():
+            # Nothing it draws changed while another view was shown: re-pack
+            # the canvas, which still holds its last frame, without
+            # re-syncing or redrawing.
+            self._show_canvas()
+            self._register_control_fields()
+            return
 
         if not self._initialised:
             # First activation - build the composed plot

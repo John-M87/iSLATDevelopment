@@ -163,6 +163,12 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
                 )
                 self._comparison_callback_registered = True
 
+        if self._shown_frame_is_current():
+            # Nothing it draws changed while another view was shown: the
+            # canvas still holds its last frame, so skip re-syncing the theme,
+            # overlays and selection, and the redraw they would cost.
+            return
+
         # Sync theme in case it changed while the other view was active.
         self.apply_theme(self._pm.theme)
 
@@ -179,6 +185,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
 
     def deactivate(self) -> None:
         """Hide the original canvas."""
+        self._remember_shown_frame()
         self._canvas.get_tk_widget().pack_forget()
 
         # Unregister all fields this view registered across all surfaces
@@ -518,6 +525,11 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         return getattr(self._islat, 'user_settings', {}).get(
             'line_threshold', 0.3,
         )
+
+    def _display_inputs(self):
+        """Adds the line-marker threshold, which re-activation re-runs the selection with."""
+        values, objects = super()._display_inputs()
+        return values + (self._get_line_threshold(),), objects
 
     def _get_all_active_molecules(self) -> List["Molecule"]:
         """Return the primary molecule followed by all comparison molecules.

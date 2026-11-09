@@ -165,6 +165,12 @@ class PopulationDiagramView(SpectrumPanelView, PopulationDiagramContextMixin):
         """Pack the population-diagram canvas into *parent_frame*."""
         self._parent_frame = parent_frame
 
+        if self._initialised and self._shown_frame_is_current():
+            # Unchanged while hidden: re-pack the canvas (it keeps its last frame) without redrawing.
+            self._register_control_fields()
+            self._show_canvas()
+            return
+
         if not self._initialised or self._needs_refresh:
             self._build_plot()
             self._initialised = True
@@ -182,6 +188,7 @@ class PopulationDiagramView(SpectrumPanelView, PopulationDiagramContextMixin):
 
     def deactivate(self) -> None:
         """Stop live all-molecules re-rendering, then unregister controls and unpack the canvas."""
+        self._remember_shown_frame()
         # Stop live all-molecules re-rendering while the view is hidden; the
         # plot is rebuilt on the next activate().
         if self._plot is not None and getattr(self._plot, "_all_molecules_mode", False):

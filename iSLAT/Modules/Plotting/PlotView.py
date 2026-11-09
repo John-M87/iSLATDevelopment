@@ -7,6 +7,7 @@ Every user-facing action (toggle molecule, toggle summed spectrum, toggle legend
 """
 from __future__ import annotations
 
+import copy
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -433,6 +434,14 @@ class PlotView(ABC):
     #: property returning the controller's canvas.
     _canvas: Optional["FigureCanvasTkAgg"] = None
 
+    #: What the view's last frame was drawn from when it was hidden
+    #: (see :meth:`_remember_shown_frame`), or ``None``.
+    _shown_inputs: Optional[Tuple[Any, Tuple[Any, ...]]] = None
+
+    #: ``toggle_state`` keys this view's picture does not depend on (a change
+    #: to them while it is hidden does not force a redraw).
+    _DISPLAY_IGNORED_STATE: frozenset = frozenset()
+
     def __init__(self, plot_manager: Any) -> None:
         """
         Parameters
@@ -471,6 +480,77 @@ class PlotView(ABC):
         The view should **not** destroy its resources - it may be reactivated later.
         """
         ...
+
+    # ------------------------------------------------------------------
+    # Re-activation without a redraw
+    # ------------------------------------------------------------------
+    def _display_inputs(self) -> Tuple[Tuple[Any, ...], Tuple[Any, ...]]:
+        """``(values, objects)`` this view's picture is drawn from, besides its own figure.
+
+        *values* (compared with ``==``): the controller's toggle state
+        (minus :attr:`_DISPLAY_IGNORED_STATE`) and theme, the molecules'
+        visibility and colors, the active and comparison molecules.
+        *objects* (compared by identity): the fit result, the data arrays and
+        the molecule dict.  Subclasses add what else they draw from.
+        """
+        pm, islat = self._pm, self._islat
+        state = {k: v for k, v in dict(getattr(pm, "toggle_state", {}) or {}).items()
+                 if k not in self._DISPLAY_IGNORED_STATE}
+        mols = getattr(islat, "molecules_dict", None)
+        molecules = tuple(
+            (name, bool(getattr(mol, "is_visible", False)), str(getattr(mol, "color", None)))
+            for name, mol in (mols.items() if hasattr(mols, "items") else ())
+        )
+        comparison = tuple(getattr(m, "name", None) for m in (getattr(islat, "comparison_molecules", None) or ()))
+        values = (
+            copy.deepcopy(state),
+            copy.deepcopy(dict(getattr(pm, "theme", {}) or {})),
+            molecules,
+            getattr(getattr(islat, "active_molecule", None), "name", None),
+            comparison,
+        )
+        objects = (
+            getattr(pm, "fit_result", None),
+            getattr(islat, "wave_data", None),
+            getattr(islat, "flux_data", None),
+            getattr(islat, "err_data", None),
+            mols,
+        )
+        return values, objects
+
+    def _remember_shown_frame(self) -> None:
+        """Remember what the view's last frame was drawn from (call when hiding the view)."""
+        try:
+            self._shown_inputs = self._display_inputs()
+        except Exception:
+            self._shown_inputs = None
+
+    def _shown_frame_is_current(self) -> bool:
+        """Whether the canvas still shows what re-activating the view would draw.
+
+        True when nothing it is drawn from changed while it was hidden: it is
+        not marked for a refresh, its figure was not modified since its last
+        draw (``Figure.stale``) and :meth:`_display_inputs` are what
+        :meth:`_remember_shown_frame` saw.  Tk keeps a hidden canvas's image
+        and re-packing it at the same size does not redraw it (a new size
+        redraws through the resize), so activation can then skip re-syncing
+        and redrawing.  Each remembered state is used once.
+        """
+        shown, self._shown_inputs = self._shown_inputs, None
+        if shown is None or self._needs_refresh:
+            return False
+        try:
+            canvas, fig = self.get_canvas(), self.get_figure()
+        except Exception:
+            return False
+        if canvas is None or fig is None or getattr(canvas, "figure", None) is not fig or fig.stale:
+            return False
+        try:
+            values, objects = self._display_inputs()
+            return (bool(values == shown[0]) and len(objects) == len(shown[1])
+                    and all(a is b for a, b in zip(objects, shown[1])))
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # Core rendering
