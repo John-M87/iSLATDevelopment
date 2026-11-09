@@ -2,25 +2,26 @@
 
 The window embeds its own :class:`FullSpectrumView` (the same view used for
 the in-GUI Full Spectrum mode) so it offers the same options: number of
-panels, wavelength range, data-density X scaling, residual sub-panels,
-atomic / saved lines, summed model, observed data, legend and the Y-axis
-policy - plus explicit per-panel wavelength ranges and its own wavelength
-marks.  Those settings live in a window-local copy of the GUI's toggle
-state, so changing them here never affects the main window.  All controls
-sit on one compact bar above the plot.
+panels, wavelength range, explicit per-panel ranges, data-density X
+scaling, residual sub-panels, atomic / saved lines, summed model, observed
+data, legend and the Y-axis policy - plus its own wavelength marks.  Those
+settings live in a window-local copy of the GUI's toggle state, so changing
+them here never affects the main window.  All controls sit on one compact
+bar above the plot.
 """
 import copy
-import re
 import tkinter as tk
 from tkinter import ttk
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 from iSLAT.Modules.Plotting.FullSpectrumView import FullSpectrumView, SKIP_GAPS_TIP
 from iSLAT.Modules.Plotting.PlotView import WavelengthMarkerStoreMixin, normalize_y_data_sync
-from iSLAT.Modules.Plotting.StackedSpectralPanel import StackedSpectralPanel
+from .PanelRanges import (  # noqa: F401 - parse_panel_ranges & co. are re-exported
+    DATA_END_KEYWORD, DATA_START_KEYWORD, format_panel_ranges, parse_panel_ranges,
+)
 from .Tooltips import MenuToolTip
 from .YAxisDataSync import (
     Y_DATA_SYNC_MENU_LABEL, Y_DATA_SYNC_MENU_TIP,
@@ -66,64 +67,6 @@ def _apply_layout(
     plot._compute_panel_layout()
 
 
-#: Range keywords replaced by the first / last observed data point.
-DATA_START_KEYWORD = "DATASTART"
-DATA_END_KEYWORD = "DATAEND"
-_DATA_KEYWORDS = rf"(?:{DATA_START_KEYWORD}|{DATA_END_KEYWORD})"
-
-
-def parse_panel_ranges(
-    text: str,
-    data_start: Optional[float] = None,
-    data_end: Optional[float] = None,
-) -> List[Tuple[float, float]]:
-    """Parse one ``start end`` wavelength pair per line (blank and ``#`` lines are skipped).
-
-    The two numbers may be separated by spaces, a comma, ``-``, an en dash
-    or ``to``.  Either bound may be ``DATASTART`` or ``DATAEND``
-    (case-insensitive), replaced by *data_start* / *data_end* (the first /
-    last observed data point).  Raises ``ValueError`` naming the offending line.
-    """
-    keyword_values = {DATA_START_KEYWORD: data_start, DATA_END_KEYWORD: data_end}
-    ranges: List[Tuple[float, float]] = []
-    for lineno, raw in enumerate(text.splitlines(), start=1):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        cleaned = re.sub(r"\bto\b|[,;\u2013\u2014]", " ", line, flags=re.IGNORECASE)
-        cleaned = re.sub(r"(?<=[\d.])\s*-\s*(?=[\d.])", " ", cleaned)
-        cleaned = re.sub(rf"\b({_DATA_KEYWORDS})\s*-\s*", r"\1 ", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(rf"\s*-\s*({_DATA_KEYWORDS})\b", r" \1", cleaned, flags=re.IGNORECASE)
-        parts = cleaned.split()
-        if len(parts) != 2:
-            raise ValueError(f"Line {lineno}: expected 'start end', got '{raw.strip()}'.")
-        bounds = []
-        for part in parts:
-            keyword = part.upper()
-            if keyword in keyword_values:
-                value = keyword_values[keyword]
-                if value is None or not np.isfinite(value):
-                    raise ValueError(f"Line {lineno}: {keyword} needs observed data to be loaded.")
-                bounds.append(float(value))
-                continue
-            try:
-                bounds.append(float(part))
-            except ValueError:
-                raise ValueError(f"Line {lineno}: expected 'start end', got '{raw.strip()}'.") from None
-        lo, hi = bounds
-        if not (np.isfinite(lo) and np.isfinite(hi)) or lo >= hi:
-            raise ValueError(f"Line {lineno}: start must be less than end.")
-        ranges.append((lo, hi))
-    if not ranges:
-        raise ValueError("Enter at least one range.")
-    return ranges
-
-
-def format_panel_ranges(edges: Sequence[float], ends: Sequence[float]) -> str:
-    """Inverse of :func:`parse_panel_ranges` for the current panels."""
-    return "\n".join(f"{lo:.4f} {hi:.4f}" for lo, hi in zip(edges, ends))
-
-
 class _WindowPlotController(WavelengthMarkerStoreMixin):
     """Minimal stand-in for the GUI's ``iSLATPlot`` that gives the window its own
     toggle state and its own wavelength marks."""
@@ -154,29 +97,15 @@ class WindowFullSpectrumView(FullSpectrumView):
     def __init__(self, plot_manager: Any, initial_layout: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(plot_manager)
         self._initial_layout: Dict[str, Any] = dict(initial_layout or {})
-        #: Explicit per-panel ranges, re-applied to every plot this view builds.
-        self.panel_ranges: Optional[List[Tuple[float, float]]] = None
+        # The main view's explicit panel ranges, if any (see FullSpectrumView.set_panel_ranges).
+        self.panel_ranges = self._initial_layout.pop("panel_ranges", None)
 
     def _create_plot(self):
         plot = super()._create_plot()
         layout, self._initial_layout = self._initial_layout, {}
         if layout:
             _apply_layout(plot, **layout)
-        if self.panel_ranges:
-            plot.set_panel_ranges(self.panel_ranges)
         return plot
-
-    def set_panel_ranges(self, ranges: Optional[Sequence[Tuple[float, float]]]) -> None:
-        """Show one panel per ``(start, end)`` (any order, gaps allowed), or ``None`` for an even split.
-
-        Raises ``ValueError`` for an invalid range.
-        """
-        if self._plot is None:
-            return
-        validated = StackedSpectralPanel._validate_panel_ranges(ranges) if ranges is not None else None
-        self.panel_ranges = validated
-        self._plot.set_panel_ranges(validated)
-        self._regenerate_layout()
 
     def apply_layout(
         self,
@@ -190,8 +119,7 @@ class WindowFullSpectrumView(FullSpectrumView):
         """
         if self._plot is None:
             return
-        self.panel_ranges = None
-        self._plot.panel_ranges = None
+        self._drop_panel_ranges()
         _apply_layout(self._plot, n_panels, xlim_range, ymax_factor)
         self._regenerate_layout()
 
@@ -284,9 +212,14 @@ class FullSpectrumWindow(tk.Toplevel):
 
     @staticmethod
     def _initial_layout(gui_plot: Any, overrides: Dict[str, Any]) -> Dict[str, Any]:
-        """Panel count / range / Y margin of the main Full Spectrum view, then *overrides*."""
+        """Panel count / range / Y margin and explicit panel ranges of the main Full Spectrum view, then *overrides*.
+
+        A panel count or wavelength range in *overrides* replaces the main
+        view's explicit ranges.
+        """
         layout: Dict[str, Any] = {}
-        live = getattr(getattr(gui_plot, "_full_spectrum_view", None), "_plot", None)
+        main_view = getattr(gui_plot, "_full_spectrum_view", None)
+        live = getattr(main_view, "_plot", None)
         if live is not None:
             layout = {
                 "n_panels": getattr(live, "n_panels", None),
@@ -295,6 +228,12 @@ class FullSpectrumWindow(tk.Toplevel):
             }
             if None in layout["xlim_range"]:
                 layout.pop("xlim_range")
+        ranges = getattr(main_view, "panel_ranges", None)
+        if (
+            isinstance(ranges, (list, tuple)) and ranges
+            and overrides.get("n_panels") is None and overrides.get("xlim_range") is None
+        ):
+            layout["panel_ranges"] = [(float(lo), float(hi)) for lo, hi in ranges]
         for key in ("n_panels", "xlim_range", "ymax_factor"):
             if overrides.get(key) is not None:
                 layout[key] = overrides[key]
@@ -609,61 +548,14 @@ class FullSpectrumWindow(tk.Toplevel):
 
     def observed_data_bounds(self) -> Tuple[Optional[float], Optional[float]]:
         """First and last observed wavelength as plotted (RV-corrected), or ``(None, None)``."""
-        plot = self.view._plot
-        wave = getattr(plot, "wave_data", None) if plot is not None else None
-        if wave is None:
-            return None, None
-        wave = np.asarray(wave, dtype=float)
-        wave = wave[np.isfinite(wave)]
-        if wave.size == 0:
-            return None, None
-        return float(wave.min()), float(wave.max())
+        return self.view.observed_data_bounds()
 
     # ------------------------------------------------------------------
     # Dialogs
     # ------------------------------------------------------------------
     def open_panel_ranges_dialog(self) -> None:
-        """Edit explicit per-panel wavelength ranges, one ``start end`` per line."""
-        if self._reuse_dialog(self._ranges_dialog):
-            return
-        win, content = self._small_dialog("Panel Ranges")
-        self._ranges_dialog = win
-        ttk.Label(
-            content,
-            text="One panel per line: start end (\u03bcm).\n"
-                 "Panels are shown in this order; ranges may overlap or leave gaps.\n"
-                 f"{DATA_START_KEYWORD} / {DATA_END_KEYWORD} = first / last observed data point.",
-        ).pack(anchor="w")
-        text = tk.Text(content, width=34, height=10, undo=True)
-        text.pack(fill="both", expand=True, pady=(6, 4))
-        plot = self.view._plot
-        if plot is not None:
-            text.insert("1.0", format_panel_ranges(plot._panel_edges, plot._panel_ends))
-        error_var = tk.StringVar(master=win, value="")
-        ttk.Label(content, textvariable=error_var, foreground="red").pack(anchor="w")
-
-        def _apply():
-            try:
-                self.set_panel_ranges(parse_panel_ranges(text.get("1.0", "end"), *self.observed_data_bounds()))
-            except ValueError as exc:
-                error_var.set(str(exc))
-                return
-            error_var.set("")
-
-        def _even_split():
-            self.set_panel_ranges(None)
-            plot_now = self.view._plot
-            text.delete("1.0", "end")
-            if plot_now is not None:
-                text.insert("1.0", format_panel_ranges(plot_now._panel_edges, plot_now._panel_ends))
-            error_var.set("")
-
-        buttons = ttk.Frame(content)
-        buttons.pack(fill="x")
-        ttk.Button(buttons, text="Apply", command=_apply).pack(side="left")
-        ttk.Button(buttons, text="Even Split", command=_even_split).pack(side="left", padx=(4, 0))
-        ttk.Button(buttons, text="Close", command=win.destroy).pack(side="right")
-        text.focus_set()
+        """Edit explicit per-panel wavelength ranges, one ``start end`` per line (see :class:`PanelRangesDialog`)."""
+        self._ranges_dialog = self.view.open_panel_ranges_dialog(parent=self, on_change=self._after_change)
 
     def open_y_limits_dialog(self) -> None:
         """Small Min / Max dialog for pinning the Y axis."""

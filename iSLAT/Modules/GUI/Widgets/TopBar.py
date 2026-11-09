@@ -23,9 +23,8 @@ from iSLAT.Modules.GUI.Widgets.BulkApplyWindow import BulkApplyPropertiesWindow
 from iSLAT.Modules.GUI.Widgets.IntensitySettingsWindow import IntensitySettingsWindow
 from iSLAT.Modules.GUI.Widgets.LineSearchWindow import LineSearchWindow
 from iSLAT.Modules.GUI.PlotGridWindow import PlotGridWindow
-from iSLAT.Modules.GUI.FullSpectrumWindow import (
-    FullSpectrumWindow, parse_panel_ranges, DATA_START_KEYWORD, DATA_END_KEYWORD,
-)
+from iSLAT.Modules.GUI.FullSpectrumWindow import FullSpectrumWindow
+from iSLAT.Modules.GUI.PanelRanges import parse_panel_ranges, DATA_START_KEYWORD, DATA_END_KEYWORD
 from iSLAT.Modules.FileHandling.iSLATFileHandling import (
     write_molecules_to_csv, generate_csv, line_saves_file_path,
     line_saves_file_name, example_data_folder_path, read_from_user_csv

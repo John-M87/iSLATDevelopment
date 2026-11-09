@@ -373,6 +373,25 @@ class TestOutputFullSpectrum:
         monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: "")
         assert fsv.output_full_spectrum(self._islat(_toggle_state())) is None
 
+    def test_uses_the_views_panel_ranges(self, recorder, save_to):
+        # Views menu > Panel Ranges... on the Full Spectrum view: one panel per range.
+        ranges = [(9.0, 10.0), (5.5, 6.5)]
+        islat = self._islat(_toggle_state(), {"width": None, "panel_height": 2.0})
+        islat.GUI.plot._full_spectrum_view = SimpleNamespace(
+            panel_ranges=ranges, _plot=SimpleNamespace(n_panels=len(ranges)))
+        fsv.output_full_spectrum(islat)
+        (snap,) = recorder
+        assert snap["xlims"] == ranges
+        assert snap["size"][1] == pytest.approx(2.0 * len(ranges))
+
+    def test_even_split_without_panel_ranges(self, recorder, save_to):
+        islat = self._islat(_toggle_state())
+        islat.GUI.plot._full_spectrum_view = SimpleNamespace(panel_ranges=None, _plot=SimpleNamespace(n_panels=3))
+        fsv.output_full_spectrum(islat)
+        (snap,) = recorder
+        assert len(snap["xlims"]) == 3
+        assert snap["xlims"][0][0] == pytest.approx(WAVE[0]) and snap["xlims"][-1][1] == pytest.approx(WAVE[-1])
+
 
 class TestViewSaveFigure:
     @staticmethod
@@ -395,6 +414,14 @@ class TestViewSaveFigure:
         assert snap["observed"] and not any(snap["observed"])
         assert all(yl == (0.0, 9.0) for yl in snap["ylims"])
         assert snap["size"] == pytest.approx((30.0, 1.5 * len(snap["ylims"])))
+
+    def test_save_uses_the_panel_ranges(self, recorder, tmp_path):
+        view = self._view(_toggle_state())
+        ranges = [(8.0, 9.0), (5.0, 5.5), (10.0, 11.0)]
+        view.set_panel_ranges(ranges)       # before the view was first shown
+        assert view.save_figure(str(tmp_path / "view.pdf"))
+        (snap,) = recorder
+        assert snap["xlims"] == ranges
 
 
 # ======================================================================

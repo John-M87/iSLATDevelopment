@@ -6,6 +6,7 @@ This view **composes** a :class:`StackedSpectralPanel` subclass (by default a :c
 * Span selectors on every panel (click-to-inspect)
 * Dynamic overlay toggles (atomic / saved lines, summed spectrum)
 * *Stack Sample Spectra*: every spectrum of the sample, each with its own parameter set (:class:`SampleStackPlot`)
+* *Panel Ranges...*: an explicit wavelength range for each panel (:meth:`FullSpectrumView.set_panel_ranges`)
 * Canvas lifecycle management for the Tk GUI
 
 The view is generic: it can drive **any** :class:`StackedSpectralPanel` implementation that exposes the standard stacked-panel interface
@@ -21,7 +22,7 @@ import warnings
 from os.path import dirname
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -128,6 +129,16 @@ SKIP_GAPS_TIP: str = (
     "     no data are left out."
 )
 
+#: Views-menu label and tooltip of the *Panel Ranges* dialog (every stacked view).
+PANEL_RANGES_LABEL: str = "Panel Ranges\u2026"
+PANEL_RANGES_TIP: str = (
+    "Set the wavelength range of each panel:\n"
+    "one start end pair per line, shown in that\n"
+    "order; ranges may overlap or leave gaps.\n"
+    "Kept until 'Even Split', a new N Panels\n"
+    "or a new Plot Start / Plot Range."
+)
+
 class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     """
     Multi-panel full spectrum view backed by a :class:`StackedSpectralPanel`.
@@ -154,6 +165,11 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     #: Whether the view offers *Stack Sample Spectra* (subclasses with another plot turn it off).
     SUPPORTS_SAMPLE_STACK: bool = True
 
+    #: Tooltip of the control panel's *N Panels* entry.
+    N_PANELS_TIP: str = "Number of panels in the\nfull-spectrum stacked layout"
+    #: Key of the view's Plot Start / Plot Range binding on the control panel.
+    DISPLAY_RANGE_KEY: str = "_fsv_display_range"
+
     # Save dialog and message (see PlotView.save_figure).
     SAVE_DIALOG_TITLE: str = "Save Spectrum Output"
     SAVE_FILE_SUFFIX: Optional[str] = "full_output"
@@ -175,6 +191,11 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         # Line data (for saved-line annotations in interactive mode)
         self.line_data: Optional[pd.DataFrame] = None
 
+        # Explicit per-panel wavelength ranges (see set_panel_ranges), or
+        # None for the automatic split; every plot the view builds uses them.
+        self.panel_ranges: Optional[List[Tuple[float, float]]] = None
+        self._ranges_dialog: Any = None
+
         # What the last drawing of each overlay ("atomic_lines" /
         # "saved_lines") made and depended on: (artists, key).  Lets
         # sync_toggle_state keep overlays that are still current
@@ -194,11 +215,13 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         return 10
 
     def _set_n_panels(self, value):
+        """A new panel count; also ends explicit panel ranges (an even split again)."""
         if self._plot is None:
             return
         n = max(1, int(value))
-        if n == self._plot.n_panels:
+        if n == self._plot.n_panels and not self.panel_ranges:
             return
+        self._drop_panel_ranges()
         self._plot.n_panels = n
         self._plot._compute_panel_layout()
         # Full rebuild required because subplot grid changes
@@ -222,12 +245,127 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         return (0.0, 0.0)
 
     def _set_display_range(self, start, end):
+        """A new wavelength range (Plot Start / Plot Range); also ends explicit panel ranges."""
         if self._plot is None:
             return
+        self._drop_panel_ranges()
         self._plot._xlim_start = float(start)
         self._plot._xlim_end = float(end)
         self._plot._compute_panel_layout()
         self._regenerate_layout()
+
+    # --- Explicit per-panel ranges (Views menu > Panel Ranges...) --------
+    def set_panel_ranges(self, ranges: Optional[Sequence[Tuple[float, float]]]) -> None:
+        """Show one panel per ``(start, end)`` of *ranges*, or ``None`` for the automatic split.
+
+        The ranges may come in any order and overlap or leave gaps.  Every
+        plot the view builds keeps them (residuals, sample stack, data
+        refreshes, *Save Figure*) until they are cleared, replaced, or a new
+        panel count or wavelength range is set.  Clearing them splits their
+        overall span over the same number of panels.  Set before the first
+        render, they apply to it.
+
+        Raises ``ValueError`` for an invalid range; nothing changes then.
+        """
+        validated = StackedSpectralPanel._validate_panel_ranges(ranges) if ranges is not None else None
+        self.panel_ranges = validated
+        if self._plot is None:
+            return
+        self._plot.set_panel_ranges(validated)
+        self._regenerate_layout()
+        self._refresh_layout_controls()
+
+    def _drop_panel_ranges(self) -> None:
+        """Forget the explicit ranges before a new panel count / range (the caller recomputes the panels)."""
+        self.panel_ranges = None
+        if self._plot is not None:
+            self._plot.panel_ranges = None
+
+    def _apply_panel_ranges(self, plot: StackedSpectralPanel) -> StackedSpectralPanel:
+        """Give a newly built *plot* the explicit panel ranges, if any; returns *plot*."""
+        if self.panel_ranges:
+            plot.set_panel_ranges(self.panel_ranges)
+        return plot
+
+    def _new_plot(self) -> StackedSpectralPanel:
+        """:meth:`_create_plot` with the explicit panel ranges: how the view builds its live plot."""
+        return self._apply_panel_ranges(self._create_plot())
+
+    def _new_standalone_plot(self, *args: Any, **kwargs: Any) -> StackedSpectralPanel:
+        """:meth:`_create_standalone_plot` with the explicit panel ranges: how exports build their plot."""
+        return self._apply_panel_ranges(self._create_standalone_plot(*args, **kwargs))
+
+    def shown_panel_ranges(self) -> List[Tuple[float, float]]:
+        """The ``(start, end)`` of every panel shown, in order (empty before the first render)."""
+        if self._plot is None:
+            return []
+        return [(float(lo), float(hi)) for lo, hi in zip(self._plot._panel_edges, self._plot._panel_ends)]
+
+    def observed_data_bounds(self) -> Tuple[Optional[float], Optional[float]]:
+        """First and last observed wavelength as plotted (RV-corrected), or ``(None, None)``."""
+        wave = getattr(self._plot, "wave_data", None) if self._plot is not None else None
+        if wave is None:
+            return None, None
+        wave = np.asarray(wave, dtype=float)
+        wave = wave[np.isfinite(wave)]
+        if wave.size == 0:
+            return None, None
+        return float(wave.min()), float(wave.max())
+
+    def _refresh_layout_controls(self) -> None:
+        """Show the panel count and wavelength span in the control panel's N Panels / Plot Start / Plot Range."""
+        bus = getattr(self._pm, "control_bus", None)
+        if bus is None:
+            return
+        bus.refresh("n_panels", "control_panel")
+        bus.refresh(self.DISPLAY_RANGE_KEY, "control_panel")
+
+    def _dialog_parent(self) -> Any:
+        """The window holding the view (dialogs belong to it)."""
+        frame = self._parent_frame
+        if frame is not None and hasattr(frame, "winfo_toplevel"):
+            return frame.winfo_toplevel()
+        return getattr(self._islat, "root", None)
+
+    def open_panel_ranges_dialog(
+        self,
+        parent: Any = None,
+        on_change: Optional[Callable[[], None]] = None,
+    ) -> Any:
+        """Open the *Panel Ranges* dialog for this view (or raise the open one) and return it.
+
+        *parent* defaults to the window holding the view; *on_change* runs
+        after each change made from the dialog.  The dialog closes with the
+        view (see :meth:`deactivate`).
+        """
+        from iSLAT.Modules.GUI.PanelRanges import PanelRangesDialog, raise_dialog
+
+        if raise_dialog(self._ranges_dialog):
+            return self._ranges_dialog
+
+        def _set_ranges(ranges: Optional[List[Tuple[float, float]]]) -> None:
+            self.set_panel_ranges(ranges)
+            if on_change is not None:
+                on_change()
+
+        self._ranges_dialog = PanelRangesDialog(
+            parent if parent is not None else self._dialog_parent(),
+            title=f"{self.VIEW_NAME} Panel Ranges",
+            get_ranges=self.shown_panel_ranges,
+            set_ranges=_set_ranges,
+            data_bounds=self.observed_data_bounds,
+        )
+        return self._ranges_dialog
+
+    def _close_panel_ranges_dialog(self) -> None:
+        dialog, self._ranges_dialog = self._ranges_dialog, None
+        if dialog is None:
+            return
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except Exception:
+            pass
 
     def _get_data_density(self) -> bool:
         return self._pm.toggle_state.get("data_density", False)
@@ -731,7 +869,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         # Force a full teardown so the new figure replaces the old one
         old_fig = self.fig
         self.span_selectors.clear()
-        self._plot = self._create_plot()
+        self._plot = self._new_plot()
 
         # Restore the panel layout from the previous plot.
         if old_edges is not None and old_ends is not None:
@@ -771,7 +909,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         self.line_data = self._load_line_data()
 
         if self._plot is None:
-            self._plot = self._create_plot()
+            self._plot = self._new_plot()
             self._plot.generate_plot()
             self._install_span_selectors()
             return
@@ -800,7 +938,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             )
 
             self.span_selectors.clear()
-            self._plot = self._create_plot()
+            self._plot = self._new_plot()
 
             # Restore the panel layout from the previous plot so switching between FSP and RSP keeps the same wavelength ranges.
             if old_edges is not None and old_ends is not None:
@@ -1043,8 +1181,9 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         return values, objects + (load_atomic_lines(),)
 
     def deactivate(self) -> None:
-        """Remember what the panels show, then unregister the controls and unpack the canvas."""
+        """Remember what the panels show, close the Panel Ranges dialog, unregister the controls and unpack the canvas."""
         self._remember_shown_frame()
+        self._close_panel_ranges_dialog()
         super().deactivate()
 
     def activate(self, parent_frame: Any) -> None:
@@ -1061,7 +1200,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
 
         if not self._initialised:
             # First activation - build the composed plot
-            self._plot = self._create_plot()
+            self._plot = self._new_plot()
             self._plot.generate_plot()
             self._install_span_selectors()
             self._initialised = True
@@ -1090,6 +1229,12 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     def _register_control_fields(self) -> None:
         """Register this view's :class:`ControlField` objects on the :class:`ControlBus`.
 
+        Every stacked view gets the panel layout controls: *N Panels* and
+        the Plot Start / Plot Range binding on the control panel, and
+        *Panel Ranges...* first in its Views-menu section.  The view's own
+        Views-menu fields come from :meth:`_view_menu_fields`, which
+        subclasses override instead of this method.
+
         Called from :meth:`activate`.  Safe to call even when the bus is not
         yet wired (e.g. in lightweight test environments) - missing surfaces
         are silently ignored.
@@ -1098,29 +1243,42 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         if bus is None:
             return
 
-        from iSLAT.Modules.GUI.ControlField import (
-            DisplayRangeField, DropdownField, EntryField, ToggleField,
-        )
+        from iSLAT.Modules.GUI.ControlField import ActionField, DisplayRangeField, EntryField
 
         # First unregister any stale fields from a previous activation
         bus.unregister_owner(self)
 
-        # --- ControlPanel fields ---
         bus.register_many([
             EntryField(
                 "n_panels", "N Panels:", self._get_n_panels, self._set_n_panels,
-                datatype="int", width=5, owner=self,
-                tip="Number of panels in the\nfull-spectrum stacked layout",
+                datatype="int", width=5, owner=self, tip=self.N_PANELS_TIP,
             ),
             DisplayRangeField(
-                "_fsv_display_range",
+                self.DISPLAY_RANGE_KEY,
                 getter=self._get_display_range,
                 setter=self._set_display_range,
                 owner=self,
             ),
         ], "control_panel")
 
-        # --- Views menu toggles (view controls section) ---
+        bus.register_many([
+            ActionField(
+                "panel_ranges", PANEL_RANGES_LABEL,
+                command=self.open_panel_ranges_dialog,
+                owner=self,
+                tip=PANEL_RANGES_TIP,
+            ),
+            *self._view_menu_fields(),
+        ], "views_menu")
+
+    def _view_menu_fields(self) -> List[Any]:
+        """This view's own fields for its Views-menu section, after *Panel Ranges...*.
+
+        The Full Spectrum view: *Residuals*, *Data Density X-Scale* and, with
+        :attr:`SUPPORTS_SAMPLE_STACK`, the *Stack Sample Spectra* options.
+        """
+        from iSLAT.Modules.GUI.ControlField import DropdownField, ToggleField
+
         pm = self._pm
 
         def _residuals_getter() -> bool:
@@ -1130,7 +1288,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             if value != pm.toggle_state.get("show_residuals", False):
                 pm.toggle_residuals()
 
-        bus.register(
+        fields: List[Any] = [
             ToggleField(
                 "show_residuals", "Residuals",
                 getter=_residuals_getter,
@@ -1138,10 +1296,6 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                 owner=self,
                 tip=f"Toggle residual sub-panels on/off\nin full spectrum mode\nKeybind: {shortcut_text('toggle_residuals')}",
             ),
-            "views_menu",
-        )
-
-        bus.register(
             ToggleField(
                 "data_density", "Data Density X-Scale",
                 getter=self._get_data_density,
@@ -1153,13 +1307,11 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                     "ON:  equal data-point count per panel (DATA_DENSITY)."
                 ),
             ),
-            "views_menu",
-        )
-
-        #bus.register(self._skip_gaps_field(ToggleField), "views_menu")
+            #self._skip_gaps_field(ToggleField),
+        ]
 
         if self.SUPPORTS_SAMPLE_STACK:
-            bus.register_many([
+            fields += [
                 ToggleField(
                     "sample_stack", "Stack Sample Spectra",
                     getter=self._get_sample_stack,
@@ -1197,7 +1349,8 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                         "follow the control panel's visibility."
                     ),
                 ),
-            ], "views_menu")
+            ]
+        return fields
 
     def _skip_gaps_field(self, toggle_field_cls: Any) -> Any:
         """The *Skip Data Gaps* Views-menu toggle (shared with :class:`OpticalDepthView`)."""
@@ -1694,13 +1847,13 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
 
         It follows the toggle state (saved / atomic lines, observed data,
         summed model, Y-axis policy, wavelength marks), the live wavelength
-        range and panel count, and the session's export size.  The caller
-        closes it after saving.
+        range and panel count (or the explicit panel ranges), and the
+        session's export size.  The caller closes it after saving.
         """
         ts = self._pm.toggle_state
         wave, flux, wave_obs = self._load_spectrum_data()
         xlim_range, n_panels = self._export_range()
-        plot = self._create_standalone_plot(
+        plot = self._new_standalone_plot(
             wave, flux, wave_obs,
             line_list=self.line_data if ts.get("saved_lines", False) else None,
             atomic_lines=load_atomic_lines() if ts.get("atomic_lines", False) else None,
@@ -1764,6 +1917,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     # ==================================================================
     def destroy(self) -> None:
         """Permanently dispose of the full spectrum plot and canvas."""
+        self._close_panel_ranges_dialog()
         self._destroy_canvas()
         if self._plot is not None:
             self._plot.close()
@@ -1908,7 +2062,9 @@ def output_full_spectrum(
 
     The figure follows the GUI's toggle state (saved / atomic lines, summed
     model, observed data, Y auto-scale / manual limits) and is sized from the
-    session's export settings (see :func:`set_export_settings`).
+    session's export settings (see :func:`set_export_settings`).  It has the
+    Full Spectrum view's panel count, or its explicit panel ranges when set
+    (Views menu > *Panel Ranges...*).
 
     Parameters
     ----------
@@ -1930,7 +2086,9 @@ def output_full_spectrum(
     mol_range = getattr(islat_ref.molecules_dict, '_global_wavelength_range', None)
     if mol_range is not None:
         xlim_range = (float(mol_range[0]), float(mol_range[1]))
-    standalone = _render_output_plot(inputs, xlim_range, live_panel_count(islat_ref))
+    standalone = _render_output_plot(
+        inputs, xlim_range, live_panel_count(islat_ref), panel_ranges=live_panel_ranges(islat_ref),
+    )
 
     save_path = ask_save_path(
         FullSpectrumView.SAVE_DIALOG_TITLE, "pdf",
@@ -2182,8 +2340,13 @@ def _render_output_plot(
     inputs: SimpleNamespace,
     xlim_range: Optional[Tuple[float, float]] = None,
     n_panels: Optional[int] = None,
+    panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
 ) -> FullSpectrumPlot:
-    """Build, size and render one standalone export figure from :func:`_output_inputs`; the caller closes it."""
+    """Build, size and render one standalone export figure from :func:`_output_inputs`; the caller closes it.
+
+    *panel_ranges* (one ``(start, end)`` per panel) take the place of
+    *xlim_range* / *n_panels* when given.
+    """
     # Uses BasePlot._ensure_figure (non-pyplot MplFigure).
     kwargs: Dict[str, Any] = dict(
         wave_data=inputs.wave,
@@ -2201,6 +2364,8 @@ def _render_output_plot(
         kwargs["xlim_range"] = xlim_range
     if n_panels is not None:
         kwargs["n_panels"] = n_panels
+    if panel_ranges:
+        kwargs["panel_ranges"] = panel_ranges
     plot = FullSpectrumPlot(**kwargs)
     try:
         apply_export_size(plot, inputs.export_settings)
@@ -2226,6 +2391,16 @@ def live_panel_count(islat_ref: Any) -> Optional[int]:
     except Exception:
         pass
     return None
+
+
+def live_panel_ranges(islat_ref: Any) -> Optional[List[Tuple[float, float]]]:
+    """The Full Spectrum view's explicit panel ranges (see :meth:`FullSpectrumView.set_panel_ranges`), or ``None``."""
+    gui = getattr(islat_ref, "GUI", None)
+    view = getattr(getattr(gui, "plot", None), "_full_spectrum_view", None)
+    ranges = getattr(view, "panel_ranges", None)
+    if not isinstance(ranges, (list, tuple)) or not ranges:
+        return None
+    return [(float(lo), float(hi)) for lo, hi in ranges]
 
 
 def _write_output_parameters(islat_ref: Any, save_path: str) -> None:

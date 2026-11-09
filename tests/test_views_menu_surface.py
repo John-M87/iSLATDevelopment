@@ -16,7 +16,7 @@ matplotlib.use("Agg")
 
 import pytest
 
-from iSLAT.Modules.GUI.ControlField import DropdownField, EntryField, ToggleField
+from iSLAT.Modules.GUI.ControlField import ActionField, DropdownField, EntryField, ToggleField
 from iSLAT.Modules.GUI.ControlSurface import ControlBus
 
 
@@ -166,7 +166,7 @@ class TestViewsMenuSurface:
 
 class TestViewsRegisterOnTheMenu:
     def test_full_spectrum_view_toggles(self, menu):
-        from iSLAT.Modules.Plotting.FullSpectrumView import FullSpectrumView
+        from iSLAT.Modules.Plotting.FullSpectrumView import PANEL_RANGES_LABEL, FullSpectrumView
         bus = ControlBus()
         bus.register_surface("views_menu", _top_bar_module().ViewsMenuSurface(menu))
         pm = MagicMock()
@@ -178,11 +178,12 @@ class TestViewsRegisterOnTheMenu:
         n = len(STATIC)
         assert _entries(menu)[n:] == [
             ("separator", None), ("command", "Full Spectrum Controls"),
+            ("command", PANEL_RANGES_LABEL),
             ("checkbutton", "Residuals"), ("checkbutton", "Data Density X-Scale"),
             ("checkbutton", "Stack Sample Spectra"),
             ("cascade", "Stack Layout"), ("cascade", "Stack Models"),
         ]
-        assert _checked(menu, n + 2) and not _checked(menu, n + 3) and not _checked(menu, n + 4)
+        assert _checked(menu, n + 3) and not _checked(menu, n + 4) and not _checked(menu, n + 5)
 
         view.deactivate()
         assert _entries(menu) == STATIC
@@ -241,3 +242,21 @@ class TestDropdownMenuEntry:
         assert len(menu.winfo_children()) == 1
         surf.unregister_owner(view)
         assert menu.winfo_children() == []
+
+
+class TestActionMenuEntry:
+    def test_action_is_a_command_that_runs_on_invoke(self, menu, surface):
+        surf, tips = surface
+        opened = []
+
+        def open_dialog():
+            opened.append(True)
+
+        surf.register(ActionField("ranges", "Ranges", command=open_dialog, owner=_View(), tip="ranges tip"))
+        idx = menu.index("end")
+        assert (menu.type(idx), menu.entrycget(idx, "label")) == ("command", "Ranges")
+        assert menu.entrycget(idx, "state") == "normal"      # unlike the section header
+        menu.invoke(idx)
+        assert opened == [True]
+        surf.refresh_all()                                   # nothing to re-read
+        assert tips["Ranges"] == "ranges tip"

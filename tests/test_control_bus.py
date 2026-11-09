@@ -10,6 +10,7 @@ import pytest
 from unittest.mock import MagicMock, call
 
 from iSLAT.Modules.GUI.ControlField import (
+    ActionField,
     ControlField,
     ToggleField,
     EntryField,
@@ -258,6 +259,65 @@ class TestDropdownField:
         f, state = self._make()
         f.setter("b")
         assert state[0] == "b"
+
+
+# ======================================================================
+# ActionField
+# ======================================================================
+
+class TestActionField:
+    """ActionField runs its command; it has no value to refresh."""
+
+    def test_is_control_field(self):
+        f = ActionField("act", "Do It", command=lambda: None)
+        assert isinstance(f, ControlField)
+        assert (f.key, f.label, f.owner, f.tip) == ("act", "Do It", None, None)
+
+    def test_menu_entry_runs_the_command(self):
+        ran = []
+
+        def command():
+            ran.append(True)
+
+        menu = MagicMock()
+        refs = ActionField("act", "Do It", command=command).build_menu_entry(menu)
+        assert refs == []
+        (entry,) = menu.add_command.call_args_list
+        assert entry.kwargs["label"] == "Do It"
+        entry.kwargs["command"]()
+        assert ran == [True]
+
+    def test_refresh_does_nothing(self):
+        ActionField("act", "Do It", command=lambda: None).refresh([])
+
+
+# ======================================================================
+# ControlPanelSurface: refreshing the Plot Start / Plot Range binding
+# ======================================================================
+
+class TestControlPanelSurfaceRefresh:
+    """Refreshing the DisplayRangeField re-reads Plot Start / Plot Range through the surface's callback."""
+
+    def _surface(self):
+        from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanelSurface
+        bindings = []
+        container = MagicMock()
+        container.winfo_children.return_value = []
+        return ControlPanelSurface(container, on_display_range_changed=bindings.append), bindings
+
+    def test_refresh_passes_the_binding_again(self):
+        surface, bindings = self._surface()
+        field = DisplayRangeField("_range", getter=lambda: (5.0, 6.0), setter=lambda s, e: None)
+        surface.register(field)
+        assert bindings == [field]          # the rebuild
+        surface.refresh("_range")
+        assert bindings == [field, field]
+
+    def test_other_and_unknown_keys_leave_the_binding_alone(self):
+        surface, bindings = self._surface()
+        surface.register(DisplayRangeField("_range", getter=lambda: (5.0, 6.0), setter=lambda s, e: None))
+        surface.refresh("missing")
+        assert len(bindings) == 1
 
 
 # ======================================================================

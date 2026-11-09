@@ -102,6 +102,20 @@ class ControlPanelSurface(ControlSurface):
         self._container = container
         self._on_display_range_changed = on_display_range_changed
 
+    def refresh(self, key: str) -> None:
+        """Re-read field *key*; for the :class:`DisplayRangeField` that re-reads Plot Start / Plot Range."""
+        from iSLAT.Modules.GUI.ControlField import DisplayRangeField
+
+        field = self._fields.get(key)
+        if isinstance(field, DisplayRangeField):
+            if self._on_display_range_changed is not None:
+                try:
+                    self._on_display_range_changed(field)
+                except Exception:
+                    pass
+            return
+        super().refresh(key)
+
     # ------------------------------------------------------------------
     # Internal rebuild
     # ------------------------------------------------------------------

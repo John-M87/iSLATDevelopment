@@ -504,6 +504,24 @@ class TestPanelRanges:
         assert win.view.panel_ranges is None
         assert _ranges(win)[0][0] == pytest.approx(5.5) and _ranges(win)[-1][1] == pytest.approx(9.5)
 
+    def test_starts_from_the_main_views_panel_ranges(self, make_window, tmp_path):
+        islat = _islat(tmp_path)
+        islat.GUI.plot._full_spectrum_view.panel_ranges = list(self.RANGES)
+        win, _ = make_window(islat)
+        assert win.view.panel_ranges == self.RANGES
+        assert _ranges(win) == self.RANGES
+        assert win.ranges_btn.cget("text").startswith("Ranges*")
+        win.set_panel_ranges(None)                          # the window's own copy
+        assert islat.GUI.plot._full_spectrum_view.panel_ranges == self.RANGES
+
+    @pytest.mark.parametrize("override", [{"n_panels": 2}, {"xlim_range": (6.0, 8.0)}])
+    def test_layout_overrides_replace_the_main_views_ranges(self, make_window, tmp_path, override):
+        islat = _islat(tmp_path)
+        islat.GUI.plot._full_spectrum_view.panel_ranges = list(self.RANGES)
+        win, _ = make_window(islat, **override)
+        assert win.view.panel_ranges is None
+        assert _ranges(win) != self.RANGES
+
     def test_invalid_ranges_rejected(self, make_window):
         win, _ = make_window()
         before = _ranges(win)

@@ -20,7 +20,7 @@ from iSLAT.Modules.Plotting import (
 from iSLAT.Modules.Plotting.OpticalDepthPanel import TAU_STEM_TAG, TOTAL_TAU_TAG
 from iSLAT.Modules.Plotting.OpticalDepthView import TAU_OPTION_DEFAULTS
 from iSLAT.Modules.Plotting.SavedLineLabels import LABEL_VIEWS
-from iSLAT.Modules.GUI.ControlField import DisplayRangeField, EntryField, ToggleField
+from iSLAT.Modules.GUI.ControlField import ActionField, DisplayRangeField, EntryField, ToggleField
 from iSLAT.Modules.GUI.ControlSurface import ControlBus, ControlSurface
 
 from tests.plotting import make_line_list
@@ -317,10 +317,12 @@ class TestControlsAndInteraction:
         assert any(isinstance(f, DisplayRangeField) for f in cp.fields())
         # The tau toggles go to the Views menu's view-controls section, not the top bar.
         assert tb.fields() == []
+        # Panel Ranges... (shared by every stacked view) comes first.
         vm_keys = [f.key for f in vm.fields()]
-        assert vm_keys == ["tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill", "tau_show_flux",
-                           "data_density"]
-        assert all(isinstance(f, ToggleField) for f in vm.fields())
+        assert vm_keys == ["panel_ranges", "tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill",
+                           "tau_show_flux", "data_density"]
+        assert isinstance(vm.get_field("panel_ranges"), ActionField)
+        assert all(isinstance(f, ToggleField) for f in vm.fields()[1:])
 
         log_field = vm.get_field("tau_log_scale")
         log_field.setter(not log_field.getter())

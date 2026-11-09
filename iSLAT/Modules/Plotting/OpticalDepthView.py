@@ -3,7 +3,7 @@ OpticalDepthView -- :class:`PlotView` for the multi-panel optical depth τ(λ) o
 
 Shows an :class:`OpticalDepthSpectrumPlot` (the convolved τ of every visible molecule, stacked per molecule, over the whole wavelength range) in the main plotting area.
 
-The view builds on :class:`FullSpectrumView`, which already drives any :class:`StackedSpectralPanel`, so it shares the canvas lifecycle, the *N Panels* and *Plot Start / Plot Range* controls, saved / atomic line overlays, wavelength markers, the legend toggle and the right-click *Open in Three Panel view* item.
+The view builds on :class:`FullSpectrumView`, which already drives any :class:`StackedSpectralPanel`, so it shares the canvas lifecycle, the *N Panels* and *Plot Start / Plot Range* controls and the *Panel Ranges...* dialog, saved / atomic line overlays, wavelength markers, the legend toggle and the right-click *Open in Three Panel view* item.
 What differs from the full spectrum view:
 
 * The *Total Model* toggle shows / hides the combined "Total τ" line (and the summed-model fill of the flux sub-panels).
@@ -55,6 +55,10 @@ class OpticalDepthView(FullSpectrumView):
 
     #: Stacking the sample's spectra is a Full Spectrum view option.
     SUPPORTS_SAMPLE_STACK: bool = False
+
+    # Control panel: the N Panels tip and the Plot Start / Plot Range binding key.
+    N_PANELS_TIP: str = "Number of panels in the\noptical depth stacked layout"
+    DISPLAY_RANGE_KEY: str = "_odv_display_range"
 
     # Save dialog and message (see PlotView.save_figure); the folder is the Full Spectrum view's.
     SAVE_DIALOG_TITLE: str = "Save Optical Depth Figure"
@@ -162,7 +166,7 @@ class OpticalDepthView(FullSpectrumView):
         re-rendered rather than updated in place.
         """
         if self._plot is None:
-            self._plot = self._create_plot()
+            self._plot = self._new_plot()
         else:
             wave, flux, wave_obs = self._load_spectrum_data()
             self.line_data = self._load_line_data()
@@ -230,31 +234,11 @@ class OpticalDepthView(FullSpectrumView):
     # ==================================================================
     # Controls
     # ==================================================================
-    def _register_control_fields(self) -> None:
-        """Register the panel layout entries and the τ display toggles on the :class:`ControlBus`."""
-        bus = getattr(self._pm, "control_bus", None)
-        if bus is None:
-            return
+    def _view_menu_fields(self):
+        """The tau display toggles and the data-density X scaling (after the shared *Panel Ranges...*)."""
+        from iSLAT.Modules.GUI.ControlField import ToggleField
 
-        from iSLAT.Modules.GUI.ControlField import EntryField, DisplayRangeField, ToggleField
-
-        bus.unregister_owner(self)
-
-        bus.register_many([
-            EntryField(
-                "n_panels", "N Panels:", self._get_n_panels, self._set_n_panels,
-                datatype="int", width=5, owner=self,
-                tip="Number of panels in the\noptical depth stacked layout",
-            ),
-            DisplayRangeField(
-                "_odv_display_range",
-                getter=self._get_display_range,
-                setter=self._set_display_range,
-                owner=self,
-            ),
-        ], "control_panel")
-
-        bus.register_many([
+        return [
             ToggleField(
                 "tau_log_scale", "Log τ",
                 getter=self._get_log_scale,
@@ -328,7 +312,7 @@ class OpticalDepthView(FullSpectrumView):
                 ),
             ),
             #self._skip_gaps_field(ToggleField),
-        ], "views_menu")
+        ]
 
     # ==================================================================
     # Selection: inspect lines in the Three Panel view
@@ -477,7 +461,8 @@ class OpticalDepthView(FullSpectrumView):
     def _create_export_plot(self) -> OpticalDepthSpectrumPlot:
         """Build and render the standalone optical depth plot that :meth:`save_figure` writes.
 
-        The figure uses the live panel count and wavelength range and follows
+        The figure uses the live panel count and wavelength range (or the
+        explicit panel ranges) and follows
         the toggle state: flux sub-panels (with their observed-data and Y-axis
         settings), total tau line / summed model, legend, saved / atomic lines
         and wavelength markers.  The caller closes it after saving.
@@ -485,7 +470,7 @@ class OpticalDepthView(FullSpectrumView):
         ts = self._pm.toggle_state
         xlim_range, n_panels = self._export_range()
         wave, flux, wave_obs = self._load_spectrum_data()
-        standalone = self._create_standalone_plot(
+        standalone = self._new_standalone_plot(
             wave, flux, wave_obs, xlim_range=xlim_range, n_panels=n_panels,
         )
         try:

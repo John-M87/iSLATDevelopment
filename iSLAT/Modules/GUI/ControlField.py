@@ -13,6 +13,7 @@ Hierarchy::
     ├── EntryField           float/int/str → Label + Entry
     │   └── DisplayRangeField   metadata-only binding for Plot Start/Range
     ├── DropdownField        str → Label + Combobox
+    ├── ActionField          command → Button / menu command (e.g. opens a dialog)
     └── LabelField           read-only display Label pair
 """
 
@@ -413,6 +414,47 @@ class DropdownField(ControlField):
                     except Exception:
                         pass
                 return
+
+# ---------------------------------------------------------------------------
+
+class ActionField(ControlField):
+    """A command with no value of its own, such as opening a dialog.
+
+    A :class:`ttk.Button` on widget surfaces; in a menu
+    (:meth:`build_menu_entry`) a command entry.  The label of a command that
+    opens a dialog conventionally ends in an ellipsis.
+    """
+
+    def __init__(
+        self,
+        key: str,
+        label: str,
+        command: Callable[[], Any],
+        owner: Any = None,
+        tip: Optional[str] = None,
+    ) -> None:
+        super().__init__(key, label, owner, tip)
+        self.command = command
+
+    def _invoke(self) -> None:
+        self.command()
+
+    # ------------------------------------------------------------------
+    def build_widget(
+        self,
+        parent: tk.Widget,
+        context: RenderContext,
+    ) -> List[tk.Widget]:
+        button = ttk.Button(parent, text=self.label, command=self._invoke)
+        if self.tip:
+            _tooltip(button, self.tip)
+        return [button]
+
+    # ------------------------------------------------------------------
+    def build_menu_entry(self, menu: tk.Menu) -> List[Any]:
+        """Add a command entry; nothing to refresh, so no references are returned."""
+        menu.add_command(label=self.label, command=self._invoke)
+        return []
 
 # ---------------------------------------------------------------------------
 

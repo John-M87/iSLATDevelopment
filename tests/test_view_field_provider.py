@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 from iSLAT.Modules.Plotting.PlotView import PlotView
 from iSLAT.Modules.Plotting.FullSpectrumPlot import FullSpectrumPlot
 from iSLAT.Modules.GUI.ControlField import (
-    EntryField, DisplayRangeField, ToggleField,
+    ActionField, EntryField, DisplayRangeField, ToggleField,
 )
 from iSLAT.Modules.GUI.ControlSurface import ControlBus, ControlSurface
 
@@ -223,8 +223,9 @@ class TestFullSpectrumViewControlFields:
         view._register_control_fields()
 
         vm_keys = [f.key for f in vm_surface.fields()]
-        assert vm_keys == ["show_residuals", "data_density",
+        assert vm_keys == ["panel_ranges", "show_residuals", "data_density",
                            "sample_stack", "sample_stack_layout", "sample_stack_models"]
+        assert isinstance(vm_surface.get_field("panel_ranges"), ActionField)
 
     def test_show_residuals_is_toggle_field(self):
         view, pm, bus, cp_surface, vm_surface = self._make_view_with_bus()
