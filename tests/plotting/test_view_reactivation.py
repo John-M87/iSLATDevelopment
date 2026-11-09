@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """Switching back to a view that nothing changed in does not re-sync or redraw it.
 
-Tk keeps a hidden canvas's image and re-packing it at the same size does not
-redraw it, so a view whose figure was not modified while hidden
-(``Figure.stale``), which is not marked for a refresh and whose inputs
-(``PlotView._display_inputs``: toggle state, theme, molecules, data, fit
-result, plus per-view extras) are unchanged, only re-packs its canvas and
-re-registers its controls.  Anything else takes the full activation path.
+A hidden canvas keeps its last frame, so a view whose figure was not modified
+while hidden (``Figure.stale``), which is not marked for a refresh and whose
+inputs (``PlotView._display_inputs``: toggle state, theme, molecules, data,
+fit result, plus per-view extras) are unchanged, only re-packs its canvas,
+has it repaint the kept frame (Tk on macOS otherwise leaves it blank until
+the mouse moves) and re-registers its controls.  Anything else takes the
+full activation path.
 """
 
 import os
@@ -54,6 +55,16 @@ def _count_draws(fig):
     return draws
 
 
+def _record_pack_and_repaint(canvas):
+    """Give the Agg *canvas* a fake Tk widget; return the list its packs and repaint requests go to."""
+    events = []
+    widget = MagicMock()
+    widget.pack.side_effect = lambda *_args, **_kwargs: events.append("pack")
+    canvas.get_tk_widget = lambda: widget
+    canvas.repaint_idle = lambda: events.append("repaint")
+    return events
+
+
 # ======================================================================
 # Full Spectrum view (real plot, Agg canvas)
 # ======================================================================
@@ -89,6 +100,21 @@ class TestFullSpectrumReactivation:
     def test_unchanged_view_is_not_redrawn(self, fs):
         view, *_ = fs
         assert _round_trip(view) == (False, 0)
+
+    def test_unchanged_view_repaints_its_kept_frame_after_packing(self, fs):
+        view, *_ = fs
+        events = _record_pack_and_repaint(view._canvas)
+        view.deactivate()
+        view.activate(MagicMock())
+        assert events == ["pack", "repaint"]
+
+    def test_changed_view_draws_instead_of_repainting(self, fs):
+        view, pm, *_ = fs
+        events = _record_pack_and_repaint(view._canvas)
+        view.deactivate()
+        pm.toggle_state.update(summed=False)
+        view.activate(MagicMock())
+        assert events == ["pack"]
 
     def test_figure_changed_while_hidden(self, fs):
         view, *_ = fs
@@ -202,6 +228,21 @@ class TestThreePanelReactivation:
         assert rec.calls == []
         pm.canvas.get_tk_widget().pack.assert_called()
 
+    def test_unchanged_view_repaints_its_kept_frame_after_packing(self, tpv):
+        view, pm, _rec = tpv
+        events = _record_pack_and_repaint(pm.canvas)
+        view.deactivate()
+        view.activate(None)
+        assert events == ["pack", "repaint"]
+
+    def test_changed_view_does_not_ask_for_a_repaint(self, tpv):
+        view, pm, _rec = tpv
+        events = _record_pack_and_repaint(pm.canvas)
+        view.deactivate()
+        pm.toggle_state.update(summed=False)
+        view.activate(None)
+        assert events == ["pack"]
+
     def test_first_activation_takes_the_full_path(self, tpv):
         view, _pm, rec = tpv
         view.activate(None)
@@ -263,6 +304,21 @@ class TestOwnedSinglePanelViews:
         draws = _count_draws(view._fig)
         view.activate(None)
         assert rec.calls == [] and draws == []
+
+    def test_unchanged_view_repaints_its_kept_frame_after_packing(self, cls):
+        view, _pm, _rec = _owned_view(cls)
+        events = _record_pack_and_repaint(view._canvas)
+        view.deactivate()
+        view.activate(MagicMock())
+        assert events == ["pack", "repaint"]
+
+    def test_changed_view_does_not_ask_for_a_repaint(self, cls):
+        view, pm, rec = _owned_view(cls)
+        events = _record_pack_and_repaint(view._canvas)
+        view.deactivate()
+        pm.theme = {"foreground": "black"}
+        view.activate(MagicMock())
+        assert "repaint" not in events and "draw" in rec.calls
 
     def test_changed_view_takes_the_full_path(self, cls):
         view, pm, rec = _owned_view(cls)

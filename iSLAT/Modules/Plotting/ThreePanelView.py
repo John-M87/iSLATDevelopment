@@ -167,6 +167,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             # Nothing it draws changed while another view was shown: the
             # canvas still holds its last frame, so skip re-syncing the theme,
             # overlays and selection, and the redraw they would cost.
+            self._repaint_shown_frame()
             return
 
         # Sync theme in case it changed while the other view was active.

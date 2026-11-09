@@ -1048,6 +1048,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             # the canvas, which still holds its last frame, without
             # re-syncing or redrawing.
             self._show_canvas()
+            self._repaint_shown_frame()
             self._register_control_fields()
             return
 

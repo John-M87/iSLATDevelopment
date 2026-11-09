@@ -531,10 +531,10 @@ class PlotView(ABC):
         True when nothing it is drawn from changed while it was hidden: it is
         not marked for a refresh, its figure was not modified since its last
         draw (``Figure.stale``) and :meth:`_display_inputs` are what
-        :meth:`_remember_shown_frame` saw.  Tk keeps a hidden canvas's image
-        and re-packing it at the same size does not redraw it (a new size
-        redraws through the resize), so activation can then skip re-syncing
-        and redrawing.  Each remembered state is used once.
+        :meth:`_remember_shown_frame` saw.  The canvas then still holds that
+        frame, so activation can skip re-syncing and re-rendering and only
+        re-pack the canvas and :meth:`_repaint_shown_frame` (a new size
+        redraws through the resize).  Each remembered state is used once.
         """
         shown, self._shown_inputs = self._shown_inputs, None
         if shown is None or self._needs_refresh:
@@ -551,6 +551,20 @@ class PlotView(ABC):
                     and all(a is b for a, b in zip(objects, shown[1])))
         except Exception:
             return False
+
+    def _repaint_shown_frame(self) -> None:
+        """Have the re-packed canvas show the frame it holds; call after packing it.
+
+        Without this, Tk on macOS leaves the canvas blank until the mouse
+        moves (see :meth:`HoldableFigureCanvasTkAgg.repaint_idle`).  Canvases
+        without ``repaint_idle`` (e.g. Agg canvases in tests) are left alone.
+        """
+        try:
+            repaint = getattr(self.get_canvas(), "repaint_idle", None)
+        except Exception:
+            return
+        if callable(repaint):
+            repaint()
 
     # ------------------------------------------------------------------
     # Core rendering

@@ -3,6 +3,8 @@
 
 * HoldableFigureCanvasTkAgg remembers draw requests (and resize draws)
   while held and makes one draw when released.
+* repaint_idle shows the last rendered frame again with a blit, once Tk is
+  idle, and draws instead when there is no frame of the figure's size.
 * hold_draws_until_laid_out releases the hold once the widget is mapped,
   the figure has its size and that size held for a check (or after a time
   limit).  GUI.start uses it for the main plot, OwnedCanvasMixin for every
@@ -18,6 +20,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from matplotlib.figure import Figure
+
+from tests.tk_events import pump_tk
 
 
 @pytest.fixture(scope="module")
@@ -92,6 +96,82 @@ class TestHoldableCanvas:
         canvas.resize(SimpleNamespace(width=800, height=600))
         _process_idle(tk_root)
         assert tuple(canvas.figure.get_size_inches()) == pytest.approx((8.0, 6.0))
+        assert canvas.draws == []
+        canvas.release_draws()
+        _process_idle(tk_root)
+        assert len(canvas.draws) == 1
+
+
+# ----------------------------------------------------------------------
+# Showing the last frame again (a re-packed view canvas)
+# ----------------------------------------------------------------------
+def _count_blits(canvas):
+    blits = []
+    original = canvas.blit
+
+    def counting(bbox=None):
+        blits.append(bbox)
+        return original(bbox)
+
+    canvas.blit = counting
+    return blits
+
+
+class TestRepaint:
+    def test_blits_the_kept_frame_without_rendering(self, canvas, tk_root):
+        canvas.draw()
+        canvas.draws.clear()
+        blits = _count_blits(canvas)
+        canvas.repaint_idle()
+        assert blits == []          # waits for Tk to be idle (after the re-pack)
+        _process_idle(tk_root)
+        assert canvas.draws == [] and blits == [None]
+
+    def test_requests_before_idle_make_one_blit(self, canvas, tk_root):
+        canvas.draw()
+        blits = _count_blits(canvas)
+        canvas.repaint_idle()
+        canvas.repaint_idle()
+        _process_idle(tk_root)
+        assert len(blits) == 1
+
+    def test_draws_when_nothing_was_rendered_yet(self, canvas, tk_root):
+        canvas.repaint_idle()
+        _process_idle(tk_root)
+        assert len(canvas.draws) == 1
+
+    def test_draws_when_the_figure_was_resized_since_the_last_frame(self, canvas, tk_root):
+        canvas.draw()
+        canvas.draws.clear()
+        canvas.figure.set_size_inches(5, 3)
+        canvas.repaint_idle()
+        _process_idle(tk_root)
+        assert len(canvas.draws) == 1
+
+    def test_leaves_it_to_a_queued_draw(self, canvas, tk_root):
+        canvas.draw()
+        canvas.draws.clear()
+        blits = _count_blits(canvas)
+        canvas.draw_idle()
+        canvas.repaint_idle()
+        _process_idle(tk_root)
+        assert len(canvas.draws) == 1 and len(blits) == 1
+
+    def test_skips_when_a_draw_is_asked_for_before_idle(self, canvas, tk_root):
+        canvas.draw()
+        canvas.draws.clear()
+        blits = _count_blits(canvas)
+        canvas.repaint_idle()
+        canvas.draw_idle()
+        _process_idle(tk_root)
+        assert len(canvas.draws) == 1 and len(blits) == 1
+
+    def test_while_held_draws_on_release(self, canvas, tk_root):
+        canvas.draw()
+        canvas.draws.clear()
+        canvas.hold_draws()
+        canvas.repaint_idle()
+        _process_idle(tk_root)
         assert canvas.draws == []
         canvas.release_draws()
         _process_idle(tk_root)
@@ -176,11 +256,7 @@ class TestReleaseWhenLaidOut:
         c.LAYOUT_MAX_WAIT_S = 0.2
         c.hold_draws_until_laid_out()
         assert c.holding_draws
-        deadline = time.monotonic() + 3.0
-        while c.holding_draws and time.monotonic() < deadline:
-            tk_root.update()
-            time.sleep(0.01)
-        assert not c.holding_draws
+        assert pump_tk(tk_root, 3.0, until=lambda: not c.holding_draws)
         c.get_tk_widget().destroy()
 
 

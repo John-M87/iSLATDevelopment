@@ -1,13 +1,16 @@
 """
 HoldableCanvas - the TkAgg canvas used for iSLAT's plots.
 
-:class:`HoldableFigureCanvasTkAgg` adds two things to matplotlib's
+:class:`HoldableFigureCanvasTkAgg` adds three things to matplotlib's
 ``FigureCanvasTkAgg``:
 
 * It can hold its draws until Tk has laid its widget out
   (:meth:`~HoldableFigureCanvasTkAgg.hold_draws_until_laid_out`).  A new
   canvas widget starts at the figure's own size and is resized over the next
   event-loop rounds; every draw before that is at a provisional size.
+* It can show its last rendered frame again without re-rendering the figure
+  (:meth:`~HoldableFigureCanvasTkAgg.repaint_idle`), for a widget that was
+  unpacked and packed again.
 * It blits opaque figures to Tk as data without alpha, which spares Tk a
   per-pixel transparency scan (~20% of a full-window blit).
 """
@@ -44,6 +47,7 @@ class HoldableFigureCanvasTkAgg(FigureCanvasTkAgg):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._holding_draws = False
         self._draw_requested = False
+        self._idle_repaint_id: Optional[str] = None
         super().__init__(*args, **kwargs)
 
     # ------------------------------------------------------------------
@@ -108,6 +112,42 @@ class HoldableFigureCanvasTkAgg(FigureCanvasTkAgg):
             self.release_draws()
         else:
             scheduler.after(self.LAYOUT_CHECK_MS, self._release_when_laid_out, started, size)
+
+    # ------------------------------------------------------------------
+    # Showing the last frame again
+    # ------------------------------------------------------------------
+    def repaint_idle(self) -> None:
+        """Show the last rendered frame again once Tk is idle, without re-rendering the figure.
+
+        An unpacked canvas widget keeps its image, but when it is packed
+        again Tk on macOS leaves the repaint to the system, which makes it
+        only when the next input event (e.g. a mouse move) arrives: until
+        then the widget is blank.  Blitting the kept frame changes the image,
+        and Tk repaints the widget for that at once.  Call it after packing
+        the widget.  Without a frame of the figure's current size this is a
+        :meth:`draw_idle`; a draw already due blits anyway.
+        """
+        if self._holding_draws or getattr(self, "_idle_draw_id", None):
+            self.draw_idle()
+            return
+        if self._idle_repaint_id is None:
+            self._idle_repaint_id = self.get_tk_widget().after_idle(self._repaint)
+
+    def _repaint(self) -> None:
+        self._idle_repaint_id = None
+        if getattr(self, "_idle_draw_id", None):
+            return  # a draw was asked for meanwhile; it blits
+        try:
+            if not self.get_tk_widget().winfo_exists():
+                return
+        except tk.TclError:
+            return
+        renderer = getattr(self, "renderer", None)
+        size = (*self.figure.bbox.size, self.figure.dpi)
+        if renderer is None or (renderer.width, renderer.height, renderer.dpi) != size:
+            self.draw_idle()
+        else:
+            self.blit()
 
     # ------------------------------------------------------------------
     # Blitting

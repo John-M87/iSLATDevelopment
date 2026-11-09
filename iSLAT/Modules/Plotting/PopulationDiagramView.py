@@ -169,6 +169,7 @@ class PopulationDiagramView(SpectrumPanelView, PopulationDiagramContextMixin):
             # Unchanged while hidden: re-pack the canvas (it keeps its last frame) without redrawing.
             self._register_control_fields()
             self._show_canvas()
+            self._repaint_shown_frame()
             return
 
         if not self._initialised or self._needs_refresh:

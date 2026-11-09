@@ -12,13 +12,13 @@ there was no active molecule.  These tests cover:
   save, and adding / deleting molecules afterwards.
 """
 import os
-import time
 
 import pytest
 
 from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
 
 from tests.plotting.test_plot_views import _make_test_molecule
+from tests.tk_events import pump_tk
 
 HEADER = (
     "Molecule Name,File Path,Molecule Label,Temp,Rad,N_Mol,Color,Vis,Dist,StellarRV,"
@@ -168,10 +168,7 @@ def empty_start(tmp_path, monkeypatch):
         raise
 
     def pump(seconds=0.5):
-        end = time.time() + seconds
-        while time.time() < end:
-            app.GUI.window.update()
-            time.sleep(0.01)
+        pump_tk(app.GUI.window, seconds)
 
     pump(1.0)
     try:

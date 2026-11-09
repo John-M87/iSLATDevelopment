@@ -416,6 +416,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
             self._register_control_fields()
             self._connect_pick_event()
             self._show_canvas()
+            self._repaint_shown_frame()
             return
 
         if not self._initialised or self._needs_refresh:

@@ -8,7 +8,6 @@ helpers and the window itself (Tk window tests are skipped without a display).
 """
 import gc
 import os
-import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -33,6 +32,8 @@ from iSLAT.Modules.FileHandling.molecular_data_reader import (
     read_par_lines_in_range,
 )
 from iSLAT.Modules.GUI.Widgets import LineSearchWindow as lsw
+
+from tests.tk_events import pump_tk
 
 
 def _line(nr, lam, lev_up="0|10", lev_low="0|9", a_stein=1e-2):
@@ -440,11 +441,7 @@ def _search(win):
 
 
 def _wait(tk_root, win, timeout=10.0):
-    end = time.time() + timeout
-    while win.searching and time.time() < end:
-        tk_root.update()
-        time.sleep(0.01)
-    assert not win.searching
+    assert pump_tk(tk_root, timeout, until=lambda: not win.searching)
 
 
 class TestWindow:
