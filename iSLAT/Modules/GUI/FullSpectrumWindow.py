@@ -132,7 +132,7 @@ class WindowFullSpectrumView(FullSpectrumView):
 
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Any:
         menu = tk.Menu(canvas_widget, tearoff=0)
-        menu.add_command(label="Save Figure\u2026", command=self.save_figure)
+        self._append_save_figure_item(menu, event)
         return menu
 
     # Save dialog: any file type, the dialog's own start folder (title, file

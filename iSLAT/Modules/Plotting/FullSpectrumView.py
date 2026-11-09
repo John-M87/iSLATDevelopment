@@ -35,7 +35,7 @@ from .FigureExport import save_figure_file, save_figures_to_pdf
 from .OwnedCanvasMixin import OwnedCanvasMixin
 from .PlotDebug import debug_config
 from .PlotView import (
-    PlotView, ask_save_path, default_save_name, draw_wavelength_markers,
+    FigurePanel, PlotView, ask_save_path, default_save_name, draw_wavelength_markers,
     normalize_y_data_sync, notify_user,
 )
 from ..GUI.KeyBindings import shortcut_text
@@ -79,6 +79,9 @@ warnings.filterwarnings(
 #: Exported figure size (inches) when no override is set.
 DEFAULT_EXPORT_WIDTH: float = 12.0
 DEFAULT_EXPORT_HEIGHT: float = 16.0
+#: Height (inches) of one panel saved on its own (right-click > Save Panel...)
+#: when the export settings give no panel height.
+DEFAULT_PANEL_EXPORT_HEIGHT: float = 4.0
 #: Upper bounds accepted for the export size overrides (inches).
 MAX_EXPORT_WIDTH: float = 200.0
 MAX_EXPORT_PANEL_HEIGHT: float = 20.0
@@ -1235,8 +1238,25 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                     command=lambda s=spectrum: self._activate_sample_spectrum(s),
                 )
 
-        self._append_save_figure_item(menu)
+        self._append_save_figure_item(menu, event)
         return menu
+
+    def panel_at(self, event: Any) -> Optional[FigurePanel]:
+        """The panel (cell: spectrum and any sub-panels) under *event*, saved as its wavelength range."""
+        idx = self._panel_index_of(getattr(event, "inaxes", None))
+        if idx is None:
+            return None
+        try:
+            lo, hi = float(self._plot._panel_edges[idx]), float(self._plot._panel_ends[idx])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+        cell = self._plot.subplots.get(idx)
+        return FigurePanel(
+            label=f"Panel {idx + 1} ({lo:.2f}\u2013{hi:.2f} \u03bcm)",
+            file_suffix=f"panel{idx + 1}_{lo:.2f}-{hi:.2f}um",
+            axes=tuple(cell) if isinstance(cell, tuple) else (cell,),
+            key=(lo, hi),
+        )
 
     def _activate_sample_spectrum(self, spectrum: Any) -> None:
         """Make *spectrum* (a sample entry) the loaded spectrum, as the Sample Manager does."""
@@ -1921,6 +1941,31 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         plot = self._create_export_plot()
         return plot.fig, plot.close
 
+    def _build_panel_export_figure(self, panel: FigurePanel):
+        """A fresh one-panel figure of the panel's wavelength range (see :meth:`_create_panel_export_plot`)."""
+        plot = self._create_panel_export_plot(panel.key)
+        return plot.fig, plot.close
+
+    def _create_panel_export_plot(self, panel_range: Tuple[float, float]) -> StackedSpectralPanel:
+        """Build and render a standalone figure of the single panel *panel_range* (``(start, end)``).
+
+        As *Save Figure* draws that panel (same kind of plot and toggle
+        state), with its own legend and axis labels.  It is the export width
+        wide; its height is the export settings' panel height, else
+        :data:`DEFAULT_PANEL_EXPORT_HEIGHT`.  The residual plot's total
+        chi^2 box, which sums every panel, is left out: the panel shows its
+        own chi^2.  The caller closes it.
+        """
+        settings = get_export_settings(self._pm)
+        return self._create_output_plot(
+            panel_ranges=[panel_range],
+            export_settings={
+                "width": settings.get("width"),
+                "panel_height": settings.get("panel_height") or DEFAULT_PANEL_EXPORT_HEIGHT,
+            },
+            total_chi2=False,
+        )
+
     def _export_range(self) -> Tuple[Optional[Tuple[float, float]], Optional[int]]:
         """``(xlim_range, n_panels)`` of the live plot, so the saved figure matches what the user sees.
 
@@ -1959,6 +2004,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         *,
         panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
         export_settings: Optional[Dict[str, Optional[float]]] = None,
+        total_chi2: bool = True,
     ) -> StackedSpectralPanel:
         """Build and render a standalone figure of what the view shows, for saving to a file.
 
@@ -1968,8 +2014,10 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         summed model, Y-axis policy, data-density X scale and wavelength
         marks.  *xlim_range* and *n_panels*, or *panel_ranges* (one panel
         each), set the panels; *export_settings* the size (default: the
-        session's export settings).  Used by *Save Figure*, *Output Full
-        Spectrum* and the pages of the multi-page PDF.  The caller closes it.
+        session's export settings).  *total_chi2* = False leaves out the
+        residual plot's total chi^2 box.  Used by *Save Figure*, *Save
+        Panel*, *Output Full Spectrum* and the pages of the multi-page PDF.
+        The caller closes it.
         """
         ts = self._pm.toggle_state
         wave, flux, wave_obs = self._load_spectrum_data()
@@ -1985,6 +2033,8 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         try:
             if panel_ranges:
                 plot.set_panel_ranges(panel_ranges)
+            if not total_chi2 and isinstance(plot, ResidualSpectrumPlot):
+                plot.show_total_chi2 = False
             apply_export_size(
                 plot, export_settings if export_settings is not None else get_export_settings(self._pm),
             )

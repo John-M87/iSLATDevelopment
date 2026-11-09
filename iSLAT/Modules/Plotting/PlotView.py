@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import copy
 from abc import ABC, abstractmethod
+from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_molecule_lines, iter_tagged, set_tagged_visible
-from .FigureExport import save_figure_file
+from .FigureExport import isolated_axes, save_figure_file
 from .PlotDebug import debug_config
 
 if TYPE_CHECKING:
@@ -42,6 +44,31 @@ def notify_user(islat: Any, message: str, **kwargs: Any) -> bool:
         debug_config.warning("plot_view", f"Could not write to the data field: {exc}")
         return False
     return True
+
+
+@dataclass(frozen=True)
+class FigurePanel:
+    """One panel of a view's figure that can be saved on its own (see :meth:`PlotView.panel_at`).
+
+    Attributes
+    ----------
+    label : str
+        Names the panel in the right-click menu (``"Save <label>…"``).
+    file_suffix : str
+        Added to the view's :attr:`~PlotView.SAVE_FILE_SUFFIX` in the
+        suggested file name.
+    axes : tuple of Axes
+        The panel's axes in the view's figure.  The default
+        :meth:`PlotView._build_panel_export_figure` saves the figure with
+        only these shown.
+    key : Any
+        What else the view needs to rebuild the panel (e.g. its wavelength range).
+    """
+
+    label: str
+    file_suffix: str
+    axes: Tuple[Any, ...] = ()
+    key: Any = None
 
 
 def default_save_name(islat: Any, suffix: str, file_format: str) -> str:
@@ -971,11 +998,49 @@ class PlotView(ABC):
         """
         if not self._can_save_figure():
             return None
+        return self._save_export(
+            self._build_export_figure, self.SAVE_FILE_SUFFIX,
+            save_path, file_format, dpi, rasterized, **kwargs,
+        )
+
+    def save_panel(
+        self,
+        panel: FigurePanel,
+        save_path: str | None = None,
+        file_format: str = "pdf",
+        dpi: int | None = None,
+        rasterized: bool = False,
+        **kwargs,
+    ) -> str | None:
+        """Save one *panel* of the view (from :meth:`panel_at`) to a file.
+
+        As :meth:`save_figure`, with the figure from
+        :meth:`_build_panel_export_figure` and the panel's
+        :attr:`~FigurePanel.file_suffix` added to the suggested file name.
+        Returns the path saved to, or ``None`` when nothing was saved.
+        """
+        suffix = "_".join(s for s in (self.SAVE_FILE_SUFFIX, panel.file_suffix) if s) or None
+        return self._save_export(
+            lambda: self._build_panel_export_figure(panel), suffix,
+            save_path, file_format, dpi, rasterized, **kwargs,
+        )
+
+    def _save_export(
+        self,
+        build: Callable[[], Tuple[Optional["Figure"], Optional[Callable[[], None]]]],
+        suffix: Optional[str],
+        save_path: str | None,
+        file_format: str,
+        dpi: int | None,
+        rasterized: bool,
+        **kwargs: Any,
+    ) -> str | None:
+        """Ask for the path (when *save_path* is ``None``), write the figure *build* returns, release it, notify."""
         if save_path is None:
-            save_path = self._ask_save_path(file_format)
+            save_path = self._ask_save_path(file_format, suffix)
         if not save_path:
             return None
-        fig, release = self._build_export_figure()
+        fig, release = build()
         try:
             if fig is None:
                 return None
@@ -989,6 +1054,40 @@ class PlotView(ABC):
         if self.SAVE_MESSAGE:
             self._notify_user(self.SAVE_MESSAGE.format(path=saved))
         return saved
+
+    def panel_at(self, event: Any) -> Optional[FigurePanel]:
+        """The panel under the right-click *event* that can be saved on its own, or ``None``.
+
+        Views made of several panels override this (the default: none), and
+        :meth:`_append_save_figure_item` then offers to save just that panel.
+        """
+        return None
+
+    def _build_panel_export_figure(
+        self, panel: FigurePanel,
+    ) -> Tuple[Optional["Figure"], Optional[Callable[[], None]]]:
+        """Return ``(figure, release)`` for saving *panel* alone.
+
+        The default saves the panel's axes in the figure they are in, with
+        everything else hidden (:func:`~iSLAT.Modules.Plotting.FigureExport.isolated_axes`)
+        so the tight bounding box crops the save to the panel; *release*
+        shows the rest again and redraws the canvas.  Views whose
+        :meth:`_build_export_figure` builds a figure of its own override
+        this to build one for the panel.
+        """
+        if not panel.axes:
+            return None, None
+        fig = panel.axes[0].get_figure(root=True)
+        restore = ExitStack()
+        restore.enter_context(isolated_axes(fig, panel.axes))
+
+        def release() -> None:
+            restore.close()
+            canvas = getattr(fig, "canvas", None)
+            if canvas is not None:
+                canvas.draw_idle()
+
+        return fig, release
 
     def _can_save_figure(self) -> bool:
         """Whether there is anything to save; checked before the dialog opens.  Default: the view has a figure."""
@@ -1004,13 +1103,15 @@ class PlotView(ABC):
         """
         return self.get_figure(), None
 
-    def _ask_save_path(self, file_format: str) -> str:
-        """Open the save dialog configured by the ``SAVE_*`` attributes; an empty string when cancelled."""
+    def _ask_save_path(self, file_format: str, suffix: Optional[str] = None) -> str:
+        """Open the save dialog configured by the ``SAVE_*`` attributes; an empty string when cancelled.
+
+        The suggested name ends in *suffix* (default :attr:`SAVE_FILE_SUFFIX`).
+        """
         initialfile = None
-        if self.SAVE_FILE_SUFFIX:
-            initialfile = default_save_name(
-                getattr(self._pm, "islat", None), self.SAVE_FILE_SUFFIX, file_format,
-            )
+        suffix = suffix if suffix is not None else self.SAVE_FILE_SUFFIX
+        if suffix:
+            initialfile = default_save_name(getattr(self._pm, "islat", None), suffix, file_format)
         return ask_save_path(
             self.SAVE_DIALOG_TITLE, file_format,
             initialfile=initialfile,
@@ -1042,9 +1143,10 @@ class PlotView(ABC):
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Optional[Any]:
         """Build and return a ``tk.Menu`` for a right-click at *event*.
 
-        The default creates a minimal menu containing only "Save Figure".
-        Views that provide additional items should create their own menu,
-        append items, and call :meth:`_append_save_figure_item` before
+        The default creates a minimal menu containing only "Save Figure"
+        (and "Save <panel>" when :meth:`panel_at` finds one).  Views that
+        provide additional items should create their own menu, append items,
+        and call :meth:`_append_save_figure_item` with the *event* before
         returning.
 
         Parameters
@@ -1060,17 +1162,22 @@ class PlotView(ABC):
         except ImportError:
             return None
         menu = tk.Menu(canvas_widget, tearoff=0)
-        self._append_save_figure_item(menu)
+        self._append_save_figure_item(menu, event)
         return menu
 
-    def _append_save_figure_item(self, menu: Any) -> None:
-        """Append a ``Save Figure…`` command to *menu*.
+    def _append_save_figure_item(self, menu: Any, event: Any = None) -> None:
+        """Append a ``Save Figure…`` command to *menu*, and ``Save <panel>…`` for the panel under *event*.
 
-        Calls :meth:`save_figure` with a file-dialog so the user can choose
-        the destination and format.
+        Both open a file dialog so the user can choose the destination and
+        format: :meth:`save_figure` saves the whole figure, :meth:`save_panel`
+        the panel :meth:`panel_at` finds under the right-click *event*.
         """
-        menu.add_separator()
+        if menu.index("end") is not None:  # nothing to separate from in an empty menu
+            menu.add_separator()
         menu.add_command(label="Save Figure…", command=self.save_figure)
+        panel = self.panel_at(event) if event is not None else None
+        if panel is not None:
+            menu.add_command(label=f"Save {panel.label}…", command=lambda: self.save_panel(panel))
 
     def _register_control_fields(self) -> None:
         """Register this view's :class:`ControlField` objects on the :class:`ControlBus`.

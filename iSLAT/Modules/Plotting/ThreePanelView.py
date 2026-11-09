@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List
 
 import numpy as np
 
-from .PlotView import PlotView, notify_user
+from .PlotView import FigurePanel, PlotView, notify_user
 from .ArtistTags import ATOMIC_LINE_TAG, SAVED_LINE_TAG, has_tagged, remove_molecule_lines
 from .BasePlot import BasePlot
 from .PlotDebug import debug_config
@@ -1240,7 +1240,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         if event.inaxes == self.ax2:
             menu = self._build_line_inspection_menu(canvas_widget)
             if menu is not None:
-                self._append_save_figure_item(menu)
+                self._append_save_figure_item(menu, event)
             return menu
 
         if event.inaxes == self.ax3:
@@ -1254,7 +1254,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
 
             menu = self._build_population_diagram_menu(pdp, canvas_widget, draw_idle)
             if menu is not None:
-                self._append_save_figure_item(menu)
+                self._append_save_figure_item(menu, event)
             return menu
 
         if event.inaxes == self.ax1:
@@ -1282,13 +1282,31 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
                 label="Open in Full Spectrum view",
                 command=_open_in_full_spectrum,
             )
-            self._append_save_figure_item(menu)
+            self._append_save_figure_item(menu, event)
             return menu
 
         # Unrecognised axes - minimal menu with just Save Figure
         menu = tk.Menu(canvas_widget, tearoff=0)
         self._append_save_figure_item(menu)
         return menu
+
+    #: ``(axes attribute, menu label, file suffix)`` of each panel that can be saved on its own.
+    _PANELS = (
+        ("ax1", "Spectrum Panel", "spectrum"),
+        ("ax2", "Line Inspection Panel", "line_inspection"),
+        ("ax3", "Population Diagram Panel", "population_diagram"),
+    )
+
+    def panel_at(self, event: Any) -> Optional[FigurePanel]:
+        """The upper spectrum, line inspection or population diagram panel under *event*."""
+        inaxes = getattr(event, "inaxes", None)
+        if inaxes is None:
+            return None
+        for attr, label, suffix in self._PANELS:
+            ax = getattr(self, attr, None)
+            if ax is not None and inaxes is ax:
+                return FigurePanel(label=label, file_suffix=suffix, axes=(ax,))
+        return None
 
     # ------------------------------------------------------------------
     # Canvas / drawing

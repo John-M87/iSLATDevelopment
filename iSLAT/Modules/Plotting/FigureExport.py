@@ -6,14 +6,17 @@ full-spectrum PDF export and :meth:`BasePlot.save`) goes through
 :func:`save_figure_file`, so they share one rule for the resolution, the
 file format and rasterizing.  :func:`save_figures_to_pdf` writes several
 figures as the pages of one PDF with the same rules.
+:func:`isolated_axes` shows only some axes of a figure for a save, so one
+panel of a composite figure can be written on its own.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Iterator, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, List, Optional, Sequence, Set, Union
 
 if TYPE_CHECKING:
+    from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
 #: Resolution used when the display settings cannot be read.
@@ -123,6 +126,80 @@ def save_figures_to_pdf(
         if close is not None:
             close()
     return pages
+
+
+@contextmanager
+def isolated_axes(fig: "Figure", axes: Sequence["Axes"]) -> Iterator[None]:
+    """Show only *axes* (one panel) of *fig* inside the block, for a ``bbox_inches="tight"`` save.
+
+    Every other axes is hidden, except the twins of *axes* and colorbars
+    attached to them.  Figure-level artists (legends, texts, the
+    ``supxlabel`` / ``supylabel``) are hidden too, as they belong to the
+    whole figure.  A shared ``supxlabel`` / ``supylabel`` becomes the
+    panel's own x / y label while the panel has none, so the saved panel
+    keeps its axis labels.  Everything is restored afterwards.
+    """
+    keep = _panel_axes(fig, axes)
+    with ExitStack() as restore:
+        for ax in fig.axes:
+            if ax not in keep and ax.get_visible():
+                ax.set_visible(False)
+                restore.callback(ax.set_visible, True)
+        _borrow_sup_label(fig, getattr(fig, "_supxlabel", None), keep, "x", restore)
+        _borrow_sup_label(fig, getattr(fig, "_supylabel", None), keep, "y", restore)
+        for artist in (*fig.legends, *fig.texts, *fig.artists, *fig.lines, *fig.patches, *fig.images):
+            if artist.get_visible():
+                artist.set_visible(False)
+                restore.callback(artist.set_visible, True)
+        yield
+
+
+def _panel_axes(fig: "Figure", axes: Sequence["Axes"]) -> Set["Axes"]:
+    """*axes* plus their twins and the colorbars attached to them."""
+    keep: Set[Any] = set(axes)
+    for ax in fig.axes:
+        if any(ax in other._twinned_axes.get_siblings(other) for other in axes):
+            keep.add(ax)
+    for ax in fig.axes:
+        info = getattr(ax, "_colorbar_info", None)
+        if info and any(parent in keep for parent in info.get("parents", ())):
+            keep.add(ax)
+    return keep
+
+
+def _borrow_sup_label(fig: "Figure", sup: Any, keep: Set["Axes"], which: str, restore: ExitStack) -> None:
+    """Show the figure's *sup* label as the panel's own *which* (``"x"`` / ``"y"``) axis label.
+
+    It goes on the panel's bottom-most (x) or left-most (y) axes whose label
+    is empty; nothing happens when the label is not shown or every axis of
+    the panel already has its own label.
+    """
+    if sup is None or not (sup.get_visible() and sup.get_text()) or sup.get_figure(root=False) is not fig:
+        return
+    candidates: List[Any] = [
+        ax for ax in keep
+        if ax.get_visible() and not hasattr(ax, "_colorbar_info") and getattr(ax, f"{which}axis").get_visible()
+    ]
+    if not candidates:
+        return
+    if which == "x":
+        ax = min(candidates, key=lambda a: a.get_position().y0)
+    else:
+        ax = min(candidates, key=lambda a: a.get_position().x0)
+    label = getattr(ax, f"{which}axis").label
+    if label.get_text():
+        return
+    saved = (label.get_fontproperties().copy(), label.get_color())
+    label.set_text(sup.get_text())
+    label.set_fontproperties(sup.get_fontproperties())
+    label.set_color(sup.get_color())
+
+    def _put_back() -> None:
+        label.set_text("")
+        label.set_fontproperties(saved[0])
+        label.set_color(saved[1])
+
+    restore.callback(_put_back)
 
 
 @contextmanager

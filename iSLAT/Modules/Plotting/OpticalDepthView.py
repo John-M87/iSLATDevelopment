@@ -15,10 +15,10 @@ What differs from the full spectrum view:
 The τ display options live in the controller's ``toggle_state`` (see :data:`TAU_OPTION_DEFAULTS`).
 """
 from __future__ import annotations
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple
 
 from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_tagged, set_tagged_visible
-from .FullSpectrumView import FullSpectrumView, draw_toggle_state_markers
+from .FullSpectrumView import DEFAULT_PANEL_EXPORT_HEIGHT, FullSpectrumView, draw_toggle_state_markers
 from .PlotView import (
     PlotView, data_synced_y_limits, fit_y_limits_to_data, fit_y_limits_to_model,
     normalize_y_data_sync,
@@ -458,22 +458,39 @@ class OpticalDepthView(FullSpectrumView):
                 if lims is not None:
                     ax.set_ylim(*lims)
 
-    def _create_export_plot(self) -> OpticalDepthSpectrumPlot:
+    def _create_export_plot(
+        self,
+        panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
+        panel_height: Optional[float] = None,
+    ) -> OpticalDepthSpectrumPlot:
         """Build and render the standalone optical depth plot that :meth:`save_figure` writes.
 
         The figure uses the live panel count and wavelength range (or the
-        explicit panel ranges) and follows
+        explicit panel ranges), or one panel per range in *panel_ranges*
+        when given; *panel_height* (inches) overrides the height of each
+        panel.  It follows
         the toggle state: flux sub-panels (with their observed-data and Y-axis
         settings), total tau line / summed model, legend, saved / atomic lines
         and wavelength markers.  The caller closes it after saving.
         """
         ts = self._pm.toggle_state
-        xlim_range, n_panels = self._export_range()
         wave, flux, wave_obs = self._load_spectrum_data()
-        standalone = self._new_standalone_plot(
-            wave, flux, wave_obs, xlim_range=xlim_range, n_panels=n_panels,
-        )
+        if panel_ranges:
+            # The panel count sizes the figure (one tau row height per panel).
+            standalone = self._create_standalone_plot(wave, flux, wave_obs, n_panels=len(panel_ranges))
+            try:
+                standalone.set_panel_ranges(panel_ranges)
+            except Exception:
+                standalone.close()
+                raise
+        else:
+            xlim_range, n_panels = self._export_range()
+            standalone = self._new_standalone_plot(
+                wave, flux, wave_obs, xlim_range=xlim_range, n_panels=n_panels,
+            )
         try:
+            if panel_height:
+                standalone.set_figure_size(row_height=panel_height)
             standalone.generate_plot()
 
             if not ts.get("summed", True):
@@ -495,3 +512,11 @@ class OpticalDepthView(FullSpectrumView):
             standalone.close()
             raise
         return standalone
+
+    def _create_panel_export_plot(self, panel_range: Tuple[float, float]) -> OpticalDepthSpectrumPlot:
+        """The optical depth export (:meth:`_create_export_plot`) of the single panel *panel_range*.
+
+        :data:`~iSLAT.Modules.Plotting.FullSpectrumView.DEFAULT_PANEL_EXPORT_HEIGHT`
+        tall, as a Full Spectrum panel saved on its own.
+        """
+        return self._create_export_plot(panel_ranges=[panel_range], panel_height=DEFAULT_PANEL_EXPORT_HEIGHT)

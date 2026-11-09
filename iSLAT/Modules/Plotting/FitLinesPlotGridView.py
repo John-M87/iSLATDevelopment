@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .PlotView import PlotView
+from .PlotView import FigurePanel, PlotView
 from .ArtistTags import MOLECULE_TAG, SUMMED_TAG, iter_tagged, set_tagged_visible
 from .BasePlot import BasePlot
 from .ModelOverlays import MoleculeTrace, plot_molecule_trace
@@ -55,6 +55,37 @@ except ImportError:
 # Size constants mirrored from PlotGridWindow
 SUBPLOT_WIDTH_INCHES = 1.8
 SUBPLOT_HEIGHT_INCHES = 1.8
+
+
+def _fit_axes_map(plot_grid: FitLinesPlotGrid) -> Dict[Any, Tuple[int, dict]]:
+    """``Axes -> (fit index, fit entry)`` for the panels of *plot_grid* that show a fit."""
+    ax_map: Dict[Any, Tuple[int, dict]] = {}
+    if plot_grid.axs is None:
+        return ax_map
+    for idx, entry in plot_grid.fit_csv_dict.items():
+        if idx >= plot_grid.rows * plot_grid.cols:
+            break
+        row = idx // plot_grid.cols
+        col = idx % plot_grid.cols
+        try:
+            ax_map[plot_grid.axs[row, col]] = (idx, entry)
+        except (IndexError, KeyError):
+            pass
+    return ax_map
+
+
+def _fit_wavelength(entry: dict) -> float:
+    """The line wavelength of a fit entry (the middle of its fit window when not recorded)."""
+    xmin = float(entry.get("xmin", 0.0))
+    xmax = float(entry.get("xmax", 0.0))
+    return float(entry.get("lam", (xmin + xmax) / 2.0))
+
+
+def _fit_label(entry: dict) -> str:
+    """``"<species> <wavelength> μm"`` for a fit entry (no species: just the wavelength)."""
+    lam = _fit_wavelength(entry)
+    species = str(entry.get("species", ""))
+    return f"{species} {lam:.4f} μm" if species else f"{lam:.4f} μm"
 
 class FitLinesPlotGridView(ToggleMixin, PlotView):
     """
@@ -729,6 +760,22 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
         """
         return None
 
+    def panel_at(self, event: Any) -> Optional[FigurePanel]:
+        """The line-fit panel under *event*, in whichever grid (tab) it is."""
+        ax = getattr(event, "inaxes", None)
+        if ax is None:
+            return None
+        for plot_grid in self._plot_grids:
+            hit = _fit_axes_map(plot_grid).get(ax)
+            if hit is not None:
+                idx, entry = hit
+                return FigurePanel(
+                    label=f"Panel [{_fit_label(entry)}]",
+                    file_suffix=f"line{idx + 1}_{_fit_wavelength(entry):.4f}um",
+                    axes=(ax,),
+                )
+        return None
+
     def _connect_panel_context_menu(
         self,
         fig_canvas: "FigureCanvasTkAgg",
@@ -749,17 +796,7 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
             return
 
         # Build ax -> (idx, fit_entry) lookup once.
-        ax_map: Dict[Any, Tuple[int, dict]] = {}
-        for idx, entry in plot_grid.fit_csv_dict.items():
-            if idx >= plot_grid.rows * plot_grid.cols:
-                break
-            row = idx // plot_grid.cols
-            col = idx % plot_grid.cols
-            try:
-                ax = plot_grid.axs[row, col]
-                ax_map[ax] = (idx, entry)
-            except (IndexError, KeyError):
-                pass
+        ax_map = _fit_axes_map(plot_grid)
 
         pm = self._pm
 
@@ -773,9 +810,8 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
             idx, entry = hit
             xmin = float(entry.get("xmin", 0.0))
             xmax = float(entry.get("xmax", 0.0))
-            lam  = float(entry.get("lam",  (xmin + xmax) / 2.0))
-            species = str(entry.get("species", ""))
-            label = f"{species} {lam:.4f} μm" if species else f"{lam:.4f} μm"
+            lam = _fit_wavelength(entry)
+            label = _fit_label(entry)
 
             def _open_line_inspection():
                 pm.switch_view("Line Inspection")
@@ -833,7 +869,7 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
                     label=f"Open in Three Panel  [{label}]",
                     command=_open_three_panel,
                 )
-                self._append_save_figure_item(menu)
+                self._append_save_figure_item(menu, event)
             except Exception as exc:
                 debug_config.warning(
                     "fit_lines_grid_view",
