@@ -11,6 +11,12 @@ intensity, optical depth, velocity separation, vibrational band and the parsed
 quantum numbers).  :class:`LineListColumnSource` computes them with the same
 evaluation context the filter uses, so a column shows exactly the value a
 filter condition on that property tests.
+
+Right-clicking a row also offers "Show in Spectrum", which selects that line
+for inspection in the main window (:meth:`iSLATPlot.show_line_in_spectrum`).
+The other way round, :func:`show_line_in_line_list` opens a molecule's table
+(or raises the one already open) with a given line selected; the plots'
+"Show in Line List" entries use it.
 """
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ from typing import (Any, Callable, Dict, List, Optional, Sequence, Tuple,
 import numpy as np
 import pandas as pd
 
+from iSLAT.Modules.DataProcessing.LineIdentity import LineRef, match_line
 from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     ConditionError,
     MaskContext,
@@ -66,24 +73,29 @@ def _is_missing(cell: Any) -> bool:
     return not text or text.lower() == "nan"
 
 
-def sort_rows(rows: Sequence[tuple], col_idx: int,
-              reverse: bool = False) -> List[tuple]:
-    """Sort displayed rows on column *col_idx*.
+def sort_order(cells: Sequence[Any], reverse: bool = False) -> List[int]:
+    """Positions of *cells* (one column's displayed values) in sorted order.
 
     Numeric when every present value parses as a number, lexicographic
     otherwise.  Blank and NaN cells always sort last, whatever the direction,
     so a column with unknown values (e.g. an unparsed quantum number) still
     sorts numerically instead of collapsing to string order.
     """
-    present = [r for r in rows if not _is_missing(r[col_idx])]
-    missing = [r for r in rows if _is_missing(r[col_idx])]
+    present = [i for i, cell in enumerate(cells) if not _is_missing(cell)]
+    missing = [i for i, cell in enumerate(cells) if _is_missing(cell)]
     try:
-        present = sorted(present, key=lambda r: float(r[col_idx]),
+        present = sorted(present, key=lambda i: float(cells[i]),
                          reverse=reverse)
     except (ValueError, TypeError):
-        present = sorted(present, key=lambda r: str(r[col_idx]),
+        present = sorted(present, key=lambda i: str(cells[i]),
                          reverse=reverse)
     return present + missing
+
+
+def sort_rows(rows: Sequence[tuple], col_idx: int,
+              reverse: bool = False) -> List[tuple]:
+    """Sort displayed rows on column *col_idx* (see :func:`sort_order`)."""
+    return [rows[i] for i in sort_order([r[col_idx] for r in rows], reverse)]
 
 
 # ---------------------------------------------------------------------------
@@ -311,16 +323,28 @@ class LineListViewWindow(tk.Toplevel):
         :func:`molecule_column_source` for a molecule, and otherwise to a
         source without model quantities whose species is read from the
         table's ``species`` column.
+    islat : optional
+        The iSLAT instance.  With it, right-clicking a row offers "Show in
+        Spectrum" (through ``islat.GUI.plot``).
+
+    Rows are identified by their position in the loaded frame: that is the
+    Treeview item id of each row, whatever the search or sort.
     """
+
+    #: The open table of each molecule's own line list, by ``id(molecule)``,
+    #: so :func:`show_line_in_line_list` raises it instead of opening another.
+    _molecule_windows: Dict[int, "LineListViewWindow"] = {}
+
     def __init__(self, parent, mol_obj: "Molecule" = None, data_field=None, *,
                  data_provider=None, title: str = None,
-                 export_basename: str = None, column_source=None):
+                 export_basename: str = None, column_source=None, islat=None):
         super().__init__(parent)
         self.mol_obj = mol_obj
         self.data_field = data_field
         self._data_provider = data_provider
         self._export_basename = export_basename
         self._column_source = column_source
+        self._islat = islat
 
         mol_name = getattr(mol_obj, "name", "Molecule")
         self.title(title or f"Line List: {mol_name}")
@@ -345,21 +369,46 @@ class LineListViewWindow(tk.Toplevel):
 
         self._build_ui()
         self._load_data()
+        if data_provider is None and mol_obj is not None:
+            LineListViewWindow._molecule_windows[id(mol_obj)] = self
 
     @classmethod
     def from_dataframe(cls, parent, source, *, title: str = "Line List",
                        data_field=None, export_basename: str = "line_list",
-                       column_source=None):
+                       column_source=None, islat=None, molecule=None):
         """Open a viewer on a DataFrame, or on a callable returning one.
 
         Passing a *callable* is what makes :meth:`refresh` live: it is
         re-invoked on every refresh, so the window tracks the caller's current
-        data instead of a snapshot taken when it opened.
+        data instead of a snapshot taken when it opened.  *molecule* is the
+        molecule the rows belong to, when they all belong to one (otherwise
+        "Show in Spectrum" reads it from the ``species`` column).
         """
         provider = source if callable(source) else (lambda: source)
-        return cls(parent, None, data_field, data_provider=provider,
+        return cls(parent, molecule, data_field, data_provider=provider,
                    title=title, export_basename=export_basename,
-                   column_source=column_source)
+                   column_source=column_source, islat=islat)
+
+    @classmethod
+    def find_for_molecule(cls, mol_obj: "Molecule") -> Optional["LineListViewWindow"]:
+        """The open table of *mol_obj*'s own line list, or ``None``."""
+        window = LineListViewWindow._molecule_windows.get(id(mol_obj))
+        if window is None or window.mol_obj is not mol_obj:
+            return None
+        try:
+            return window if window.winfo_exists() else None
+        except tk.TclError:
+            return None
+
+    def raise_window(self) -> None:
+        """Bring this window to the front (restoring it when minimized)."""
+        try:
+            if self.state() == "iconic":
+                self.deiconify()
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------
     # Geometry
@@ -526,10 +575,13 @@ class LineListViewWindow(tk.Toplevel):
                 pass
             self._search_trace = None
         self._destroy_column_menu()
+        if LineListViewWindow._molecule_windows.get(id(self.mol_obj)) is self:
+            del LineListViewWindow._molecule_windows[id(self.mol_obj)]
         self._data_provider = None
         self._column_source = None
         self._source = None
         self._df = None
+        self._islat = None
         self.mol_obj = None
         self._all_rows = []
         super().destroy()
@@ -596,7 +648,7 @@ class LineListViewWindow(tk.Toplevel):
                               for row, added in zip(rows, zip(*extra))]
         else:
             self._all_rows = list(rows)
-        self._populate_tree(self._all_rows)
+        self._populate_tree()
 
     def _setup_columns(self) -> None:
         """Configure Treeview columns and headings.
@@ -618,11 +670,16 @@ class LineListViewWindow(tk.Toplevel):
             width = widths.get(col) or max(70, min(160, len(str(col)) * 9 + 20))
             self._tree.column(col, width=width, minwidth=50, stretch=True)
 
-    def _populate_tree(self, rows: list[tuple]) -> None:
-        """Clear and refill the Treeview with *rows*."""
+    def _populate_tree(self, positions: Optional[Sequence[int]] = None) -> None:
+        """Clear and refill the Treeview with the rows at *positions* (all rows when ``None``).
+
+        Each item's id is its row's position, so it can be found again
+        whatever is shown.
+        """
         self._tree.delete(*self._tree.get_children())
-        for row in rows:
-            self._tree.insert("", "end", values=row)
+        rows = self._all_rows
+        for pos in (range(len(rows)) if positions is None else positions):
+            self._tree.insert("", "end", iid=str(pos), values=rows[pos])
         self._update_status()
 
     def _update_status(self) -> None:
@@ -634,8 +691,10 @@ class LineListViewWindow(tk.Toplevel):
             text = (f"{n_sel:,} selected  ·  "
                     f"{n_shown:,} visible  ·  {n_total:,} total")
         elif n_shown == n_total:
+            hint = ("Right-click a row to show it in the spectrum or add columns"
+                    if self._islat is not None else "Right-click to add columns")
             text = (f"{n_total:,} lines  ·  Ctrl/Cmd+click or Shift+click to "
-                    "select  ·  Right-click to add columns")
+                    f"select  ·  {hint}")
         else:
             text = (f"{n_shown:,} of {n_total:,} lines (filtered)  ·  "
                     "Ctrl/Cmd+click or Shift+click to select")
@@ -657,13 +716,13 @@ class LineListViewWindow(tk.Toplevel):
     def _on_search_change(self, *_) -> None:
         query = self._search_var.get().lower()
         if not query:
-            self._populate_tree(self._all_rows)
+            self._populate_tree()
             return
-        filtered = [
-            row for row in self._all_rows
+        matching = [
+            pos for pos, row in enumerate(self._all_rows)
             if any(query in cell.lower() for cell in row)
         ]
-        self._populate_tree(filtered)
+        self._populate_tree(matching)
 
     def _clear_search(self) -> None:
         self._search_var.set("")
@@ -678,15 +737,19 @@ class LineListViewWindow(tk.Toplevel):
         else:
             self._sort_col = col
             self._sort_reverse = False
+        self._apply_sort()
 
+    def _apply_sort(self) -> None:
+        """Order the shown rows by the current sort column and direction."""
+        col = self._sort_col
+        if col is None or col not in self._columns:
+            return
         col_idx = self._columns.index(col)
-        current = [self._tree.item(iid, "values")
-                   for iid in self._tree.get_children()]
-        sorted_rows = sort_rows(current, col_idx, self._sort_reverse)
-
-        self._tree.delete(*self._tree.get_children())
-        for row in sorted_rows:
-            self._tree.insert("", "end", values=row)
+        shown = self._tree.get_children()
+        cells = [self._all_rows[int(iid)][col_idx] for iid in shown]
+        order = sort_order(cells, self._sort_reverse)
+        # Reorders the items in place: their ids (row positions) stay.
+        self._tree.set_children("", *[shown[i] for i in order])
 
         # Update heading indicator
         for c in self._columns:
@@ -772,8 +835,15 @@ class LineListViewWindow(tk.Toplevel):
             return None
 
     def _show_column_menu(self, event):
-        """Post the add/remove-column menu at the pointer."""
-        menu = self._build_column_menu(self._column_at(event))
+        """Post the right-click menu at the pointer.
+
+        A right-click on a row that is not selected selects it, as the menu
+        then acts on it.
+        """
+        row = self._tree.identify_row(event.y) or None
+        if row is not None and row not in self._tree.selection():
+            self._tree.selection_set(row)
+        menu = self._build_column_menu(self._column_at(event), row)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -789,11 +859,23 @@ class LineListViewWindow(tk.Toplevel):
             except tk.TclError:
                 pass
 
-    def _build_column_menu(self, column: Optional[str] = None) -> tk.Menu:
-        """Build the right-click menu; *column* is the column clicked on."""
+    def _build_column_menu(self, column: Optional[str] = None,
+                           row: Optional[str] = None) -> tk.Menu:
+        """Build the right-click menu; *column* and *row* (an item id) are where it was clicked.
+
+        A click on a row of a window that knows the iSLAT instance starts the
+        menu with "Show in Spectrum" for that row.
+        """
         self._destroy_column_menu()
         menu = tk.Menu(self, tearoff=0)
         self._column_menu = menu
+
+        if row is not None and self._islat is not None:
+            menu.add_command(
+                label="Show in Spectrum",
+                command=lambda r=row: self.show_in_spectrum(r),
+                state="normal" if self.row_line(row) is not None else "disabled")
+            menu.add_separator()
 
         add_menu = tk.Menu(menu, tearoff=0)
         general = [s for s in self._addable if s.kind != "quantum_field"]
@@ -918,6 +1000,69 @@ class LineListViewWindow(tk.Toplevel):
             self._sort_by(sort_col)
 
     # ------------------------------------------------------------------
+    # Lines: to and from the spectrum
+    # ------------------------------------------------------------------
+    def row_line(self, iid: str) -> Optional[LineRef]:
+        """The line of the row with item id *iid*, or ``None`` when it has no wavelength.
+
+        Read from the loaded frame, so the wavelength is not the rounded one
+        shown.  The molecule is this window's, or else the row's ``species``.
+        """
+        df = self._df
+        try:
+            pos = int(iid)
+        except (TypeError, ValueError):
+            return None
+        if df is None or not 0 <= pos < len(df.index):
+            return None
+        return LineRef.from_row(df.iloc[pos],
+                                molecule=getattr(self.mol_obj, "name", None))
+
+    def show_in_spectrum(self, iid: str) -> bool:
+        """Select the line of row *iid* for inspection in the main window.
+
+        See :meth:`iSLATPlot.show_line_in_spectrum`.  Returns whether the
+        line was highlighted there.
+        """
+        ref = self.row_line(iid)
+        plot = getattr(getattr(self._islat, "GUI", None), "plot", None)
+        show = getattr(plot, "show_line_in_spectrum", None)
+        if ref is None or not callable(show):
+            return False
+        try:
+            return bool(show(ref))
+        except Exception as exc:
+            self._status_var.set(f"Could not show the line in the spectrum: {exc}")
+            return False
+
+    def select_line(self, ref: LineRef) -> bool:
+        """Select and scroll to the row of the line *ref* describes.
+
+        A search that hides the row is cleared (the sort stays).  Returns
+        ``False`` when the table has no such line.
+        """
+        df = self._df
+        if df is None or df.empty or "lam" not in df.columns:
+            return False
+        pos = match_line(
+            ref, df["lam"],
+            df["lev_up"] if "lev_up" in df.columns else None,
+            df["lev_low"] if "lev_low" in df.columns else None,
+        )
+        if pos is None or pos >= len(self._all_rows):
+            return False
+        iid = str(pos)
+        if not self._tree.exists(iid):
+            self._clear_search()
+            self._apply_sort()
+        if not self._tree.exists(iid):
+            return False
+        self._tree.selection_set(iid)
+        self._tree.focus(iid)
+        self._tree.see(iid)
+        return True
+
+    # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
     def _export_csv(self) -> None:
@@ -954,3 +1099,70 @@ class LineListViewWindow(tk.Toplevel):
                 print(msg)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc), parent=self)
+
+
+# ---------------------------------------------------------------------------
+# Showing a line from elsewhere
+# ---------------------------------------------------------------------------
+def _report(data_field, message: str) -> None:
+    """Show *message* in the data field, or print it without one."""
+    if data_field is not None and hasattr(data_field, "insert_text"):
+        try:
+            data_field.insert_text(message)
+            return
+        except Exception:
+            pass
+    print(message)
+
+
+def show_line_in_line_list(ref: LineRef, *, islat=None, molecule=None,
+                           parent=None) -> Optional[LineListViewWindow]:
+    """Show the line *ref* in its molecule's line list table, selected.
+
+    Raises the molecule's open table (refreshed when it lacks the line), or
+    opens one.  The molecule is *molecule*, or else ``ref.molecule`` looked
+    up in ``islat.molecules_dict``.  New tables are parented to the main
+    window when there is one (else *parent*), so they outlive the window
+    that asked.
+
+    Returns the table, or ``None`` when the molecule or its line list is not
+    available.  Problems are reported in the data field.
+    """
+    gui = getattr(islat, "GUI", None)
+    data_field = getattr(gui, "data_field", None)
+    mol = molecule
+    if mol is None and ref.molecule:
+        molecules = getattr(islat, "molecules_dict", None)
+        try:
+            mol = molecules.get(ref.molecule) if molecules is not None else None
+        except Exception:
+            mol = None
+    if mol is None:
+        _report(data_field, f"Cannot show {ref.describe()} in a line list: "
+                            "its molecule is not loaded.")
+        return None
+    name = getattr(mol, "name", None) or "the molecule"
+    try:
+        has_list = mol.line_list is not None
+    except Exception:
+        has_list = False
+    if not has_list:
+        _report(data_field, f"No line list loaded for '{name}'.")
+        return None
+
+    window = LineListViewWindow.find_for_molecule(mol)
+    if window is not None:
+        window.raise_window()
+        found = window.select_line(ref)
+        if not found:
+            # The table may predate a change of the line list.
+            window.refresh()
+            found = window.select_line(ref)
+    else:
+        master = getattr(gui, "master", None)
+        root = master if isinstance(master, tk.Misc) else parent
+        window = LineListViewWindow(root, mol, data_field, islat=islat)
+        found = window.select_line(ref)
+    if not found:
+        _report(data_field, f"{ref.describe()} is not in the {name} line list.")
+    return window

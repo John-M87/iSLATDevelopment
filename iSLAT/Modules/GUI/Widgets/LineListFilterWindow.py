@@ -1874,6 +1874,8 @@ class LineListFilterWindow(tk.Toplevel):
             data_field=self.data_field,
             export_basename=f"{mol_name}_filtered",
             column_source=self._table_column_source,
+            islat=self._islat,
+            molecule=self.mol_obj,
         )
         view.protocol("WM_DELETE_WINDOW",
                       lambda v=view: self._close_table_view(v))

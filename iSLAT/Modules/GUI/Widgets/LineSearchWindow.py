@@ -560,6 +560,7 @@ class LineSearchWindow:
             title=results_title(result),
             data_field=self._data_field(),
             export_basename=export_basename(result),
+            islat=self._islat,
         )
 
     # ------------------------------------------------------------------

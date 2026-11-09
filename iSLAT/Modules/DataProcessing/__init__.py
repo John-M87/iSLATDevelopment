@@ -33,6 +33,7 @@ from .LineRangeSearch import (
     search_line_lists,
 )
 from .SampleStack import SampleSpectrum, SampleStackBuilder
+from .LineIdentity import LineRef, match_line
 
 __all__ = [
     "Chi2Spectrum",
@@ -59,4 +60,6 @@ __all__ = [
     "search_line_lists",
     "SampleSpectrum",
     "SampleStackBuilder",
+    "LineRef",
+    "match_line",
 ]
