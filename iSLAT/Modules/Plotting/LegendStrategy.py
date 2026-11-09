@@ -200,22 +200,26 @@ class MoleculeColorLegend(LegendStrategy):
         # Invisible handle patches (text-only appearance)
         handles = [Patch(facecolor="none", edgecolor="none") for _ in colors]
 
-        # Position the legend in figure coordinates, centered at x=0.5,
-        # in the margin above the topmost panel.
-        y_anchor = self._safe_y_anchor(fig)
+        if fig.get_layout_engine() is not None:
+            # Directly above the panel; the layout engine makes room for it.
+            placement = dict(loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                             bbox_transform=ax.transAxes, borderaxespad=0.2)
+        else:
+            # Fixed margins: centered at x=0.5 in the margin above the
+            # topmost panel, in figure coordinates.
+            placement = dict(loc="upper center", bbox_to_anchor=(0.5, self._safe_y_anchor(fig)),
+                             bbox_transform=fig.transFigure)
 
         leg = ax.legend(
             handles,
             labels,
-            loc="upper center",
             ncols=min(ncols, len(labels)),
             handlelength=0,
             handletextpad=0,
-            bbox_to_anchor=(0.5, y_anchor),
-            bbox_transform=fig.transFigure,
             fontsize=fontsize,
             prop={"weight": "bold", "size": fontsize},
             frameon=False,
+            **placement,
         )
 
         # Tag each text entry with its molecule color.

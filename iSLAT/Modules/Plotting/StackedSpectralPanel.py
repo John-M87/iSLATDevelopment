@@ -133,8 +133,8 @@ class StackedSpectralPanel(CompositePlot):
         When *True* all panels share the same vertical scale.
         Default *False*.
     hspace : float
-        Vertical spacing between cells in the outer GridSpec.
-        Default 0.15.
+        Smallest vertical gap between cells, as a fraction of the cell
+        height; the layout widens it to fit the tick labels.  Default 0.15.
     row_height : float
         Base height (inches) per cell used for auto-figsize.
         Default 2.0.
@@ -423,14 +423,29 @@ class StackedSpectralPanel(CompositePlot):
         """
         active_indices, _ = self._active_panel_edges()
         n_active = len(active_indices)
-        gs = GridSpec(
-            nrows=max(n_active, 1),
-            ncols=1,
-            figure=self.fig,
-            hspace=self.hspace,
+        self._use_stacked_layout_engine()
+        return self._stacked_grid(max(n_active, 1))
+
+    def _use_stacked_layout_engine(self) -> None:
+        """Lay the figure out with a :class:`StackedPanelLayoutEngine` (its gaps at least :attr:`hspace`)."""
+        from .StackedLayout import StackedPanelLayoutEngine
+        engine = self.fig.get_layout_engine()
+        if isinstance(engine, StackedPanelLayoutEngine):
+            engine.set(min_hspace=self.hspace)
+        else:
+            self.fig.set_layout_engine(StackedPanelLayoutEngine(min_hspace=self.hspace))
+
+    def _stacked_grid(self, nrows: int) -> GridSpec:
+        """The outer one-column grid of the cells.
+
+        Its margins and spacing are a starting point (the legend measures
+        the panel width before the first layout); the layout engine sets
+        the final ones.
+        """
+        return GridSpec(
+            nrows=nrows, ncols=1, figure=self.fig, hspace=self.hspace,
+            left=0.04, right=0.995, top=0.96, bottom=0.05,
         )
-        self.fig.subplots_adjust(left=0.06, right=0.94, top=0.93, bottom=0.06)
-        return gs
 
     def _create_panels(self, layout: "GridSpec") -> None:
         """Cell creation is handled by :meth:`_create_cell` inside
@@ -839,33 +854,14 @@ class StackedSpectralPanel(CompositePlot):
         self.panels.clear()
         self.child_panels.clear()
 
-        # Disable constrained_layout for uniform cell heights.
-        self.fig.set_layout_engine(None)
+        # StackedPanelLayoutEngine sizes the margins and the gaps between
+        # rows to the tick labels, axis labels and legend (fixed fractions
+        # of the figure left wide empty margins on large canvases), keeping
+        # every row the same height.  It measures again only when something
+        # that sizes the layout changes.
+        self._use_stacked_layout_engine()
 
-        # Compute hspace so x-axis tick labels on each panel are not
-        # covered by the axes background of the row below.  hspace is the
-        # inter-panel gap expressed as a fraction of the average axes
-        # height.  A target gap of 0.22 in accommodates 7-pt tick labels
-        # plus padding at typical screen DPIs.  The value is clamped so it
-        # is always at least self.hspace and at most 0.8.
-        _margin_top = 0.93
-        _margin_bottom = 0.06
-        figH = fig_h
-        _avg_ax_h = (_margin_top - _margin_bottom) * figH / max(n_active, 1)
-        _target_gap = 0.22  # inches needed for tick labels + padding
-        _needed_hspace = _target_gap / _avg_ax_h if _avg_ax_h > 0 else 0.35
-        render_hspace = min(max(self.hspace, _needed_hspace), 0.8)
-
-        gs = GridSpec(
-            nrows=n_active,
-            ncols=1,
-            figure=self.fig,
-            hspace=render_hspace,
-        )
-
-        self.fig.subplots_adjust(
-            left=0.06, right=0.94, top=_margin_top, bottom=_margin_bottom,
-        )
+        gs = self._stacked_grid(n_active)
 
         fg = self._get_theme_value("foreground", "black")
 
@@ -917,9 +913,8 @@ class StackedSpectralPanel(CompositePlot):
             prev_original_idx = orig_idx
 
         # --- Global figure labels --------------------------------------
-        self.fig.supylabel(
-            self.y_axis_label, fontsize=10, color=fg, x=0.01,
-        )
+        # No explicit x: the layout engine places it at the left edge and makes room for it.
+        self.fig.supylabel(self.y_axis_label, fontsize=10, color=fg)
 
         # Apply theme
         self.apply_theme_to_figure()

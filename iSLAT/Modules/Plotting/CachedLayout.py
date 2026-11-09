@@ -16,6 +16,9 @@ real one again only when one of its inputs changed:
 X limits are not an input, so a pan reuses the layout unless an x tick label
 would then be cut off at the figure edge.  Saving always runs the real
 layout, and the next screen draw lays out again.
+
+The caching lives in :class:`CachedLayoutMixin`, which also serves the
+stacked plots' :class:`~iSLAT.Modules.Plotting.StackedLayout.StackedPanelLayoutEngine`.
 """
 from typing import Any, Tuple
 
@@ -27,8 +30,11 @@ from matplotlib.text import Text
 #: the layout is redone to make room for it.
 EDGE_TOLERANCE_PX = 0.5
 
-class CachedConstrainedLayoutEngine(ConstrainedLayoutEngine):
-    """A :class:`ConstrainedLayoutEngine` that skips the layout when its inputs are unchanged."""
+class CachedLayoutMixin:
+    """Run a layout engine's ``execute`` only when something that sizes the layout changed.
+
+    Put it before the engine class in the bases.
+    """
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -41,23 +47,31 @@ class CachedConstrainedLayoutEngine(ConstrainedLayoutEngine):
             self._last_key = None
             return super().execute(fig)
         if self._last_key is not None and self._layout_key(fig) == self._last_key \
-                and not x_tick_labels_cut_off(fig):
+                and not self._edges_need_layout(fig):
             return None
         result = super().execute(fig)
         # Taken after the layout: the y tick labels depend on the new axes heights.
         self._last_key = self._layout_key(fig)
         return result
 
+    def _edges_need_layout(self, fig) -> bool:
+        """Whether something not in the key needs a new layout: an x tick label cut off at the figure edge."""
+        return x_tick_labels_cut_off(fig)
+
     def _layout_key(self, fig) -> Tuple:
-        """Everything constrained layout depends on, except the x limits."""
+        """Everything the layout depends on, except the x limits."""
         return (
             tuple(fig.get_size_inches()), fig.dpi,
             repr(sorted(self.get().items())),
             tuple(_text_key(t, placed=False) for t in (fig._suptitle, fig._supxlabel, fig._supylabel) if t is not None),
             tuple(_legend_key(leg) for leg in fig.legends),
+            tuple(_text_key(t) for t in fig.texts),
             len(fig.subfigs),
             tuple(_axes_key(ax) for ax in fig.axes),
         )
+
+class CachedConstrainedLayoutEngine(CachedLayoutMixin, ConstrainedLayoutEngine):
+    """A :class:`ConstrainedLayoutEngine` that skips the layout when its inputs are unchanged."""
 
 def x_tick_labels_cut_off(fig, tolerance: float = EDGE_TOLERANCE_PX) -> bool:
     """True when a drawn x tick label reaches past the left or right figure edge."""
