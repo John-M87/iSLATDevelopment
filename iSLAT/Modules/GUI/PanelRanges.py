@@ -5,7 +5,8 @@ The ranges are typed one ``start end`` pair per line (``DATASTART`` /
 :class:`PanelRangesDialog` edits them for any stacked view: the Views menu's
 *Panel Ranges...* entry of the Full Spectrum and Optical Depth views (and of
 any other :class:`FullSpectrumView` subclass) and the Display Full Spectrum
-window's *Ranges...* button.  The multi-page PDF export reads its page ranges
+window's *Ranges...* button.  The ranges can be typed or dragged out on the
+plot (*Select on Plot*).  The multi-page PDF export reads its page ranges
 with the same :func:`parse_panel_ranges`.
 """
 import re
@@ -80,6 +81,14 @@ PANEL_RANGES_HELP = (
     f"{DATA_START_KEYWORD} / {DATA_END_KEYWORD} = first / last observed data point.\n"
     "A new panel count or wavelength range returns to an even split."
 )
+#: Help text added when the ranges can be dragged out on the plot.
+PICK_HELP = "Select on Plot: drag across the panels to pick the ranges."
+#: Shown while picking on the plot.
+PICKING_HINT = "Drag across the panels: each drag adds a range.\nApply to show them, Stop Selecting to edit them."
+
+#: Labels of the button that starts / stops picking ranges on the plot.
+PICK_LABEL = "Select on Plot"
+STOP_PICK_LABEL = "Stop Selecting"
 
 
 def raise_dialog(dialog: Optional[tk.Toplevel]) -> bool:
@@ -103,6 +112,11 @@ class PanelRangesDialog(tk.Toplevel):
     shows the panels that result.  Parse errors and a ``ValueError`` from
     *set_ranges* are shown in the dialog, which then changes nothing.
 
+    With *pick_on_plot*, *Select on Plot* lets the user drag the ranges out
+    on the plot instead: the text is emptied and each drag adds its range as
+    a line.  *Stop Selecting*, *Apply*, *Even Split* or closing the dialog
+    ends it; stopping before any drag puts the previous text back.
+
     Parameters
     ----------
     parent : tk widget
@@ -117,6 +131,9 @@ class PanelRangesDialog(tk.Toplevel):
     data_bounds : callable
         ``() -> (start, end)``: the first / last observed wavelength that
         ``DATASTART`` / ``DATAEND`` stand for (``(None, None)`` without data).
+    pick_on_plot : callable, optional
+        ``(on_pick) -> stop``: report each range dragged on the plot as
+        ``on_pick(start, end)`` until ``stop()`` is called.
     """
 
     def __init__(
@@ -127,6 +144,7 @@ class PanelRangesDialog(tk.Toplevel):
         get_ranges: Callable[[], Sequence[Tuple[float, float]]],
         set_ranges: Callable[[Optional[List[Tuple[float, float]]]], None],
         data_bounds: Callable[[], Tuple[Optional[float], Optional[float]]],
+        pick_on_plot: Optional[Callable[[Callable[[float, float], None]], Callable[[], None]]] = None,
     ) -> None:
         super().__init__(parent)
         self.title(title)
@@ -136,15 +154,25 @@ class PanelRangesDialog(tk.Toplevel):
         except (AttributeError, tk.TclError):
             pass
         self.bind("<Escape>", lambda _e: self.destroy())
+        # However the dialog goes (Close, the window manager, with its parent
+        # window or the view), picking on the plot ends with it.
+        self.bind("<Destroy>", self._on_destroy, add="+")
         self._get_ranges = get_ranges
         self._set_ranges = set_ranges
         self._data_bounds = data_bounds
+        self._pick_on_plot = pick_on_plot
+        self._stop_picking: Optional[Callable[[], None]] = None
+        self._text_before_picking = ""
+        self._picked = 0
 
         content = ttk.Frame(self)
         content.pack(fill="both", expand=True, padx=10, pady=10)
-        ttk.Label(content, text=PANEL_RANGES_HELP).pack(anchor="w")
+        help_text = PANEL_RANGES_HELP + ("\n" + PICK_HELP if pick_on_plot is not None else "")
+        ttk.Label(content, text=help_text).pack(anchor="w")
         self.text = tk.Text(content, width=34, height=10, undo=True)
         self.text.pack(fill="both", expand=True, pady=(6, 4))
+        self.hint_var = tk.StringVar(master=self, value="")
+        ttk.Label(content, textvariable=self.hint_var, foreground="gray").pack(anchor="w")
         self.error_var = tk.StringVar(master=self, value="")
         ttk.Label(content, textvariable=self.error_var, foreground="red").pack(anchor="w")
 
@@ -152,6 +180,10 @@ class PanelRangesDialog(tk.Toplevel):
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Apply", command=self.apply).pack(side="left")
         ttk.Button(buttons, text="Even Split", command=self.even_split).pack(side="left", padx=(4, 0))
+        self.pick_button: Optional[ttk.Button] = None
+        if pick_on_plot is not None:
+            self.pick_button = ttk.Button(buttons, text=PICK_LABEL, command=self.toggle_picking)
+            self.pick_button.pack(side="left", padx=(4, 0))
         ttk.Button(buttons, text="Close", command=self.destroy).pack(side="right")
 
         self._show_current()
@@ -165,7 +197,8 @@ class PanelRangesDialog(tk.Toplevel):
             self.text.insert("1.0", format_panel_ranges(starts, ends))
 
     def apply(self) -> bool:
-        """Show the typed ranges; returns ``False`` (and shows why) when they are invalid."""
+        """Show the typed (or picked) ranges; returns ``False`` (and shows why) when they are invalid."""
+        self.stop_picking()
         try:
             ranges = parse_panel_ranges(self.text.get("1.0", "end"), *self._data_bounds())
             self._set_ranges(ranges)
@@ -177,6 +210,60 @@ class PanelRangesDialog(tk.Toplevel):
 
     def even_split(self) -> None:
         """Back to the automatic split, then show the panels it made."""
+        self.stop_picking()
         self._set_ranges(None)
         self._show_current()
         self.error_var.set("")
+
+    # --- Select on Plot ---------------------------------------------------
+    @property
+    def picking(self) -> bool:
+        """Whether drags on the plot are being picked up as ranges."""
+        return self._stop_picking is not None
+
+    def toggle_picking(self) -> None:
+        """*Select on Plot* / *Stop Selecting*."""
+        if self.picking:
+            self.stop_picking()
+        else:
+            self.start_picking()
+
+    def start_picking(self) -> None:
+        """Empty the text and add each range dragged on the plot to it."""
+        if self._pick_on_plot is None or self.picking:
+            return
+        self._text_before_picking = self.text.get("1.0", "end-1c")
+        self._picked = 0
+        self.text.delete("1.0", "end")
+        self.error_var.set("")
+        self.hint_var.set(PICKING_HINT)
+        if self.pick_button is not None:
+            self.pick_button.configure(text=STOP_PICK_LABEL)
+        self._stop_picking = self._pick_on_plot(self._add_picked_range)
+
+    def stop_picking(self) -> None:
+        """Stop picking; with nothing picked, the previous text comes back."""
+        stop, self._stop_picking = self._stop_picking, None
+        if stop is None:
+            return
+        stop()
+        if not self._picked:
+            self.text.delete("1.0", "end")
+            self.text.insert("1.0", self._text_before_picking)
+        self.hint_var.set("")
+        if self.pick_button is not None:
+            self.pick_button.configure(text=PICK_LABEL)
+
+    def _add_picked_range(self, start: float, end: float) -> None:
+        if self.text.get("1.0", "end-1c").strip():
+            self.text.insert("end", "\n")
+        self.text.insert("end", format_panel_ranges([start], [end]))
+        self.text.see("end")
+        self._picked += 1
+        self.error_var.set("")
+
+    def _on_destroy(self, event: Any) -> None:
+        if event.widget is self:
+            stop, self._stop_picking = self._stop_picking, None
+            if stop is not None:
+                stop()

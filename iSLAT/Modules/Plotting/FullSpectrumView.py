@@ -46,8 +46,8 @@ from .SampleStackPlot import (
     SampleStackPlot, normalize_stack_layout, normalize_stack_model_mode,
 )
 from .ArtistTags import (
-    ATOMIC_LINE_TAG, OBSERVED_TAG, SAVED_LINE_TAG, SUMMED_TAG, iter_tagged,
-    remove_molecule_lines, remove_tagged, set_molecule_visible, set_tagged_visible,
+    ATOMIC_LINE_TAG, OBSERVED_TAG, PICKED_RANGE_TAG, SAVED_LINE_TAG, SUMMED_TAG, iter_tagged,
+    remove_molecule_lines, remove_tagged, set_molecule_visible, set_tagged_visible, tag_artist,
 )
 from .SavedLineLabels import get_saved_line_label_settings
 from .BasePlot import BasePlot
@@ -129,12 +129,19 @@ SKIP_GAPS_TIP: str = (
     "     no data are left out."
 )
 
+#: Picking panel ranges on the plot: narrowest drag taken as a range (um), and its shading.
+MIN_PICKED_RANGE: float = 1e-3
+PICKED_RANGE_COLOR: str = "lime"
+PICKED_RANGE_ALPHA: float = 0.25
+
 #: Views-menu label and tooltip of the *Panel Ranges* dialog (every stacked view).
 PANEL_RANGES_LABEL: str = "Panel Ranges\u2026"
 PANEL_RANGES_TIP: str = (
     "Set the wavelength range of each panel:\n"
     "one start end pair per line, shown in that\n"
     "order; ranges may overlap or leave gaps.\n"
+    "'Select on Plot' picks them by dragging\n"
+    "across the panels.\n"
     "Kept until 'Even Split', a new N Panels\n"
     "or a new Plot Start / Plot Range."
 )
@@ -195,6 +202,10 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         # None for the automatic split; every plot the view builds uses them.
         self.panel_ranges: Optional[List[Tuple[float, float]]] = None
         self._ranges_dialog: Any = None
+        # Picking ranges on the plot (see start_range_picking): who is told
+        # about each drag, and the shading of the ranges picked so far.
+        self._range_picker: Optional[Callable[[float, float], None]] = None
+        self._picked_range_artists: List[Any] = []
 
         # What the last drawing of each overlay ("atomic_lines" /
         # "saved_lines") made and depended on: (artists, key).  Lets
@@ -335,8 +346,10 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         """Open the *Panel Ranges* dialog for this view (or raise the open one) and return it.
 
         *parent* defaults to the window holding the view; *on_change* runs
-        after each change made from the dialog.  The dialog closes with the
-        view (see :meth:`deactivate`).
+        after each change made from the dialog.  Its *Select on Plot* picks
+        the ranges by dragging across the panels (see
+        :meth:`start_range_picking`).  The dialog closes with the view (see
+        :meth:`deactivate`).
         """
         from iSLAT.Modules.GUI.PanelRanges import PanelRangesDialog, raise_dialog
 
@@ -354,18 +367,91 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             get_ranges=self.shown_panel_ranges,
             set_ranges=_set_ranges,
             data_bounds=self.observed_data_bounds,
+            pick_on_plot=self.start_range_picking,
         )
         return self._ranges_dialog
 
     def _close_panel_ranges_dialog(self) -> None:
         dialog, self._ranges_dialog = self._ranges_dialog, None
-        if dialog is None:
+        if dialog is not None:
+            try:
+                if dialog.winfo_exists():
+                    dialog.destroy()
+            except Exception:
+                pass
+        self.stop_range_picking()
+
+    # --- Picking panel ranges on the plot (Panel Ranges > Select on Plot) --
+    def start_range_picking(self, on_pick: Callable[[float, float], None]) -> Callable[[], None]:
+        """Pass each range dragged across a panel to *on_pick* as ``(start, end)``; returns the function that stops it.
+
+        While picking, a drag does not select the range as usual (no line
+        inspection, no switch to another view).  Each picked range stays
+        shaded on the panels it covers until picking stops; the span the drag
+        left is cleared, so the next drag in the same panel starts a new
+        range.  Drags narrower than :data:`MIN_PICKED_RANGE` are ignored.
+        Starting again replaces *on_pick* and the shading.
+        """
+        self.stop_range_picking()
+        self._range_picker = on_pick
+        self._clear_span_selections()
+        return self.stop_range_picking
+
+    def stop_range_picking(self) -> None:
+        """End range picking (drags select again) and remove the shading of the picked ranges."""
+        self._range_picker = None
+        artists, self._picked_range_artists = self._picked_range_artists, []
+        for artist in artists:
+            try:
+                artist.remove()
+            except Exception:
+                pass    # gone with its axes after a re-render
+        if artists:
+            self._redraw_figure()
+
+    @property
+    def picking_ranges(self) -> bool:
+        """Whether drags are being picked up as panel ranges (see :meth:`start_range_picking`)."""
+        return self._range_picker is not None
+
+    def _handle_span_select(self, xmin: float, xmax: float, subplot_index: int, key: Any) -> None:
+        """A drag across a panel: a picked range while picking, otherwise :meth:`_on_span_select`."""
+        if self._range_picker is None:
+            self._on_span_select(xmin, xmax, subplot_index)
             return
-        try:
-            if dialog.winfo_exists():
-                dialog.destroy()
-        except Exception:
-            pass
+        span = self.span_selectors.get(key)
+        if span is not None:
+            span.clear()
+        lo, hi = sorted((float(xmin), float(xmax)))
+        if hi - lo < MIN_PICKED_RANGE:
+            return
+        self._shade_picked_range(lo, hi)
+        self._range_picker(lo, hi)
+
+    def _shade_picked_range(self, lo: float, hi: float) -> None:
+        """Shade ``[lo, hi]`` on every axes it overlaps (the panels' wavelength limits are fixed)."""
+        for ax in self._iter_all_axes():
+            x0, x1 = sorted(ax.get_xlim())
+            if hi <= x0 or lo >= x1:
+                continue
+            patch = ax.axvspan(lo, hi, facecolor=PICKED_RANGE_COLOR, alpha=PICKED_RANGE_ALPHA,
+                               linewidth=0, zorder=0.5)
+            self._picked_range_artists.append(tag_artist(patch, PICKED_RANGE_TAG))
+        self._redraw_figure()
+
+    def _clear_span_selections(self) -> None:
+        """Hide every panel's selected span (a press inside one would move it instead of starting a range)."""
+        for span in self.span_selectors.values():
+            try:
+                span.clear()
+            except Exception:
+                pass
+
+    def _redraw_figure(self) -> None:
+        if self._canvas is not None:
+            self._canvas.draw_idle()
+        elif self.fig is not None and self.fig.canvas is not None:
+            self.fig.canvas.draw_idle()
 
     def _get_data_density(self) -> bool:
         return self._pm.toggle_state.get("data_density", False)
@@ -1008,6 +1094,9 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
     def _install_span_selectors(self) -> None:
         """Add span selectors (see :meth:`_span_selector_axes`) for click-to-inspect.
 
+        A drag goes to :meth:`_on_span_select`, or to range picking while it
+        is on (see :meth:`start_range_picking`).
+
         :class:`SingleDrawSpanSelector`: with stock selectors a span left
         visible in one panel made every selector re-render the figure on
         each draw (one extra render per panel).
@@ -1020,7 +1109,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         for key, idx, ax in self._span_selector_axes():
             span = SingleDrawSpanSelector(
                 ax,
-                lambda xmin, xmax, i=idx: self._on_span_select(xmin, xmax, i),
+                lambda xmin, xmax, i=idx, k=key: self._handle_span_select(xmin, xmax, i, k),
                 direction="horizontal",
                 useblit=True,
                 props=dict(alpha=0.3, facecolor="lime"),

@@ -25,6 +25,8 @@ MOLECULE_TAG = "_molecule_name"
 SAVED_LINE_TAG = "_islat_saved_line"
 #: Atomic-line markers and labels.
 ATOMIC_LINE_TAG = "_islat_atomic_line"
+#: Shading of a range dragged out while picking panel ranges on the plot.
+PICKED_RANGE_TAG = "_islat_picked_range"
 
 Tags = Union[str, Sequence[str]]
 

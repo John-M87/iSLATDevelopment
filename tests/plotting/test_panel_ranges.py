@@ -9,6 +9,11 @@ data refreshes, display options) and are used by Save Figure, until Even
 Split, a new N Panels or a new Plot Start / Plot Range.  Each change shows
 the new panel count and span in the control panel.  The Views-menu entry
 opens the shared Panel Ranges dialog, which closes with the view.
+
+The dialog's Select on Plot picks the ranges by dragging across the panels
+(real mouse events here): each drag adds its range to the dialog instead of
+selecting it as usual, stays shaded until picking stops, and the next drag
+in the same panel starts a new range rather than moving the last one.
 """
 
 import matplotlib
@@ -16,10 +21,13 @@ matplotlib.use("Agg")
 
 import numpy as np
 import pytest
+from matplotlib.backend_bases import MouseEvent
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from iSLAT.Modules.GUI.ControlField import ActionField, DisplayRangeField, EntryField, ToggleField
 from iSLAT.Modules.GUI.ControlSurface import ControlBus, ControlSurface
-from iSLAT.Modules.GUI.PanelRanges import format_panel_ranges
+from iSLAT.Modules.GUI.PanelRanges import PICK_LABEL, STOP_PICK_LABEL, format_panel_ranges
+from iSLAT.Modules.Plotting.ArtistTags import PICKED_RANGE_TAG
 from iSLAT.Modules.Plotting.FullSpectrumPlot import FullSpectrumPlot
 from iSLAT.Modules.Plotting.FullSpectrumView import PANEL_RANGES_LABEL, FullSpectrumView
 from iSLAT.Modules.Plotting.ResidualSpectrumPlot import ResidualSpectrumPlot
@@ -256,6 +264,123 @@ class TestPlotSwitches:
 
 
 # ======================================================================
+# Picking the ranges on the plot
+# ======================================================================
+
+def _drawn(view):
+    """Give the figure an Agg canvas (blitting span selectors, as on screen) and draw it."""
+    FigureCanvasAgg(view.fig)
+    view._install_span_selectors()
+    view.fig.canvas.draw()
+
+
+def _drag(view, panel, start, end):
+    """Drag across the middle of *panel* from wavelength *start* to *end*, with mouse events."""
+    ax = view.subplots[panel]
+    canvas = view.fig.canvas
+    y = sum(ax.get_ylim()) / 2
+    x0, y0 = ax.transData.transform((start, y))
+    x1, y1 = ax.transData.transform((end, y))
+    MouseEvent("button_press_event", canvas, x0, y0, 1)._process()
+    MouseEvent("motion_notify_event", canvas, x1, y1, 1, buttons={1})._process()
+    MouseEvent("button_release_event", canvas, x1, y1, 1)._process()
+
+
+def _within(view, panel, *fractions):
+    """Wavelengths at *fractions* of *panel*'s width."""
+    lo, hi = view.subplots[panel].get_xlim()
+    return [lo + f * (hi - lo) for f in fractions]
+
+
+def _pixel(view, panel=0):
+    """One screen pixel in wavelength, the precision of a mouse position."""
+    ax = view.subplots[panel]
+    lo, hi = ax.get_xlim()
+    return (hi - lo) / ax.bbox.width
+
+
+def _shading(view):
+    return [p for ax in view.fig.axes for p in ax.patches if hasattr(p, PICKED_RANGE_TAG)]
+
+
+def _record_selections(view, monkeypatch):
+    """Swap the view's usual drag handling for a recorder; returns the ``(xmin, xmax, panel)`` it got."""
+    selections = []
+
+    def recording(xmin, xmax, subplot_index):
+        selections.append((xmin, xmax, subplot_index))
+
+    monkeypatch.setattr(view, "_on_span_select", recording)
+    return selections
+
+
+def _recorder():
+    picked = []
+
+    def on_pick(start, end):
+        picked.append((start, end))
+
+    return picked, on_pick
+
+
+class TestPickingOnThePlot:
+    def test_drags_become_ranges_instead_of_selections(self, rendered, monkeypatch):
+        view, _pm = rendered
+        _drawn(view)
+        selections = _record_selections(view, monkeypatch)
+        picked, on_pick = _recorder()
+        xlims = _xlims(view)
+        view.start_range_picking(on_pick)
+        assert view.picking_ranges
+
+        a, b, c, d = _within(view, 0, 0.1, 0.3, 0.2, 0.6)
+        e, f = _within(view, 1, 0.8, 0.4)
+        _drag(view, 0, a, b)
+        _drag(view, 0, c, d)        # starts inside the first range: a new range, not a move
+        _drag(view, 1, e, f)        # right to left
+        assert np.allclose(picked, [(a, b), (c, d), (f, e)], atol=2 * _pixel(view))
+        assert selections == []
+        assert len(_shading(view)) >= 3
+        assert np.allclose(_xlims(view), xlims)          # the shading leaves the panels alone
+
+    def test_a_selection_left_from_before_is_cleared(self, rendered, monkeypatch):
+        view, _pm = rendered
+        _drawn(view)
+        _record_selections(view, monkeypatch)
+        a, b = _within(view, 0, 0.2, 0.6)
+        _drag(view, 0, a, b)                # the usual selection, still shown
+        picked, on_pick = _recorder()
+        view.start_range_picking(on_pick)
+        c, d = _within(view, 0, 0.4, 0.9)
+        _drag(view, 0, c, d)                # starts inside it: a new range, not a move
+        assert np.allclose(picked, [(c, d)], atol=2 * _pixel(view))
+
+    def test_clicks_and_tiny_drags_are_ignored(self, rendered, monkeypatch):
+        view, _pm = rendered
+        _drawn(view)
+        _record_selections(view, monkeypatch)
+        picked, on_pick = _recorder()
+        view.start_range_picking(on_pick)
+        (a,) = _within(view, 0, 0.5)
+        _drag(view, 0, a, a)
+        assert picked == [] and _shading(view) == []
+
+    def test_stopping_brings_back_the_usual_selection(self, rendered, monkeypatch):
+        view, _pm = rendered
+        _drawn(view)
+        selections = _record_selections(view, monkeypatch)
+        picked, on_pick = _recorder()
+        stop = view.start_range_picking(on_pick)
+        a, b = _within(view, 0, 0.2, 0.4)
+        _drag(view, 0, a, b)
+        stop()
+        assert not view.picking_ranges
+        assert _shading(view) == []
+        _drag(view, 0, a, b)
+        assert len(picked) == 1 and len(selections) == 1
+
+
+# ======================================================================
 # Controls
 # ======================================================================
 
@@ -385,6 +510,51 @@ class TestDialog:
         view, menu = menu_view
         menu.invoke(_menu_index(menu, PANEL_RANGES_LABEL))
         dialog = view._ranges_dialog
+        _button(dialog, PICK_LABEL).invoke()
         view.deactivate()
         assert not dialog.winfo_exists()
         assert view._ranges_dialog is None
+        assert not view.picking_ranges
+
+    def test_select_on_plot_fills_the_ranges(self, menu_view):
+        view, menu = menu_view
+        _drawn(view)
+        menu.invoke(_menu_index(menu, PANEL_RANGES_LABEL))
+        dialog = view._ranges_dialog
+        _button(dialog, PICK_LABEL).invoke()
+        assert view.picking_ranges
+        assert dialog.text.get("1.0", "end").strip() == ""
+        assert dialog.pick_button.cget("text") == STOP_PICK_LABEL and dialog.hint_var.get()
+
+        first = _within(view, 1, 0.2, 0.7)
+        second = _within(view, 0, 0.3, 0.5)
+        _drag(view, 1, *first)
+        _drag(view, 0, *second)
+        assert len(dialog.text.get("1.0", "end").strip().splitlines()) == 2
+
+        _button(dialog, "Apply").invoke()
+        assert not view.picking_ranges and _shading(view) == []
+        assert dialog.pick_button.cget("text") == PICK_LABEL and dialog.hint_var.get() == ""
+        assert np.allclose(view.panel_ranges, [tuple(first), tuple(second)], atol=2 * _pixel(view) + 1e-4)
+
+    def test_stopping_before_a_drag_keeps_the_text(self, menu_view):
+        view, menu = menu_view
+        menu.invoke(_menu_index(menu, PANEL_RANGES_LABEL))
+        dialog = view._ranges_dialog
+        before = dialog.text.get("1.0", "end")
+        _button(dialog, PICK_LABEL).invoke()
+        _button(dialog, STOP_PICK_LABEL).invoke()
+        assert dialog.text.get("1.0", "end") == before
+        assert not view.picking_ranges
+
+    def test_closing_the_dialog_stops_picking(self, menu_view):
+        view, menu = menu_view
+        _drawn(view)
+        menu.invoke(_menu_index(menu, PANEL_RANGES_LABEL))
+        dialog = view._ranges_dialog
+        _button(dialog, PICK_LABEL).invoke()
+        _drag(view, 0, *_within(view, 0, 0.2, 0.4))
+        assert _shading(view)
+        _button(dialog, "Close").invoke()
+        assert not view.picking_ranges and _shading(view) == []
+        assert view.panel_ranges is None                  # picked, never applied

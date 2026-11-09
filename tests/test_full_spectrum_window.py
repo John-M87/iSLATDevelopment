@@ -535,6 +535,11 @@ class TestPanelRanges:
         dlg = win._ranges_dialog
         text = next(w for w in _walk(dlg) if w.winfo_class() == "Text")
         assert len(text.get("1.0", "end").split()) == 8  # 4 panels prefilled
+        _button(dlg, "Select on Plot").invoke()          # drag the ranges out on the window's plot
+        assert win.view.picking_ranges
+        _button(dlg, "Stop Selecting").invoke()
+        assert not win.view.picking_ranges
+        assert len(text.get("1.0", "end").split()) == 8  # nothing dragged: the panels again
         text.delete("1.0", "end")
         text.insert("1.0", "bad line")
         _button(dlg, "Apply").invoke()
