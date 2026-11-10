@@ -19,10 +19,12 @@ from iSLAT.Modules.Plotting.FullSpectrumView import (
     MAX_EXPORT_PAGES,
     MAX_ROWS_PER_PAGE,
     apply_export_size,
+    get_export_fonts,
     get_export_settings,
     get_page_settings,
     observed_wavelength_bounds,
     rows_per_page_list,
+    set_export_fonts,
     set_export_settings,
     set_page_settings,
     toggle_state_display_kwargs,
@@ -248,6 +250,32 @@ class TestExportSettings:
         pm = SimpleNamespace(full_spectrum_export_settings={"width": -5, "panel_height": "x"})
         assert get_export_settings(pm) == {"width": None, "panel_height": None}
 
+    def test_export_fonts_default_to_the_plots_own_sizes(self):
+        blank = {"ticks": None, "labels": None, "legend": None, "text": None}
+        assert get_export_fonts(SimpleNamespace()) == blank
+        assert get_export_fonts(None) == blank
+        assert get_export_fonts(MagicMock()) == blank
+
+    def test_export_fonts_round_trip_and_blank_means_default(self):
+        pm = SimpleNamespace()
+        expected = {"ticks": 9.0, "labels": 12.5, "legend": None, "text": None}
+        assert set_export_fonts(pm, {"ticks": "9", "labels": 12.5, "legend": " "}) == expected
+        assert get_export_fonts(pm) == expected
+        set_export_fonts(pm)
+        assert get_export_fonts(pm) == {"ticks": None, "labels": None, "legend": None, "text": None}
+
+    @pytest.mark.parametrize("sizes", [{"ticks": "big"}, {"legend": 0}, {"text": 500}, {"title": 10}])
+    def test_invalid_export_fonts_raise_and_keep_previous(self, sizes):
+        pm = SimpleNamespace()
+        set_export_fonts(pm, {"ticks": 8})
+        with pytest.raises(ValueError):
+            set_export_fonts(pm, sizes)
+        assert get_export_fonts(pm)["ticks"] == 8.0
+
+    def test_invalid_stored_export_fonts_fall_back(self):
+        pm = SimpleNamespace(full_spectrum_export_fonts={"ticks": -1, "labels": "x", "legend": 11})
+        assert get_export_fonts(pm) == {"ticks": None, "labels": None, "legend": 11.0, "text": None}
+
     def test_apply_export_size(self):
         plot = _plot(n_panels=5)
         assert apply_export_size(plot, None) == (DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT)
@@ -308,6 +336,9 @@ def recorder(monkeypatch):
                     "ylims": [ax.get_ylim() for ax in self.subplots.values()],
                     "observed": [a.get_visible() for a in _tagged(self, "_islat_observed")],
                     "summed": [a.get_visible() for a in _tagged(self, "_islat_summed")],
+                    "tick_sizes": {ax.xaxis.get_tick_params(which="major").get("labelsize")
+                                   for ax in self.subplots.values()},
+                    "flux_label_size": self.fig._supylabel.get_fontsize(),
                 })
             super().close()
 
@@ -376,6 +407,33 @@ class TestOutputFullSpectrum:
         fsv.output_full_spectrum(islat, figure_width=50)
         assert recorder[0]["size"] == pytest.approx((50.0, DEFAULT_EXPORT_HEIGHT))
 
+    def test_default_font_sizes(self, recorder, save_to):
+        fsv.output_full_spectrum(self._islat(_toggle_state()))
+        (snap,) = recorder
+        assert snap["tick_sizes"] == {7} and snap["flux_label_size"] == 10
+
+    def test_uses_session_export_fonts(self, recorder, save_to):
+        islat = self._islat(_toggle_state())
+        islat.GUI.plot.full_spectrum_export_fonts = {"ticks": 11.0, "labels": 15.0}
+        fsv.output_full_spectrum(islat)
+        (snap,) = recorder
+        assert snap["tick_sizes"] == {11.0} and snap["flux_label_size"] == 15.0
+
+    def test_font_overrides_replace_only_the_kinds_given(self, recorder, save_to):
+        islat = self._islat(_toggle_state())
+        islat.GUI.plot.full_spectrum_export_fonts = {"ticks": 11.0, "labels": 15.0}
+        fsv.output_full_spectrum(islat, font_sizes={"ticks": 6, "labels": None})
+        (snap,) = recorder
+        assert snap["tick_sizes"] == {6.0} and snap["flux_label_size"] == 10   # None = the plot's own size
+
+    def test_invalid_font_override_raises_before_the_dialog(self, recorder, monkeypatch):
+        import tkinter.filedialog
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename",
+                            lambda **_k: pytest.fail("the dialog was opened"))
+        with pytest.raises(ValueError, match="font size"):
+            fsv.output_full_spectrum(self._islat(_toggle_state()), font_sizes={"ticks": -1})
+        assert recorder == []
+
     def test_cancelled_dialog_saves_nothing(self, recorder, monkeypatch):
         import tkinter.filedialog
         monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: "")
@@ -422,6 +480,13 @@ class TestViewSaveFigure:
         assert snap["observed"] and not any(snap["observed"])
         assert all(yl == (0.0, 9.0) for yl in snap["ylims"])
         assert snap["size"] == pytest.approx((30.0, 1.5 * len(snap["ylims"])))
+
+    def test_save_uses_the_export_fonts(self, recorder, tmp_path):
+        view = self._view(_toggle_state())
+        view._pm.full_spectrum_export_fonts = {"ticks": 9.0, "labels": 13.0, "legend": None, "text": None}
+        assert view.save_figure(str(tmp_path / "view.pdf"))
+        (snap,) = recorder
+        assert snap["tick_sizes"] == {9.0} and snap["flux_label_size"] == 13.0
 
     def test_save_uses_the_panel_ranges(self, recorder, tmp_path):
         view = self._view(_toggle_state())
@@ -658,6 +723,13 @@ class TestOutputFullSpectrumPages:
         for snap in recorder:
             assert snap["observed"] and not any(snap["observed"])
             assert all(yl == (0.0, 9.0) for yl in snap["ylims"])
+
+    def test_pages_follow_the_export_fonts(self, recorder, save_to):
+        islat = TestOutputFullSpectrum._islat(_toggle_state())
+        islat.GUI.plot.full_spectrum_export_fonts = {"ticks": 12.0, "labels": None}
+        fsv.output_full_spectrum_pages(islat, self.PAGES[:2], 2)
+        assert [snap["tick_sizes"] for snap in recorder] == [{12.0}, {12.0}]
+        assert [snap["flux_label_size"] for snap in recorder] == [10, 10]
 
     def test_writes_parameters_and_reports(self, recorder, save_to, parameter_files):
         islat = TestOutputFullSpectrum._islat(_toggle_state())

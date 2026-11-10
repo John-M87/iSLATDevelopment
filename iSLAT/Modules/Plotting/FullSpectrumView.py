@@ -32,6 +32,9 @@ from matplotlib.figure import Figure as MplFigure
 from matplotlib.widgets import SpanSelector
 
 from .FigureExport import save_figure_file, save_figures_to_pdf
+from .FigureFonts import (
+    FONT_SIZE_KINDS, apply_figure_font_sizes, default_font_sizes, validate_font_size, validate_font_sizes,
+)
 from .OwnedCanvasMixin import OwnedCanvasMixin
 from .PlotDebug import debug_config
 from .PlotView import (
@@ -2004,6 +2007,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         *,
         panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
         export_settings: Optional[Dict[str, Optional[float]]] = None,
+        font_sizes: Optional[Dict[str, Optional[float]]] = None,
         total_chi2: bool = True,
     ) -> StackedSpectralPanel:
         """Build and render a standalone figure of what the view shows, for saving to a file.
@@ -2013,11 +2017,12 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         and follows the toggle state: saved / atomic lines, observed data,
         summed model, Y-axis policy, data-density X scale and wavelength
         marks.  *xlim_range* and *n_panels*, or *panel_ranges* (one panel
-        each), set the panels; *export_settings* the size (default: the
-        session's export settings).  *total_chi2* = False leaves out the
-        residual plot's total chi^2 box.  Used by *Save Figure*, *Save
-        Panel*, *Output Full Spectrum* and the pages of the multi-page PDF.
-        The caller closes it.
+        each), set the panels; *export_settings* the size and *font_sizes*
+        the text sizes (defaults: the session's export settings, see
+        :func:`get_export_settings` / :func:`get_export_fonts`).
+        *total_chi2* = False leaves out the residual plot's total chi^2 box.
+        Used by *Save Figure*, *Save Panel*, *Output Full Spectrum* and the
+        pages of the multi-page PDF.  The caller closes it.
         """
         ts = self._pm.toggle_state
         wave, flux, wave_obs = self._load_spectrum_data()
@@ -2050,6 +2055,12 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             if hidden_tags:
                 for ax in plot.fig.axes:
                     set_tagged_visible(ax, hidden_tags, False)
+
+            # Last, so the marks' labels and every overlay get the sizes too.
+            apply_figure_font_sizes(
+                plot.fig, font_sizes if font_sizes is not None else get_export_fonts(self._pm),
+                plot.legend_strategy,
+            )
         except Exception:
             plot.close()
             raise
@@ -2206,6 +2217,51 @@ def set_export_settings(
     return settings
 
 
+_EXPORT_FONTS_ATTR = "full_spectrum_export_fonts"
+
+
+def get_export_fonts(plot_manager: Any) -> Dict[str, Optional[float]]:
+    """Return the session's full-spectrum export font sizes.
+
+    One size in points per kind of text of
+    :data:`~iSLAT.Modules.Plotting.FigureFonts.FONT_SIZE_KINDS` (``"ticks"``,
+    ``"labels"``, ``"legend"``, ``"text"``), where ``None`` keeps the sizes
+    the plot draws that text with.  Invalid stored values fall back to ``None``.
+    """
+    sizes = default_font_sizes()
+    raw = getattr(plot_manager, _EXPORT_FONTS_ATTR, None)
+    if isinstance(raw, dict):
+        for kind in sizes:
+            try:
+                sizes[kind] = validate_font_size(FONT_SIZE_KINDS[kind], raw.get(kind))
+            except ValueError:
+                pass
+    return sizes
+
+
+def set_export_fonts(
+    plot_manager: Any,
+    sizes: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Optional[float]]:
+    """Validate and remember the full-spectrum export font sizes for the session.
+
+    *sizes* maps kinds of text (see :func:`get_export_fonts`) to sizes in
+    points; kinds left out, ``None`` and blank strings keep the plot's own
+    sizes.  Used by *Output Full Spectrum*, the multi-page PDF and the Full
+    Spectrum view's *Save Figure* / *Save Panel*.
+
+    Raises
+    ------
+    ValueError
+        For a size that is not a positive number up to
+        :data:`~iSLAT.Modules.Plotting.FigureFonts.MAX_FONT_SIZE`, or an
+        unknown kind; the previous sizes are kept.
+    """
+    validated = validate_font_sizes(sizes)
+    setattr(plot_manager, _EXPORT_FONTS_ATTR, dict(validated))
+    return validated
+
+
 def apply_export_size(
     plot: StackedSpectralPanel,
     settings: Optional[Dict[str, Optional[float]]] = None,
@@ -2233,6 +2289,7 @@ def output_full_spectrum(
     rasterized: bool = False,
     figure_width: Optional[float] = None,
     panel_height: Optional[float] = None,
+    font_sizes: Optional[Dict[str, Optional[float]]] = None,
 ) -> str | None:
     """
     Create a fresh full-spectrum PDF and a companion parameters CSV.
@@ -2242,9 +2299,10 @@ def output_full_spectrum(
     otherwise the plain spectrum), follows the GUI's toggle state (saved /
     atomic lines, summed model, observed data, Y auto-scale / manual limits,
     data-density X scale) and is sized from the session's export settings
-    (see :func:`set_export_settings`).  It has the Full Spectrum view's panel
-    count, or its explicit panel ranges when set (Views menu > *Panel
-    Ranges...*).
+    (see :func:`set_export_settings`), with its text at the session's export
+    font sizes (see :func:`set_export_fonts`).  It has the Full Spectrum
+    view's panel count, or its explicit panel ranges when set (Views menu >
+    *Panel Ranges...*).
 
     Parameters
     ----------
@@ -2255,10 +2313,14 @@ def output_full_spectrum(
     figure_width, panel_height : float, optional
         Override the figure width / per-panel height (inches) for this export
         only, instead of the session's export settings.
+    font_sizes : dict, optional
+        Override font sizes (points) for this export only, by kind of text
+        (``"ticks"``, ``"labels"``, ``"legend"``, ``"text"``; ``None`` = the
+        plot's own size).  Kinds left out keep the session's sizes.
 
     This is the backward-compatible replacement for the function that previously lived in ``OutputFullSpectrum.py``.
     """
-    inputs = _output_inputs(islat_ref, figure_width, panel_height)
+    inputs = _output_inputs(islat_ref, figure_width, panel_height, font_sizes)
 
     # Respect the GUI's wavelength range so the saved figure matches
     # what is shown on screen rather than always spanning all data.
@@ -2401,6 +2463,7 @@ def output_full_spectrum_pages(
     figure_width: Optional[float] = None,
     panel_height: Optional[float] = None,
     save_path: Optional[str] = None,
+    font_sizes: Optional[Dict[str, Optional[float]]] = None,
 ) -> Optional[str]:
     """Save a multi-page full-spectrum PDF and a companion parameters CSV.
 
@@ -2411,8 +2474,9 @@ def output_full_spectrum_pages(
     Spectrum*: the kind of plot the Full Spectrum view shows (sample stack,
     residual sub-panels or plain spectrum), the GUI's toggle state (saved /
     atomic lines, summed model, observed data, Y axis, data-density X
-    scale), wavelength marks, theme and the session's export size
-    (*panel_height* x rows sets each page's height when given).
+    scale), wavelength marks, theme, the session's export size
+    (*panel_height* x rows sets each page's height when given) and export
+    font sizes.
 
     Parameters
     ----------
@@ -2428,18 +2492,21 @@ def output_full_spectrum_pages(
         Override the session's export width / per-panel height (inches).
     save_path : str, optional
         Write here instead of asking with a file dialog.
+    font_sizes : dict, optional
+        Override font sizes for this export only, as in
+        :func:`output_full_spectrum`.
 
     Returns the saved path, or ``None`` when the dialog was cancelled.
 
     Raises
     ------
     ValueError
-        For invalid page ranges, rows per page or export size, before
-        anything is drawn or saved.
+        For invalid page ranges, rows per page, export size or font sizes,
+        before anything is drawn or saved.
     """
     pages = validate_page_ranges(page_ranges)
     rows = rows_per_page_list(rows_per_page, len(pages))
-    inputs = _output_inputs(islat_ref, figure_width, panel_height)
+    inputs = _output_inputs(islat_ref, figure_width, panel_height, font_sizes)
 
     if save_path is None:
         save_path = ask_save_path(
@@ -2472,10 +2539,12 @@ def _output_inputs(
     islat_ref: Any,
     figure_width: Optional[float] = None,
     panel_height: Optional[float] = None,
+    font_sizes: Optional[Dict[str, Optional[float]]] = None,
 ) -> SimpleNamespace:
-    """What the full-spectrum PDF exports draw from: the data, the GUI's toggle state, theme, export size and overlays.
+    """What the full-spectrum PDF exports draw from: the data, the GUI's toggle state, theme, export size, font sizes and overlays.
 
-    Raises ``ValueError`` for an invalid *figure_width* / *panel_height*.
+    *font_sizes* replace the session's export font sizes of the kinds it gives.
+    Raises ``ValueError`` for an invalid *figure_width* / *panel_height* / *font_sizes*.
     """
     # Use in-memory data instead of re-reading the CSV from disk.
     # Delegate the stellar RV correction to MoleculeDict so the formula lives in one place.
@@ -2499,6 +2568,10 @@ def _output_inputs(
         export_settings["width"] = _validate_export_dim("Figure width", figure_width, MAX_EXPORT_WIDTH)
     if panel_height is not None:
         export_settings["panel_height"] = _validate_export_dim("Panel height", panel_height, MAX_EXPORT_PANEL_HEIGHT)
+    export_fonts = get_export_fonts(gui_plot)
+    if font_sizes:
+        overrides = validate_font_sizes(font_sizes)
+        export_fonts.update({kind: overrides[kind] for kind in font_sizes})
 
     # The GUI's Full Spectrum view draws the figures when there is one (see
     # _render_output_plot) and loads the overlays itself.
@@ -2519,7 +2592,7 @@ def _output_inputs(
 
     return SimpleNamespace(
         wave=wave, flux=flux, wave_obs=wave_obs, molecules=islat_ref.molecules_dict,
-        toggle_state=ts, theme=theme, export_settings=export_settings,
+        toggle_state=ts, theme=theme, export_settings=export_settings, font_sizes=export_fonts,
         line_list=line_list_df, atomic_lines=atomic_lines_df, view=view,
     )
 
@@ -2543,6 +2616,7 @@ def _render_output_plot(
     if view is not None:
         return view._create_output_plot(
             xlim_range, n_panels, panel_ranges=panel_ranges, export_settings=inputs.export_settings,
+            font_sizes=inputs.font_sizes,
         )
 
     # Uses BasePlot._ensure_figure (non-pyplot MplFigure).
@@ -2569,6 +2643,7 @@ def _render_output_plot(
         apply_export_size(plot, inputs.export_settings)
         plot.generate_plot()
         draw_toggle_state_markers(plot.fig, inputs.toggle_state)
+        apply_figure_font_sizes(plot.fig, inputs.font_sizes, plot.legend_strategy)
     except Exception:
         plot.close()
         raise

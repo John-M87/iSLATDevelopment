@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Full Spectrum Export Settings dialog: the multi-page PDF section.
+"""Full Spectrum Export Settings dialog: the font sizes and the multi-page PDF section.
 
-Page ranges are typed one ``start end`` per line, as in the Display Full
-Spectrum window's Ranges dialog (``DATASTART`` / ``DATAEND`` stand for the
-first / last observed wavelength), with one number of rows for every page
-or one per page.  The entries are remembered for the session; invalid ones
-are reported in the dialog without exporting.
+Font sizes (points) are set for the tick labels, axis labels, legend and
+annotations; blank fields keep the plot's own sizes.  Page ranges are typed
+one ``start end`` per line, as in the Display Full Spectrum window's Ranges
+dialog (``DATASTART`` / ``DATAEND`` stand for the first / last observed
+wavelength), with one number of rows for every page or one per page.  The
+entries are remembered for the session; invalid ones are reported in the
+dialog without storing or exporting.
 """
 
 import importlib
@@ -14,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from iSLAT.Modules.Plotting.FullSpectrumView import get_page_settings
+from iSLAT.Modules.Plotting.FullSpectrumView import get_export_fonts, get_export_settings, get_page_settings
 
 WAVE = np.linspace(5.0, 11.0, 61)
 
@@ -156,4 +158,52 @@ class TestMultiPageSection:
         assert dialog.bind("<Return>") == ""
         assert _widgets(dialog, "Text")[0].bind("<Return>") == ""
         entries = _widgets(dialog, "Entry")
-        assert len(entries) == 3 and all(entry.bind("<Return>") for entry in entries)
+        # Width, panel height, the four font sizes and the rows per page.
+        assert len(entries) == 7 and all(entry.bind("<Return>") for entry in entries)
+
+
+def _font_entries(dialog):
+    """The font size fields, in order: tick labels, axis labels, legend, annotations."""
+    frame = next(w for w in _walk(dialog)
+                 if w.winfo_class() == "TLabelframe" and w.cget("text") == "Font sizes (pt)")
+    return [w for w in _walk(frame) if w.winfo_class() == "Entry"]
+
+
+def _type(entry, value):
+    entry.delete(0, "end")
+    entry.insert(0, value)
+
+
+class TestFontSizes:
+    def test_blank_by_default(self, open_dialog):
+        dialog, _pm = open_dialog()
+        entries = _font_entries(dialog)
+        assert len(entries) == 4 and all(entry.get() == "" for entry in entries)
+
+    def test_save_stores_and_reopening_shows_them(self, open_dialog):
+        dialog, pm = open_dialog()
+        for entry, value in zip(_font_entries(dialog), ("9", "11.5", "", "6")):
+            _type(entry, value)
+        _button(dialog, "Save").invoke()
+        assert not dialog.winfo_exists()
+        assert get_export_fonts(pm) == {"ticks": 9.0, "labels": 11.5, "legend": None, "text": 6.0}
+        dialog, _pm = open_dialog()
+        assert [entry.get() for entry in _font_entries(dialog)] == ["9", "11.5", "", "6"]
+
+    @pytest.mark.parametrize("value", ["big", "0", "-3", "100"])
+    def test_invalid_size_is_reported_and_nothing_stored(self, open_dialog, value):
+        dialog, pm = open_dialog()
+        _type(_widgets(dialog, "Entry")[0], "30")          # a valid width ...
+        _type(_font_entries(dialog)[1], value)              # ... with an invalid axis label size
+        _button(dialog, "Save").invoke()
+        assert dialog.winfo_exists()
+        assert _status(dialog).startswith("Axis label font size")
+        assert get_export_settings(pm)["width"] is None
+        assert get_export_fonts(pm) == {"ticks": None, "labels": None, "legend": None, "text": None}
+
+    def test_reset_clears_the_sizes(self, open_dialog):
+        dialog, _pm = open_dialog()
+        for entry in _font_entries(dialog):
+            _type(entry, "12")
+        _button(dialog, "Reset to Defaults").invoke()
+        assert all(entry.get() == "" for entry in _font_entries(dialog))

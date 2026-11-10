@@ -32,10 +32,12 @@ from iSLAT.Modules.FileHandling.iSLATFileHandling import (
 from iSLAT.Modules.FileHandling import save_folder_path, models_folder_path
 from iSLAT.Modules.Plotting.FullSpectrumView import (
     output_full_spectrum, get_export_settings, set_export_settings,
+    get_export_fonts, set_export_fonts,
     DEFAULT_EXPORT_WIDTH, DEFAULT_EXPORT_HEIGHT, DEFAULT_ROWS_PER_PAGE,
     output_full_spectrum_pages, get_page_settings, set_page_settings,
     rows_per_page_list, validate_page_ranges, observed_wavelength_bounds, live_panel_count,
 )
+from iSLAT.Modules.Plotting.FigureFonts import validate_font_sizes
 from iSLAT.Modules.DataProcessing.Slabfit import SlabModel
 from iSLAT.Modules.DataProcessing.BatchFittingService import BatchFittingService
 from iSLAT.Modules.DataProcessing.DeblendingService import DeblendingService
@@ -310,7 +312,7 @@ class TopBar(ResizableFrame):
             "Line de-Blender":                  "Fit and de-blend overlapping\nspectral lines in the selection.",
             "Subtract Models from Data":        "Subtract all visible molecule models\nfrom the observed spectrum.",
             output_fs_label: "Save the full combined model spectrum\nto a file, matching the current overlay,\nobserved-data and Y-axis settings.",
-            "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth and per-panel height, and export\na multi-page PDF (one page per range).\nRemembered for this session.",
+            "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth, per-panel height and font sizes,\nand export a multi-page PDF (one page\nper range). Remembered for this session.",
             display_fs_label:                   "Open the full combined model spectrum\nin a separate window.",
             "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
             center_view_label:                  "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: " + shortcut_text("open_center_view_dialog"),
@@ -1744,19 +1746,22 @@ class TopBar(ResizableFrame):
     def open_full_spectrum_export_settings(self) -> None:
         """Open the full-spectrum export settings dialog.
 
-        Sets the exported figure width and per-panel height (inches), and
-        exports multi-page PDFs: one page per wavelength range (one ``start
-        end`` per line, as in the Display Full Spectrum window's *Ranges*
-        dialog), each split into the given number of rows.  Blank size
-        fields use the defaults.  The values are remembered for the session
-        and used by *Output Full Spectrum* (Ctrl+Shift+F) and the Full
-        Spectrum view's *Save Figure…*.
+        Sets the exported figure width and per-panel height (inches), the
+        font sizes (points) of the tick labels, axis labels, legend and
+        annotations, and exports multi-page PDFs: one page per wavelength
+        range (one ``start end`` per line, as in the Display Full Spectrum
+        window's *Ranges* dialog), each split into the given number of rows.
+        Blank size and font fields use the defaults.  The values are
+        remembered for the session and used by *Output Full Spectrum*
+        (Ctrl+Shift+F) and the Full Spectrum view's *Save Figure…* /
+        *Save Panel…*.
         The exports are the kind of plot the Full Spectrum view shows
         (residual sub-panels, the sample stack or the plain spectrum) with
         its display options.
         """
         pm = self.main_plot
         current = get_export_settings(pm)
+        current_fonts = get_export_fonts(pm)
         page_settings = get_page_settings(pm)
         default_pages = f"{DATA_START_KEYWORD} {DATA_END_KEYWORD}"
         default_rows = str(live_panel_count(self.islat) or DEFAULT_ROWS_PER_PAGE)
@@ -1784,6 +1789,30 @@ class TopBar(ResizableFrame):
         tk.Label(win, text=f"blank = auto ({DEFAULT_EXPORT_HEIGHT:g} in total)", fg="gray").grid(
             row=1, column=2, sticky="w", **pad)
 
+        # --- Font sizes: one per kind of text (FigureFonts.FONT_SIZE_KINDS) ---
+        fonts_frame = ttk.LabelFrame(win, text="Font sizes (pt)")
+        fonts_frame.grid(row=2, column=0, columnspan=3, sticky="ew", **pad)
+        font_vars: Dict[str, tk.StringVar] = {}
+        font_entries: List[tk.Entry] = []
+        for row, (kind, text, hint) in enumerate((
+            ("ticks", "Tick labels:", "blank = default (7 pt)"),
+            ("labels", "Axis labels:", "blank = default (8\u201310 pt)"),
+            ("legend", "Legend:", "blank = default (7\u201310 pt)"),
+            ("text", "Annotations:", "blank = default (sizes vary)"),
+        )):
+            tk.Label(fonts_frame, text=text).grid(row=row, column=0, sticky="w", **pad)
+            font_vars[kind] = tk.StringVar(value=_fmt(current_fonts[kind]))
+            entry = tk.Entry(fonts_frame, textvariable=font_vars[kind], width=10)
+            entry.grid(row=row, column=1, sticky="w", **pad)
+            tk.Label(fonts_frame, text=hint, fg="gray").grid(row=row, column=2, sticky="w", **pad)
+            font_entries.append(entry)
+        tk.Label(
+            fonts_frame,
+            text=("Annotations: saved / atomic line labels, wavelength marks,\n"
+                  "\u03c7\u00b2 values and sample names (each set to this size)."),
+            justify="left", fg="gray",
+        ).grid(row=len(font_entries), column=0, columnspan=3, sticky="w", **pad)
+
         tk.Label(
             win,
             text=("Figure height = panel height \u00d7 number of panels.\n"
@@ -1792,11 +1821,11 @@ class TopBar(ResizableFrame):
                   "The figures show what the Full Spectrum view shows: its residual\n"
                   "panels or stacked sample spectra, and its display options."),
             justify="left", fg="gray",
-        ).grid(row=2, column=0, columnspan=3, sticky="w", **pad)
+        ).grid(row=3, column=0, columnspan=3, sticky="w", **pad)
 
         # --- Multi-page PDF: one page per wavelength range ---------------
         pages_frame = ttk.LabelFrame(win, text="Multi-page PDF")
-        pages_frame.grid(row=3, column=0, columnspan=3, sticky="ew", **pad)
+        pages_frame.grid(row=4, column=0, columnspan=3, sticky="ew", **pad)
         tk.Label(
             pages_frame,
             text=("One page per line: start end (um), as in the Display Full\n"
@@ -1816,17 +1845,21 @@ class TopBar(ResizableFrame):
             row=2, column=2, sticky="w", **pad)
 
         status = tk.Label(win, text="", fg="red", justify="left")
-        status.grid(row=4, column=0, columnspan=3, sticky="w", **pad)
+        status.grid(row=5, column=0, columnspan=3, sticky="w", **pad)
 
         def _pages_entry() -> str:
             return pages_text.get("1.0", "end").strip()
 
         def _store() -> bool:
+            # Font sizes are checked first so an invalid one stores nothing.
+            fonts = {kind: var.get() for kind, var in font_vars.items()}
             try:
+                validate_font_sizes(fonts)
                 set_export_settings(pm, width_var.get(), height_var.get())
             except ValueError as exc:
                 status.config(text=str(exc))
                 return False
+            set_export_fonts(pm, fonts)
             # The page entries are remembered as typed and checked on export.
             set_page_settings(pm, _pages_entry(), rows_var.get())
             return True
@@ -1856,6 +1889,8 @@ class TopBar(ResizableFrame):
         def _reset():
             width_var.set("")
             height_var.set("")
+            for var in font_vars.values():
+                var.set("")
             pages_text.delete("1.0", "end")
             pages_text.insert("1.0", default_pages)
             rows_var.set(default_rows)
@@ -1865,14 +1900,14 @@ class TopBar(ResizableFrame):
             row=3, column=0, columnspan=3, sticky="w", **pad)
 
         btns = tk.Frame(win)
-        btns.grid(row=5, column=0, columnspan=3, pady=8)
+        btns.grid(row=6, column=0, columnspan=3, pady=8)
         ttk.Button(btns, text="Export\u2026", command=_export).pack(side="left", padx=4)
         ttk.Button(btns, text="Save", command=_save).pack(side="left", padx=4)
         ttk.Button(btns, text="Reset to Defaults", command=_reset).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left", padx=4)
 
-        # Return saves from the size and rows fields; in the page ranges it starts a new line.
-        for entry in (width_entry, height_entry, rows_entry):
+        # Return saves from the size, font and rows fields; in the page ranges it starts a new line.
+        for entry in (width_entry, height_entry, *font_entries, rows_entry):
             entry.bind("<Return>", _save)
         win.bind("<Escape>", lambda _e: win.destroy())
         width_entry.focus_set()

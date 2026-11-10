@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from .ResizableFrame import ResizableFrame
+from ..ThemeFonts import text_output_font
 
 class DataField(ttk.Frame):
     """
@@ -20,8 +21,8 @@ class DataField(ttk.Frame):
         self.label_frame.rowconfigure(0, weight=1)
         self.label_frame.columnconfigure(0, weight=1)
 
-        # Text widget with scrollbar
-        self.text = tk.Text(self.label_frame, height=13, width=24, wrap="word")
+        # Text widget with scrollbar; its font size follows the theme's fonts.text_output_size.
+        self.text = tk.Text(self.label_frame, height=13, width=24, wrap="word", font=text_output_font(self))
         self.scrollbar = ttk.Scrollbar(self.label_frame, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=self.scrollbar.set)
 

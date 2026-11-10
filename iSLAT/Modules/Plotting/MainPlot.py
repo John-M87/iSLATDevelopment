@@ -86,6 +86,9 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         # Session-only size overrides for full-spectrum exports (inches; None = default).
         # Read / written through FullSpectrumView.get_export_settings / set_export_settings.
         self.full_spectrum_export_settings: dict = {"width": None, "panel_height": None}
+        # Session-only font sizes for the same exports (points per kind of text; None = the plot's own).
+        # Read / written through FullSpectrumView.get_export_fonts / set_export_fonts.
+        self.full_spectrum_export_fonts: dict = {"ticks": None, "labels": None, "legend": None, "text": None}
 
         #self.fig = plt.Figure(figsize=(15, 8.5))
         # Constrained layout, re-run only when something that sizes the margins changes.

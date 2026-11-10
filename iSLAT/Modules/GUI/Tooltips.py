@@ -1,5 +1,7 @@
 from tkinter import Toplevel, Label, LEFT, SOLID, TclError
 
+from .ThemeFonts import tooltip_font
+
 # Module-level theme reference for tooltip colors.
 # Call set_tooltip_theme(theme_dict) once at GUI startup so every
 # tooltip automatically uses the current theme colors.
@@ -51,7 +53,7 @@ class ToolTip(object):
         label = Label(tw, text=self.text, justify=LEFT,
                        background=bg, foreground=fg,
                        relief=SOLID, borderwidth=1,
-                       font=("tahoma", "12", "normal"))
+                       font=tooltip_font(_current_theme))
         label.pack(ipadx=1)
 
     def disable(self):
@@ -150,7 +152,7 @@ class MenuToolTip:
             tw, text=text, justify=LEFT,
             background=bg, foreground=fg,
             relief=SOLID, borderwidth=1,
-            font=("tahoma", "12", "normal"),
+            font=tooltip_font(_current_theme),
         ).pack(ipadx=1)
         self.tipwindow = tw
 

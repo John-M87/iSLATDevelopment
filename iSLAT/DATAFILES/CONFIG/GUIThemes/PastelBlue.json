@@ -28,6 +28,12 @@
     "data_field_background": "#E6F3FF",
     "tooltip_background": "#D6ECFF",
     "tooltip_foreground": "#2C3E50",
+    "fonts": {
+        "size": null,
+        "text_output_size": null,
+        "tooltip_size": 12,
+        "description": "Font sizes in points; null keeps the default. size: the GUI text (labels, buttons, entries, lists, menus), with the other Tk fonts scaled to match (default: the platform's sizes). text_output_size: the iSLAT Text Output pane (default: the fixed-width font at the GUI scale). tooltip_size: tooltips (default 12)."
+    },
     "buttons": {
         "DefaultBotton": {
             "background": "#a5bcd1",

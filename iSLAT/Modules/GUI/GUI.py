@@ -17,6 +17,7 @@ from .Widgets.TopBar import TopBar
 from .Widgets.FileInteractionPane import FileInteractionPane
 from .Tooltips import set_tooltip_theme
 from .GUIFunctions import configure_all_button_styles
+from .ThemeFonts import apply_theme_fonts
 
 class GUI:
     def __init__(self, master, molecule_data, wave_data, flux_data, config, islat_class_ref):
@@ -44,10 +45,12 @@ class GUI:
         self.config = config
         self.theme = config["theme"]
         self.islat_class = islat_class_ref
+        # The theme's font sizes, before any widget is built.
+        apply_theme_fonts(self.master, self.theme)
         self.default_font = font.nametofont("TkDefaultFont")
 
         # Set module-level tooltip theme so every tooltip picks up
-        # the current theme's colors automatically.
+        # the current theme's colors and font size automatically.
         set_tooltip_theme(self.theme)
         self._set_window_icon(self.master)
         
@@ -193,8 +196,9 @@ class GUI:
 
         # --- Propagate to every component ---
 
-        # 1. Tooltip colors
+        # 1. Tooltip colors and the GUI font sizes
         set_tooltip_theme(new_theme)
+        apply_theme_fonts(self.master, new_theme)
 
         # 2. Custom ttk button / menubutton styles
         configure_all_button_styles(new_theme)
