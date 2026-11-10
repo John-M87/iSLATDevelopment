@@ -1641,7 +1641,7 @@ class ControlPanel(ttk.Frame):
                 print(f"ControlPanel: {msg}")
             return
         from iSLAT.Modules.GUI.Widgets.LineListViewWindow import LineListViewWindow
-        LineListViewWindow(self, mol_obj, self.data_field)
+        LineListViewWindow(self, mol_obj, self.data_field, islat=self.islat)
 
     def _population_diagram_action(self, mol_name: str) -> None:
         """Open (or raise) a live popout population diagram for the named molecule."""

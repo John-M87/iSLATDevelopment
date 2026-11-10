@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
+    from iSLAT.Modules.DataProcessing.LineIdentity import LineRef
     from typing import Dict
 
 class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
@@ -451,7 +452,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     # ==================================================================
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Any:
         """Return the line-inspection right-click menu."""
-        menu = self._build_line_inspection_menu(canvas_widget)
+        menu = self._build_line_inspection_menu(canvas_widget, event)
         if menu is not None:
             self._append_save_figure_item(menu)
         return menu
@@ -513,3 +514,16 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     def get_selected_line(self) -> Optional[Any]:
         """No persistent selected-line state in this view."""
         return None
+
+    def select_line(self, ref: "LineRef") -> bool:
+        """Select the line marker *ref* describes, as clicking it does.
+
+        Returns ``False`` when *ref* is not one of the marked lines.
+        """
+        from types import SimpleNamespace
+
+        entry = self._inspected_entry(ref, with_marker=True)
+        if entry is None:
+            return False
+        self._on_pick_line(SimpleNamespace(artist=entry[0]))
+        return self.selected_line is entry[3]

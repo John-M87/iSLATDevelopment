@@ -419,6 +419,7 @@ class FileInteractionPane(ttk.Frame):
                 title=f"Line List: {name}",
                 data_field=self.data_field,
                 export_basename=os.path.splitext(name)[0],
+                islat=self.islat_class,
             )
         except Exception as e:
             self.data_field.insert_text(f"Could not open line list '{name}': {e}")

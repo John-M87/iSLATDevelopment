@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
+    from iSLAT.Modules.DataProcessing.LineIdentity import LineRef
 
 import iSLAT.Constants as c
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
@@ -87,6 +88,36 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
     def get_selected_line(self) -> Optional[Dict[str, Any]]:
         """Return the currently selected line info dict, or *None*."""
         return self.selected_line
+
+    def select_line(self, ref: "LineRef") -> bool:
+        """Select the inspected line *ref* describes, as clicking it does.
+
+        Highlights it orange in both panels (showing its molecule on the
+        population diagram) and writes its info to the data field.  Returns
+        ``False`` when *ref* is not one of the inspected lines, e.g. because
+        its molecule is not shown or no range is selected.
+        """
+        from types import SimpleNamespace
+
+        entry = self._inspected_entry(ref)
+        if entry is None:
+            return False
+        line, _text, scatter, value = entry
+        # Go through the pick handler so the highlight follows exactly the
+        # rules of a click (molecule switch on the diagram included).
+        if line is not None:
+            pick = SimpleNamespace(artist=line, ind=[])
+        elif scatter is not None and value.get('_scatter_point_index') is not None:
+            pick = SimpleNamespace(artist=scatter, ind=[value['_scatter_point_index']])
+        else:
+            return False
+        picked = self._handle_line_pick_event(pick)
+        if not picked:
+            return False
+        self.selected_line = picked
+        self._display_line_info(picked)
+        self._canvas.draw_idle()
+        return True
 
     # ------------------------------------------------------------------
     # Helpers (private, short-hand access to controller state)
@@ -1238,7 +1269,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             return None
 
         if event.inaxes == self.ax2:
-            menu = self._build_line_inspection_menu(canvas_widget)
+            menu = self._build_line_inspection_menu(canvas_widget, event)
             if menu is not None:
                 self._append_save_figure_item(menu, event)
             return menu

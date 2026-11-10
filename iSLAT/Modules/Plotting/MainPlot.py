@@ -14,7 +14,7 @@ from .MainPlotGrid import MainPlotGrid
 from .Theming import apply_canvas_theme, apply_figure_theme
 from .PlotView import (
     PlotView, WavelengthMarkerStoreMixin, data_synced_y_limits, data_y_range,
-    fit_y_limits_to_data, normalize_y_data_sync,
+    fit_y_limits_to_data, normalize_y_data_sync, notify_user,
 )
 from .ThreePanelView import ThreePanelView
 from .FullSpectrumView import FullSpectrumView, SAMPLE_STACK_DEFAULTS
@@ -754,6 +754,72 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
 
         # Delegate rendering to the active view
         self.active_view.on_selection(xmin, xmax)
+
+    #: Views that inspect the selected range themselves.  "Show in Spectrum"
+    #: switches any other view to the Three Panel view first.
+    LINE_SELECTION_VIEWS = ("Three Panel", "Line Inspection")
+
+    def show_line_in_spectrum(self, ref) -> bool:
+        """Select the line *ref* (a :class:`LineRef`) for inspection and bring it into view.
+
+        The range selected is *ref*'s window (e.g. a saved line's fit range),
+        or else one as wide as the current selection (2 x
+        ``DEFAULT_HALF_WINDOW`` without one), centered on the line.  Views
+        that do not inspect a selection switch to the Three Panel view, which
+        also centers the spectrum on the line (keeping the plotted width,
+        widened to twice the range when the range would fill more than half
+        of it).  The range is then selected as dragging across it selects
+        it, and the line is highlighted.
+
+        Returns whether the line was highlighted.  It is not when it is not
+        among the inspected lines (another molecule, or below the line
+        threshold); the data field then says so.
+        """
+        from iSLAT.Modules.DataProcessing.LineIdentity import DEFAULT_HALF_WINDOW
+
+        lam = float(ref.lam)
+        window = ref.window
+        if window is None:
+            half = DEFAULT_HALF_WINDOW
+            selection = getattr(self, "current_selection", None)
+            if selection:
+                width = abs(float(selection[1]) - float(selection[0]))
+                if width > 0:
+                    half = width / 2.0
+            window = (lam - half, lam + half)
+        xmin, xmax = sorted(float(v) for v in window)
+
+        if self.active_view_name not in self.LINE_SELECTION_VIEWS:
+            self.switch_view("Three Panel")
+        if self.active_view is self._three_panel_view:
+            self._center_spectrum_on(lam, xmax - xmin)
+
+        handler = self.interaction_handler
+        handler.show_span(xmin, xmax)
+        handler.set_selection(xmin, xmax)
+
+        select = getattr(self.active_view, "select_line", None)
+        found = bool(select(ref)) if callable(select) else False
+        if not found:
+            notify_user(
+                self.islat,
+                f"{ref.describe()} is not among the lines inspected in "
+                f"{xmin:.4f} - {xmax:.4f} um (its molecule may not be shown, "
+                "or the line is below the line threshold).",
+            )
+        return found
+
+    def _center_spectrum_on(self, lam: float, min_width: float) -> None:
+        """Center the main spectrum on *lam*, keeping its width unless that is under 2 x *min_width*."""
+        lo, hi = self.ax1.get_xlim()
+        width = max(abs(hi - lo), 2.0 * float(min_width))
+        new_range = (lam - width / 2.0, lam + width / 2.0)
+        try:
+            # Moves the plot and the Plot Start / Plot Range fields.
+            self.islat.display_range = new_range
+        except (AttributeError, ValueError):
+            self.ax1.set_xlim(*new_range)
+        self.match_display_range(match_y=True)
 
     # ------------------------------------------------------------------
     # Data-access & interaction helpers
