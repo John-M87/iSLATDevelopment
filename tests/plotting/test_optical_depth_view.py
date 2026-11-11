@@ -17,7 +17,7 @@ from iSLAT.Modules.Plotting import (
     OpticalDepthSpectrumPlot,
     OpticalDepthView,
 )
-from iSLAT.Modules.Plotting.OpticalDepthPanel import TAU_STEM_TAG, TOTAL_TAU_TAG
+from iSLAT.Modules.Plotting.OpticalDepthPanel import DENSITY_YLABEL, TAU_STEM_TAG, TOTAL_TAU_TAG
 from iSLAT.Modules.Plotting.OpticalDepthView import TAU_OPTION_DEFAULTS
 from iSLAT.Modules.Plotting.SavedLineLabels import LABEL_VIEWS
 from iSLAT.Modules.GUI.ControlField import ActionField, DisplayRangeField, EntryField, ToggleField
@@ -319,8 +319,8 @@ class TestControlsAndInteraction:
         assert tb.fields() == []
         # Panel Ranges... (shared by every stacked view) comes first.
         vm_keys = [f.key for f in vm.fields()]
-        assert vm_keys == ["panel_ranges", "tau_log_scale", "tau_stem_mode", "tau_fraction_mode", "tau_stacked_fill",
-                           "tau_show_flux", "data_density"]
+        assert vm_keys == ["panel_ranges", "tau_log_scale", "tau_density_mode", "tau_stem_mode", "tau_fraction_mode",
+                           "tau_stacked_fill", "tau_show_flux", "data_density"]
         assert isinstance(vm.get_field("panel_ranges"), ActionField)
         assert all(isinstance(f, ToggleField) for f in vm.fields()[1:])
 
@@ -595,3 +595,53 @@ class TestFractionToggle:
                             lambda *a, **k: created.append(original(*a, **k)) or created[-1])
         assert view.save_figure(str(tmp_path / "frac.png"), file_format="png", dpi=40)
         assert created[0].display_mode == "fraction"
+
+
+# ======================================================================
+# Optical depth per micron
+# ======================================================================
+
+class TestDensityToggle:
+    def test_default_is_the_dimensionless_profile(self, rendered):
+        view, pm, *_ = rendered
+        assert TAU_OPTION_DEFAULTS["tau_display_mode"] == "profile"
+        assert view._plot.display_mode == "profile"
+        assert view.fig._supylabel.get_text() == "Optical Depth (\u03c4)"
+
+    def test_density_mode_renders_tau_per_micron(self, rendered):
+        view, pm, _islat, mols = rendered
+        peak_max = max(float(np.max(tau)) for _lam, tau, *_ in view._plot._mol_tau_cache)
+        view._set_density_mode(True)
+        assert pm.toggle_state["tau_display_mode"] == "density"
+        assert view._plot.display_mode == "density"
+        assert view.fig._supylabel.get_text() == DENSITY_YLABEL
+        # Same molecules, now each line's tau spread over a unit-area Gaussian (1/um).
+        for (_lam, tau, *_), mol in zip(view._plot._mol_tau_cache, mols.values()):
+            np.testing.assert_array_equal(tau, mol.get_tau(normalization="area"))
+        assert max(float(np.max(tau)) for _lam, tau, *_ in view._plot._mol_tau_cache) > 10 * peak_max
+
+    def test_density_is_exclusive_with_stems_and_fraction(self, rendered):
+        view, pm, *_ = rendered
+        view._set_density_mode(True)
+        view._set_stem_mode(True)
+        assert (view._get_density_mode(), view._get_stem_mode()) == (False, True)
+        view._set_density_mode(True)
+        assert (view._get_density_mode(), view._get_stem_mode(), view._get_fraction_mode()) == (True, False, False)
+        view._set_fraction_mode(False)  # not active: leaves density alone
+        assert pm.toggle_state["tau_display_mode"] == "density"
+        view._set_density_mode(False)
+        assert pm.toggle_state["tau_display_mode"] == "profile"
+
+    def test_views_menu_toggle_flips_density(self, rendered):
+        view, pm, *_ = rendered
+        bus = ControlBus()
+        vm = _NoopSurface()
+        bus.register_surface("views_menu", vm)
+        pm.control_bus = bus
+        view._register_control_fields()
+        field = vm.get_field("tau_density_mode")
+        field.setter(not field.getter())
+        assert pm.toggle_state["tau_display_mode"] == "density"
+        field.setter(not field.getter())
+        assert pm.toggle_state["tau_display_mode"] == "profile"
+

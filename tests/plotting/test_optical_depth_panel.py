@@ -8,7 +8,14 @@ import numpy as np
 import pytest
 from matplotlib.axes import Axes
 
+from iSLAT.Constants import SPEED_OF_LIGHT_KMS
 from iSLAT.Modules.Plotting import OpticalDepthPanel, OpticalDepthSpectrumPlot
+from iSLAT.Modules.Plotting.OpticalDepthPanel import (
+    DENSITY_YLABEL,
+    DENSITY_YLABEL_SHORT,
+    tau_axis_label,
+    tau_normalization,
+)
 
 from tests.plotting import make_wave_flux
 
@@ -502,3 +509,90 @@ class TestFractionMode:
                 assert ax.get_yscale() == "linear"
                 assert ax.get_ylabel() == tau_label
             odsp.close()
+
+
+class TestTauNormalization:
+    """``"profile"`` plots the dimensionless τ (an isolated line peaks at its
+    line-center τ); ``"density"`` plots τ per μm (the τ spread over a
+    unit-area Gaussian of the instrumental width)."""
+
+    @staticmethod
+    def _fine_molecules():
+        """One test molecule on a 1e-4 μm model grid, fine enough that the sampled peak is the line's τ."""
+        from iSLAT.Modules.DataTypes.Molecule import Molecule
+        from tests.plotting.test_plot_views import _make_test_intensity, _make_test_line_list
+
+        mol = Molecule(
+            name="H2O", displaylabel="H2O", filepath=None, color="#FF0000", is_visible=True,
+            temp=500.0, radius=1.0, n_mol=1e18, distance=160.0, fwhm=130.0, model_pixel_res=1e-4,
+            initial_molecule_parameters={
+                "t_kin": 500.0, "scale_exponent": 18.0, "scale_number": 1.0, "radius_init": 1.0,
+            },
+        )
+        mol.lines = _make_test_line_list()
+        mol.intensity = _make_test_intensity()
+        molecules = TestOpticalDepthStemLimits._molecules()
+        molecules["H2O"] = mol
+        return molecules, mol
+
+    @staticmethod
+    def _plot(molecules, **kwargs):
+        wave = np.linspace(10.0, 20.0, 2000)
+        odsp = OpticalDepthSpectrumPlot(wave, np.ones_like(wave), molecules=molecules, n_panels=2, **kwargs)
+        odsp.generate_plot()
+        return odsp
+
+    @staticmethod
+    def _line_peaks(odsp, mol):
+        """``(line wavelengths, line-center τ, plotted peak at each line)``."""
+        (lam, tau, *_), = odsp._mol_tau_cache
+        line_lam = np.asarray(mol.intensity.molecule.get_wavelengths())
+        peaks = np.array([tau[np.abs(lam - l) < 0.01].max() for l in line_lam])
+        return line_lam, np.asarray(mol.intensity.tau), peaks
+
+    def test_modes_map_to_normalization_and_labels(self):
+        modes = ("profile", "density", "stem", "fraction")
+        assert [tau_normalization(m) for m in modes] == ["peak", "area", "peak", "peak"]
+        assert [tau_axis_label(m) for m in modes] == [
+            "Optical Depth (τ)", DENSITY_YLABEL, "Optical Depth (τ)", "Fraction of total τ",
+        ]
+        assert [tau_axis_label(m, short=True) for m in modes] == [
+            "τ", DENSITY_YLABEL_SHORT, "τ", r"$\tau_i/\tau$",
+        ]
+
+    def test_default_profile_peaks_at_line_center_tau(self):
+        molecules, mol = self._fine_molecules()
+        odsp = self._plot(molecules)
+        assert odsp.display_mode == "profile"
+        assert odsp.fig._supylabel.get_text() == "Optical Depth (τ)"
+        _lam, tau0, peaks = self._line_peaks(odsp, mol)
+        np.testing.assert_allclose(peaks, tau0, rtol=1e-4)
+        odsp.close()
+
+    def test_density_is_tau_per_micron(self):
+        molecules, mol = self._fine_molecules()
+        odsp = self._plot(molecules, display_mode="density")
+        assert odsp.fig._supylabel.get_text() == DENSITY_YLABEL
+        line_lam, tau0, peaks = self._line_peaks(odsp, mol)
+        sigma = line_lam * mol.fwhm / SPEED_OF_LIGHT_KMS / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        np.testing.assert_allclose(peaks, tau0 / (np.sqrt(2.0 * np.pi) * sigma), rtol=1e-4)
+        odsp.close()
+
+    def test_density_flux_sub_panel_label(self):
+        molecules, _mol = self._fine_molecules()
+        odsp = self._plot(molecules, display_mode="density", show_flux=True)
+        assert odsp.fig._supylabel.get_text() == ""
+        assert {ax.get_ylabel() for ax in odsp.get_tau_axes().values()} == {DENSITY_YLABEL_SHORT}
+        odsp.close()
+
+    def test_standalone_panel_builds_cache_in_its_mode(self):
+        molecules, mol = self._fine_molecules()
+        wave = np.linspace(10.0, 20.0, 2000)
+        for mode, normalization in (("profile", "peak"), ("density", "area")):
+            panel = OpticalDepthPanel(
+                wave, np.ones_like(wave), xmin=11.5, xmax=12.5, molecule=mol, display_mode=mode,
+            )
+            panel.generate_plot()
+            (_lam, tau, *_), = panel.mol_tau_cache
+            np.testing.assert_array_equal(tau, mol.get_tau(normalization=normalization))
+            assert panel.ax.get_ylabel() == tau_axis_label(mode)

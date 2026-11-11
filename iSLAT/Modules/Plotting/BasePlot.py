@@ -402,6 +402,7 @@ class BasePlot(ABC):
         interpolate_to_input: bool = False,
         target_wavelengths: Optional[np.ndarray] = None,
         extend_to_range: bool = False,
+        normalization: str = "area",
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Retrieve ``(wavelength, tau)`` from a *Molecule* object.
 
@@ -419,6 +420,9 @@ class BasePlot(ABC):
             Rest-frame wavelength grid to interpolate onto.
         extend_to_range : bool, default False
             See :meth:`get_molecule_spectrum_data`.
+        normalization : {"area", "peak"}, default "area"
+            ``"area"`` for optical depth per micron (1/um), ``"peak"`` for the
+            dimensionless optical depth; see :meth:`Molecule.get_tau`.
         """
         if molecule is None:
             return None, None
@@ -430,6 +434,7 @@ class BasePlot(ABC):
                 wavelength_array=interp_wave,
                 return_wavelengths=True,
                 interpolate_to_input=interpolate_to_input,
+                normalization=normalization,
             )
             if interpolate_to_input and target_wavelengths is not None and wave_data is not None:
                 lam = wave_data

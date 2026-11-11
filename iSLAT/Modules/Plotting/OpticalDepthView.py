@@ -1,13 +1,13 @@
 """
 OpticalDepthView -- :class:`PlotView` for the multi-panel optical depth τ(λ) overview.
 
-Shows an :class:`OpticalDepthSpectrumPlot` (the convolved τ of every visible molecule, stacked per molecule, over the whole wavelength range) in the main plotting area.
+Shows an :class:`OpticalDepthSpectrumPlot` (the optical depth τ of every visible molecule, stacked per molecule, over the whole wavelength range) in the main plotting area.
 
 The view builds on :class:`FullSpectrumView`, which already drives any :class:`StackedSpectralPanel`, so it shares the canvas lifecycle, the *N Panels* and *Plot Start / Plot Range* controls and the *Panel Ranges...* dialog, saved / atomic line overlays, wavelength markers, the legend toggle and the right-click *Open in Three Panel view* item.
 What differs from the full spectrum view:
 
 * The *Total Model* toggle shows / hides the combined "Total τ" line (and the summed-model fill of the flux sub-panels).
-* View-specific toggles (in the view-controls section of the Views menu) switch between a linear and a logarithmic τ axis, from the convolved profile to per-line stems at the line centres or to each molecule's fractional share of the total τ per pixel (*τ Fraction*), between stacked and overlaid molecules, and add a flux sub-panel below each τ panel (*Flux Panels*), plus the data-density x scaling shared with the full spectrum view.
+* View-specific toggles (in the view-controls section of the Views menu) switch between a linear and a logarithmic τ axis, from the τ(λ) profile (each line peaking at its line-centre τ) to the optical depth per micron (*τ per μm*), per-line stems at the line centres or each molecule's fractional share of the total τ per pixel (*τ Fraction*), between stacked and overlaid molecules, and add a flux sub-panel below each τ panel (*Flux Panels*), plus the data-density x scaling shared with the full spectrum view.
 * The flux Y-axis settings (auto-scale, *Set Y Limits…*, in Jy) and the observed-data toggle apply to the flux sub-panels only; each τ panel is scaled to its own τ.
 * Dragging a range on a panel opens it in the Three Panel view for line inspection.
 * *Save Figure…* exports a fresh standalone optical depth figure.
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 #: ``toggle_state`` keys (and defaults) for the optical depth display options.
 TAU_OPTION_DEFAULTS: Dict[str, Any] = {
     "tau_log_scale": False,         # logarithmic τ axis
-    "tau_display_mode": "profile",  # "profile" (convolved τ), "stem" (per-line τ) or "fraction" (share of total τ)
+    "tau_display_mode": "profile",  # "profile" (τ), "density" (τ per μm), "stem" (per-line τ) or "fraction" (share of total τ)
     "tau_stacked_fill": True,       # stack molecules (False: overlay one line each)
     "tau_show_flux": False,         # flux sub-panel below each τ panel
 }
@@ -75,7 +75,7 @@ class OpticalDepthView(FullSpectrumView):
         """The :class:`OpticalDepthSpectrumPlot` keywords for the current options."""
         mode = self._tau_option("tau_display_mode")
         return {
-            "display_mode": mode if mode in ("stem", "fraction") else "profile",
+            "display_mode": mode if mode in ("density", "stem", "fraction") else "profile",
             "log_scale": bool(self._tau_option("tau_log_scale")),
             "stacked_fill": bool(self._tau_option("tau_stacked_fill")),
             "show_flux": bool(self._tau_option("tau_show_flux")),
@@ -104,7 +104,7 @@ class OpticalDepthView(FullSpectrumView):
         self._set_tau_option("tau_log_scale", bool(value))
 
     def _set_display_mode(self, mode: str, on: bool) -> None:
-        """Switch to *mode* (``"stem"`` / ``"fraction"``), or back to the profile when turning the active one off.
+        """Switch to *mode* (``"density"`` / ``"stem"`` / ``"fraction"``), or back to the profile when turning the active one off.
 
         The modes are exclusive, so turning one on replaces the other;
         turning off a mode that is not active changes nothing.
@@ -113,6 +113,12 @@ class OpticalDepthView(FullSpectrumView):
             self._set_tau_option("tau_display_mode", mode)
         elif self._tau_option("tau_display_mode") == mode:
             self._set_tau_option("tau_display_mode", "profile")
+
+    def _get_density_mode(self) -> bool:
+        return self._tau_option("tau_display_mode") == "density"
+
+    def _set_density_mode(self, value: bool) -> None:
+        self._set_display_mode("density", bool(value))
 
     def _get_stem_mode(self) -> bool:
         return self._tau_option("tau_display_mode") == "stem"
@@ -247,16 +253,32 @@ class OpticalDepthView(FullSpectrumView):
                 tip="Toggle a logarithmic optical depth axis",
             ),
             ToggleField(
+                "tau_density_mode", "τ per μm",
+                getter=self._get_density_mode,
+                setter=self._set_density_mode,
+                owner=self,
+                tip=(
+                    "Toggle the optical depth per micron (1/μm).\n"
+                    "OFF: τ(λ) profile, each isolated line\n"
+                    "     peaking at its line-centre τ (default).\n"
+                    "ON:  each line's τ spread over a unit-area\n"
+                    "     Gaussian of the instrumental width:\n"
+                    "     the area under a line is its τ, and\n"
+                    "     the height grows with the resolution.\n"
+                    "Replaces 'τ Stems' / 'τ Fraction' when turned on."
+                ),
+            ),
+            ToggleField(
                 "tau_stem_mode", "τ Stems",
                 getter=self._get_stem_mode,
                 setter=self._set_stem_mode,
                 owner=self,
                 tip=(
                     "Toggle the display mode.\n"
-                    "OFF: convolved τ(λ) profile (default).\n"
+                    "OFF: τ(λ) profile (default).\n"
                     "ON:  one stem per line at its centre,\n"
                     "     as tall as the line's τ.\n"
-                    "Replaces 'τ Fraction' when turned on."
+                    "Replaces 'τ per μm' / 'τ Fraction' when turned on."
                 ),
             ),
             ToggleField(
@@ -271,7 +293,7 @@ class OpticalDepthView(FullSpectrumView):
                     "Stacked: the fills add up to 1.\n"
                     "Pixels with negligible total τ are left blank.\n"
                     "The axis is linear ('Log τ' does not apply).\n"
-                    "Replaces 'τ Stems' when turned on."
+                    "Replaces 'τ per μm' / 'τ Stems' when turned on."
                 ),
             ),
             ToggleField(

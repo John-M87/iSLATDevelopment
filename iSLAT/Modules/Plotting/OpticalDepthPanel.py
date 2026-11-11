@@ -1,10 +1,16 @@
 """
 OpticalDepthPanel -- Concrete :class:`SpectralPanel` for optical depth display.
 
-Renders the convolved optical-depth profile τ(λ) for one or more molecules on a single axes.  Supports three display modes:
+Renders the optical-depth profile τ(λ) for one or more molecules on a single axes.  Supports four display modes:
 
-* **profile** (default) - continuous Gaussian-convolved τ(λ) with
-  stacked ``fill_between`` per molecule.
+* **profile** (default) - continuous optical depth τ(λ) (dimensionless):
+  every line is a Gaussian of the instrumental width whose height is its
+  line-center τ (:attr:`Spectrum.tau_peak_profile`), with stacked
+  ``fill_between`` per molecule.
+* **density** - optical depth per micron (1/μm): every line's τ is spread
+  over a unit-area Gaussian of the instrumental width
+  (:attr:`Spectrum.tau_profile`), so the area under a line is its τ while
+  its height depends on the resolution.
 * **stem** - vertical lines at each line-center wavelength with
   height equal to the per-line τ value.
 * **fraction** - each molecule's fractional share of the total convolved
@@ -36,6 +42,30 @@ FRACTION_YLIM: Tuple[float, float] = (0.0, 1.05)
 #: Axis labels of the ``"fraction"`` mode (full and short, for stacked sub-panels).
 FRACTION_YLABEL = "Fraction of total τ"
 FRACTION_YLABEL_SHORT = r"$\tau_i/\tau$"
+#: Axis labels of the ``"profile"`` and ``"stem"`` modes (dimensionless τ).
+TAU_YLABEL = "Optical Depth (τ)"
+TAU_YLABEL_SHORT = "τ"
+#: Axis labels of the ``"density"`` mode (τ per micron).
+DENSITY_YLABEL = r"τ per μm (μm$^{-1}$)"
+DENSITY_YLABEL_SHORT = "τ/μm"
+
+
+def tau_normalization(display_mode: str) -> str:
+    """The :meth:`Molecule.get_tau` normalization that *display_mode* plots.
+
+    ``"area"`` (τ per micron) for ``"density"``; ``"peak"`` (dimensionless τ)
+    for every other mode.
+    """
+    return "area" if display_mode == "density" else "peak"
+
+
+def tau_axis_label(display_mode: str, short: bool = False) -> str:
+    """The y-axis label of *display_mode* (*short* for stacked sub-panels)."""
+    if display_mode == "fraction":
+        return FRACTION_YLABEL_SHORT if short else FRACTION_YLABEL
+    if display_mode == "density":
+        return DENSITY_YLABEL_SHORT if short else DENSITY_YLABEL
+    return TAU_YLABEL_SHORT if short else TAU_YLABEL
 
 
 class OpticalDepthPanel(SpectralPanel):
@@ -59,11 +89,14 @@ class OpticalDepthPanel(SpectralPanel):
         Single molecule to plot (used when *molecules* is ``None``).
     mol_tau_cache : list[tuple], optional
         Pre-computed ``(wavelengths, tau, color, label, name)`` tuples
-        from :meth:`OpticalDepthSpectrumPlot._build_mol_tau_cache`.
+        from :meth:`OpticalDepthSpectrumPlot._build_mol_tau_cache`, in the
+        normalization of *display_mode* (see :func:`tau_normalization`).
     display_mode : str, optional
-        ``"profile"`` for convolved Gaussian profiles (default),
-        ``"stem"`` for per-line markers, or ``"fraction"`` for each
-        molecule's share of the total τ per pixel (y axis 0 to 1).
+        ``"profile"`` for the optical depth τ(λ), where each line peaks at
+        its line-center τ (default), ``"density"`` for the optical depth
+        per micron (1/μm), ``"stem"`` for per-line markers, or
+        ``"fraction"`` for each molecule's share of the total τ per pixel
+        (y axis 0 to 1).
     log_scale : bool, optional
         Use logarithmic y-axis.  Default ``False``.  Not applied in
         ``"fraction"`` mode, whose axis is always linear.
@@ -127,7 +160,8 @@ class OpticalDepthPanel(SpectralPanel):
         """Populate *mol_tau_cache* from *molecule*/*molecules* if empty.
 
         When an ``OpticalDepthPanel`` is used standalone (not embedded by ``OpticalDepthSpectrumPlot``) the cache starts empty.
-        This method builds it on-demand using :meth:`BasePlot.get_molecule_tau_data`.
+        This method builds it on-demand using :meth:`BasePlot.get_molecule_tau_data`,
+        in the normalization of :attr:`display_mode`.
         """
         if self.mol_tau_cache:
             return
@@ -140,8 +174,9 @@ class OpticalDepthPanel(SpectralPanel):
                 self.molecules.get_visible_molecules(return_objects=True)
             )
 
+        normalization = tau_normalization(self.display_mode)
         for mol in mols:
-            lam, tau = self.get_molecule_tau_data(mol, self.wave_data)
+            lam, tau = self.get_molecule_tau_data(mol, self.wave_data, normalization=normalization)
             if lam is not None and tau is not None and len(tau) > 0:
                 self.mol_tau_cache.append((
                     lam, tau,
@@ -161,13 +196,13 @@ class OpticalDepthPanel(SpectralPanel):
 
         if fraction:
             self._render_fraction(ax, xr)
-        elif self.display_mode == "profile":
+        elif self.display_mode in ("profile", "density"):
             self._render_profile(ax, xr)
         else:
             self._render_stem(ax, xr)
 
         ax.set_xlim(*xr)
-        ax.set_ylabel(FRACTION_YLABEL if fraction else "Optical Depth (\u03c4)", color=fg, fontsize=8)
+        ax.set_ylabel(tau_axis_label(self.display_mode), color=fg, fontsize=8)
 
         if fraction:
             ax.set_ylim(*FRACTION_YLIM)
@@ -178,10 +213,10 @@ class OpticalDepthPanel(SpectralPanel):
                 ax.set_yscale("log")
 
     # ------------------------------------------------------------------
-    # Profile mode
+    # Profile and density modes
     # ------------------------------------------------------------------
     def _render_profile(self, ax: Axes, xr: Tuple[float, float]) -> None:
-        """Render convolved τ(λ) with stacked fills."""
+        """Render the cached profiles (τ, or τ per μm in ``"density"`` mode) with stacked fills."""
         entries = self.mol_tau_cache
         if not entries:
             return

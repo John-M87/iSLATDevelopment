@@ -1,13 +1,14 @@
 """
 OpticalDepthSpectrumPlot -- Multi-panel stacked optical-depth overview.
 
-Generates a vertically stacked series of panels, each showing the convolved τ(λ) profile (or line-center stems, or each molecule's fractional share of the total τ per pixel) for visible molecules with color-coded stacked fills.
+Generates a vertically stacked series of panels, each showing the optical depth τ(λ) (or τ per micron, line-center stems, or each molecule's fractional share of the total τ per pixel) for visible molecules with color-coded stacked fills.
 
 Inherits the stacking layout from :class:`StackedSpectralPanel` and implements :meth:`_create_cell` to produce one :class:`OpticalDepthPanel` per row.
 With ``show_flux=True`` each row also gets a :class:`SpectrumPanel` directly beneath its τ panel (sharing its wavelength axis, like the residual sub-panels of :class:`ResidualSpectrumPlot`) showing the observed flux, the molecule models and the summed model.
 
 Can also be combined with :class:`FullSpectrumPlot` using the ``+`` operator or :meth:`stack_with` to produce a composite flux + τ overview.
 """
+from functools import partial
 from typing import Optional, Tuple, List, Dict, Any, Callable, TYPE_CHECKING
 
 import numpy as np
@@ -21,8 +22,8 @@ from .SpectrumPanel import SpectrumPanel
 from .OpticalDepthPanel import (
     OpticalDepthPanel,
     FRACTION_YLIM,
-    FRACTION_YLABEL,
-    FRACTION_YLABEL_SHORT,
+    tau_axis_label,
+    tau_normalization,
 )
 from .BasePlot import BasePlot
 from .ModelOverlays import build_molecule_traces, summed_model_flux
@@ -61,7 +62,9 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     uniform_ylim : bool, optional
         When True every panel shares the same τ scale.  Default False.
     display_mode : str, optional
-        ``"profile"`` (convolved τ), ``"stem"`` (per-line τ) or
+        ``"profile"`` (optical depth τ, each isolated line peaking at its
+        line-center τ), ``"density"`` (τ per micron, 1/μm: each line's τ
+        spread over a unit-area Gaussian), ``"stem"`` (per-line τ) or
         ``"fraction"`` (each molecule's share of the total τ per pixel,
         y axis 0 to 1).  Default ``"profile"``.
     log_scale : bool, optional
@@ -161,7 +164,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         """
         if self.show_flux:
             return ""
-        return FRACTION_YLABEL if self.display_mode == "fraction" else "Optical Depth (τ)"
+        return tau_axis_label(self.display_mode)
 
     # ------------------------------------------------------------------
     # Axes accessors
@@ -246,11 +249,17 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     ) -> Tuple[List[tuple], List[str], List[str]]:
         """Pre-compute molecule tau data, labels, and colors.
 
+        The tau is in the normalization of :attr:`display_mode` (τ per
+        micron for ``"density"``, otherwise the dimensionless τ; see
+        :func:`~iSLAT.Modules.Plotting.OpticalDepthPanel.tau_normalization`).
         Returns ``(mol_tau_cache, mol_labels, mol_colors)`` where each
         entry in *mol_tau_cache* is
         ``(wavelengths, tau, color, label, name)``.
         """
-        return self._build_mol_data_cache(self.get_molecule_tau_data)
+        return self._build_mol_data_cache(partial(
+            self.get_molecule_tau_data,
+            normalization=tau_normalization(self.display_mode),
+        ))
 
     def _build_mol_flux_cache(self) -> List[tuple]:
         """Pre-compute the molecule model fluxes for the flux sub-panels.
@@ -448,8 +457,7 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         else:
             # Short labels tell the two sub-panels apart; the wavelength
             # ticks sit under the flux sub-panel only.
-            tau_label = FRACTION_YLABEL_SHORT if self.display_mode == "fraction" else "τ"
-            ax.set_ylabel(tau_label, fontsize=8, color=fg)
+            ax.set_ylabel(tau_axis_label(self.display_mode, short=True), fontsize=8, color=fg)
             ax.tick_params(axis="x", labelbottom=False)
             # Drop τ's bottom tick label so it does not collide with the
             # flux panel's top one at the shared edge.

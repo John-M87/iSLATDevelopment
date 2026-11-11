@@ -370,7 +370,9 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
                     lam=mol_wave, flux=mol_flux_arr,
                     lam_min=xmin, lam_max=xmax, err=None,
                 )
-                tau_wave, tau_profile = active_mol.get_tau(return_wavelengths=True)
+                tau_wave, tau_profile = active_mol.get_tau(
+                    return_wavelengths=True, normalization="area",  # 1/um: integrates to the summed tau
+                )
                 opacity_in_range = opacity_integral(
                     lam=tau_wave, tau=tau_profile, lam_min=xmin, lam_max=xmax,
                 )

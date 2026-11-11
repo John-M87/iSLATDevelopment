@@ -44,6 +44,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         '_components', '_flux_valid', '_convolution_cache',
         '_kernel_cache', '_cache_stats', '_n_grid_points', '_unique_cache',
         '_wavelength_range', '_tau_profile', '_tau_profile_valid',
+        '_tau_peak_profile',
     )
     
     def __init__(self, lam_min: float = None, lam_max: float = None, 
@@ -149,9 +150,10 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         # list with the different intensity components building up the spectrum
         self._components = []
         
-        # Tau profile (cached result)
+        # Tau profiles (cached results; see tau_profile / tau_peak_profile)
         self._tau_profile = None
         self._tau_profile_valid = False
+        self._tau_peak_profile = None
 
         # Cache invalidation flag and caching system
         self._flux_valid = False
@@ -237,6 +239,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         self._flux_valid = False
         self._tau_profile = None
         self._tau_profile_valid = False
+        self._tau_peak_profile = None
         self._unique_cache = None
 
     def add_intensity(self, intensity, dA: float):
@@ -303,6 +306,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         self._flux_valid = False
         self._tau_profile = None
         self._tau_profile_valid = False
+        self._tau_peak_profile = None
         self._unique_cache = None
         self._record_cache_invalidation()
 
@@ -466,34 +470,44 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
     # Optical-depth profile convolution
     # ------------------------------------------------------------------
 
-    def _convol_tau(self):
-        """Convolve per-line optical-depth values into a spectral profile.
+    #: Valid ``normalization`` values of the optical-depth profiles (see :meth:`_gaussian_tau_profile`).
+    TAU_NORMALIZATIONS = ("peak", "area")
 
-        Uses the same Gaussian-kernel machinery as :meth:`_convol_flux`
-        but operates on ``_tau_arrays`` and applies **no** distance or area
-        scaling (optical depth is dimensionless).
+    @classmethod
+    def _check_tau_normalization(cls, normalization: str) -> str:
+        """Return *normalization*, or raise ``ValueError`` if it is not one of :attr:`TAU_NORMALIZATIONS`."""
+        if normalization not in cls.TAU_NORMALIZATIONS:
+            raise ValueError(
+                f"normalization must be one of {cls.TAU_NORMALIZATIONS}, got {normalization!r}"
+            )
+        return normalization
+
+    def _gaussian_tau_profile(self, lam: np.ndarray, tau_sum: np.ndarray,
+                              normalization: str) -> np.ndarray:
+        """Spread line-centre optical depths over Gaussians of the instrumental width on ``_lamgrid``.
+
+        Uses the same kernels as :meth:`_convol_flux` (per-group kernel sizing,
+        ~15 sigma), without distance or area scaling.
+
+        Parameters
+        ----------
+        lam : np.ndarray
+            Unique line-centre wavelengths in micron.
+        tau_sum : np.ndarray
+            Summed line-centre optical depth at each wavelength of *lam*.
+        normalization : {"peak", "area"}
+            ``"peak"``: every Gaussian has height 1, so an isolated line peaks
+            at its line-centre optical depth (dimensionless).
+            ``"area"``: every Gaussian has unit area (height
+            1 / (sqrt(2 pi) sigma)), so the profile is optical depth per
+            micron (1/um) and integrates over wavelength to the summed
+            line-centre optical depth.
 
         Returns
         -------
         np.ndarray
-            Optical depth as a function of wavelength on ``_lamgrid``.
+            The profile on ``_lamgrid``.
         """
-        if len(self._tau_arrays) == 0:
-            return np.zeros_like(self._lamgrid)
-
-        tau_array = np.concatenate(self._tau_arrays)
-        lam_array = np.concatenate(self._lam_arrays)
-
-        lam_key = lam_array.data.tobytes()
-        if self._unique_cache is not None and self._unique_cache[0] == lam_key:
-            lam, index_wavelength = self._unique_cache[1], self._unique_cache[2]
-        else:
-            lam, index_wavelength = np.unique(lam_array, return_inverse=True)
-            self._unique_cache = (lam_key, lam, index_wavelength)
-
-        tau_sum = np.bincount(index_wavelength, weights=tau_array,
-                              minlength=lam.shape[0]).astype(np.float64)
-
         n_grid = self._n_grid_points
 
         if self._R_func is not None:
@@ -503,7 +517,10 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
             fwhm = lam / self._R
         sigma = fwhm / self._FWHM_TO_SIGMA
 
-        norm_tau = (self._INV_SQRT_2PI / sigma) * tau_sum
+        if normalization == "area":
+            norm_tau = (self._INV_SQRT_2PI / sigma) * tau_sum
+        else:
+            norm_tau = tau_sum
         inv_2sigma_sq = 0.5 / (sigma ** 2)
 
         lam_grid_position = (n_grid * (lam - self._lam_min) /
@@ -555,22 +572,91 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
 
         return result
 
+    def _convol_tau(self, normalization: str = "area") -> np.ndarray:
+        """Convolve the per-line optical depths of all components into a profile on ``_lamgrid``.
+
+        Parameters
+        ----------
+        normalization : {"area", "peak"}, default "area"
+            ``"area"`` gives optical depth per micron (:attr:`tau_profile`),
+            ``"peak"`` the dimensionless optical depth
+            (:attr:`tau_peak_profile`); see :meth:`_gaussian_tau_profile`.
+
+        Returns
+        -------
+        np.ndarray
+            The profile on ``_lamgrid``.
+        """
+        self._check_tau_normalization(normalization)
+        if len(self._tau_arrays) == 0:
+            return np.zeros_like(self._lamgrid)
+
+        tau_array = np.concatenate(self._tau_arrays)
+        lam_array = np.concatenate(self._lam_arrays)
+
+        lam_key = lam_array.data.tobytes()
+        if self._unique_cache is not None and self._unique_cache[0] == lam_key:
+            lam, index_wavelength = self._unique_cache[1], self._unique_cache[2]
+        else:
+            lam, index_wavelength = np.unique(lam_array, return_inverse=True)
+            self._unique_cache = (lam_key, lam, index_wavelength)
+
+        tau_sum = np.bincount(index_wavelength, weights=tau_array,
+                              minlength=lam.shape[0]).astype(np.float64)
+
+        return self._gaussian_tau_profile(lam, tau_sum, normalization)
+
     @property
     def tau_profile(self) -> np.ndarray:
-        """np.ndarray: Optical depth profile on the wavelength grid."""
+        """np.ndarray: Optical depth **per micron** (1/um) on the wavelength grid.
+
+        Each line's line-centre optical depth is spread over a unit-area
+        Gaussian of the instrumental width, so the profile integrates over
+        wavelength to the summed line-centre optical depth (see
+        :func:`~iSLAT.Modules.DataProcessing.spectral_utils.opacity_integral`).
+        Its height is not an optical depth: an isolated line peaks at
+        tau / (sqrt(2 pi) sigma), which depends on the instrumental
+        resolution.  :attr:`tau_peak_profile` is the optical depth itself.
+        """
         if self._tau_profile is None or not self._tau_profile_valid:
-            self._tau_profile = self._convol_tau()
+            self._tau_profile = self._convol_tau("area")
             self._tau_profile_valid = True
         return self._tau_profile
 
-    def _convol_tau_per_component(self) -> List[Dict[str, Any]]:
+    @property
+    def tau_peak_profile(self) -> np.ndarray:
+        """np.ndarray: Dimensionless optical depth tau(lambda) on the wavelength grid.
+
+        Each line is a Gaussian of the instrumental width whose height is its
+        line-centre optical depth, so an isolated line peaks at its tau
+        (up to the grid sampling).  Lines closer together than about the
+        instrumental FWHM add up here even where their intrinsic profiles
+        (width ``dv``) do not overlap, so blends are an upper limit.
+        """
+        if self._tau_peak_profile is None:
+            self._tau_peak_profile = self._convol_tau("peak")
+        return self._tau_peak_profile
+
+    def get_tau_profile(self, normalization: str = "area") -> np.ndarray:
+        """Return :attr:`tau_profile` (``"area"``, 1/um) or :attr:`tau_peak_profile` (``"peak"``, dimensionless)."""
+        if self._check_tau_normalization(normalization) == "peak":
+            return self.tau_peak_profile
+        return self.tau_profile
+
+    def _convol_tau_per_component(self, normalization: str = "area") -> List[Dict[str, Any]]:
         """Convolve tau for each component separately.
+
+        Parameters
+        ----------
+        normalization : {"area", "peak"}, default "area"
+            See :meth:`_convol_tau`.
 
         Returns
         -------
         list of dict
             Each dict has keys ``'name'``, ``'lamgrid'``, ``'tau_profile'``.
         """
+        self._check_tau_normalization(normalization)
         results: List[Dict[str, Any]] = []
         if len(self._tau_arrays) == 0:
             return results
@@ -583,72 +669,12 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
             lam_arr = self._lam_arrays[comp_idx]
 
             if len(tau_arr) == 0:
-                results.append({
-                    'name': comp['name'],
-                    'lamgrid': lamgrid,
-                    'tau_profile': np.zeros(n_grid, dtype=np.float64),
-                })
-                continue
-
-            lam, index_wavelength = np.unique(lam_arr, return_inverse=True)
-            tau_sum = np.bincount(index_wavelength, weights=tau_arr,
-                                  minlength=lam.shape[0]).astype(np.float64)
-
-            if self._R_func is not None:
-                R_per_line = np.atleast_1d(
-                    np.asarray(self._R_func(lam), dtype=float))
-                fwhm = lam / R_per_line
+                profile = np.zeros(n_grid, dtype=np.float64)
             else:
-                fwhm = lam / self._R
-            sigma = fwhm / self._FWHM_TO_SIGMA
-
-            norm_tau = (self._INV_SQRT_2PI / sigma) * tau_sum
-            inv_2sigma_sq = 0.5 / (sigma ** 2)
-
-            lam_grid_position = (n_grid * (lam - self._lam_min) /
-                                 (self._lam_max - self._lam_min)).astype(np.int32)
-
-            profile = np.zeros(n_grid, dtype=np.float64)
-
-            sigma_min = sigma.min()
-            sigma_max = sigma.max()
-
-            if sigma_min == sigma_max or lam.shape[0] <= 1:
-                sigma_groups = [np.arange(lam.shape[0])]
-                sigma_maxes = [sigma_max]
-            else:
-                bin_edges = np.geomspace(sigma_min * 0.999, sigma_max * 1.001,
-                                         num=self._N_SIGMA_BINS + 1)
-                group_ids = np.digitize(sigma, bin_edges) - 1
-                group_ids = np.clip(group_ids, 0, self._N_SIGMA_BINS - 1)
-                unique_groups = np.unique(group_ids)
-                sigma_groups = [np.where(group_ids == g)[0] for g in unique_groups]
-                sigma_maxes = [sigma[idx].max() for idx in sigma_groups]
-
-            for group_idx, group_sigma_max in zip(sigma_groups, sigma_maxes):
-                kernel_range_size = int(15.0 * group_sigma_max / self._dlambda)
-                kernel_range = np.arange(-kernel_range_size, kernel_range_size + 1,
-                                         dtype=np.int32)
-
-                g_pos = lam_grid_position[group_idx]
-                g_norm = norm_tau[group_idx]
-                g_inv2s = inv_2sigma_sq[group_idx]
-                g_lam = lam[group_idx]
-
-                grid_indices = g_pos[:, np.newaxis] + kernel_range[np.newaxis, :]
-                valid_mask = (grid_indices >= 0) & (grid_indices < n_grid)
-                safe_indices = np.clip(grid_indices, 0, n_grid - 1)
-
-                kernel = lamgrid[safe_indices] - g_lam[:, np.newaxis]
-                np.multiply(kernel, kernel, out=kernel)
-                kernel *= -g_inv2s[:, np.newaxis]
-                np.exp(kernel, out=kernel)
-                kernel *= g_norm[:, np.newaxis]
-                kernel *= valid_mask
-
-                flat_idx = safe_indices.ravel()
-                flat_wt = kernel.ravel()
-                profile += np.bincount(flat_idx, weights=flat_wt, minlength=n_grid)
+                lam, index_wavelength = np.unique(lam_arr, return_inverse=True)
+                tau_sum = np.bincount(index_wavelength, weights=tau_arr,
+                                      minlength=lam.shape[0]).astype(np.float64)
+                profile = self._gaussian_tau_profile(lam, tau_sum, normalization)
 
             results.append({
                 'name': comp['name'],

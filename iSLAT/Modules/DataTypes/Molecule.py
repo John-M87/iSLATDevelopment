@@ -695,11 +695,12 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         wavelength_array: Optional[np.ndarray] = None,
         return_wavelengths: bool = False,
         interpolate_to_input: bool = False,
+        normalization: str = "area",
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Get the convolved optical-depth profile with RV shift applied.
 
-        This mirrors :meth:`get_flux` but returns the dimensionless
-        optical depth τ(λ) instead of flux.
+        This mirrors :meth:`get_flux` but returns an optical-depth profile
+        instead of flux.
 
         Parameters
         ----------
@@ -710,6 +711,14 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         interpolate_to_input : bool, default False
             If True and *wavelength_array* is provided, interpolate to
             match the input grid.
+        normalization : {"area", "peak"}, default "area"
+            ``"area"``: optical depth per micron (1/um,
+            :attr:`Spectrum.tau_profile`), whose wavelength integral is the
+            summed line-centre optical depth (what
+            :func:`~iSLAT.Modules.DataProcessing.spectral_utils.opacity_integral`
+            expects).  ``"peak"``: the dimensionless optical depth
+            (:attr:`Spectrum.tau_peak_profile`), where an isolated line peaks
+            at its line-centre tau.
 
         Returns
         -------
@@ -723,7 +732,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
             return (empty, empty) if return_wavelengths else empty
 
         lam_grid = self.spectrum._lamgrid
-        tau_grid = self.spectrum.tau_profile
+        tau_grid = self.spectrum.get_tau_profile(normalization)
 
         if lam_grid is None or tau_grid is None:
             empty = np.array([])
