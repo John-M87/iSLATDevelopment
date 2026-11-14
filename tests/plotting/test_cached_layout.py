@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""CachedConstrainedLayoutEngine: constrained layout only when its inputs change."""
+"""CachedConstrainedLayoutEngine: constrained layout only when its inputs change.
+
+A cheap key (texts and settings) is checked on every draw; only when it changed
+is each axes' reach (how far its decorations stick out of it) measured, and
+the layout re-runs only when a reach changed too.
+"""
 
 import matplotlib
 matplotlib.use("Agg")
@@ -14,8 +19,10 @@ from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 
+from iSLAT.Modules.Plotting import CachedLayout
 from iSLAT.Modules.Plotting.CachedLayout import (
     CachedConstrainedLayoutEngine,
+    axes_reach,
     x_tick_labels_cut_off,
 )
 
@@ -77,6 +84,20 @@ def layout_runs(monkeypatch):
     return runs
 
 
+@pytest.fixture
+def reach_calls(monkeypatch):
+    """Axes whose reach was measured, one entry per measurement."""
+    calls = []
+    original = CachedLayout.axes_reach
+
+    def counting(ax, renderer):
+        calls.append(ax)
+        return original(ax, renderer)
+
+    monkeypatch.setattr(CachedLayout, "axes_reach", counting)
+    return calls
+
+
 def _runs_for(runs, fig):
     return sum(1 for f in runs if f is fig)
 
@@ -123,7 +144,8 @@ def _set_ylim_new_labels(fig):
 
 
 def _set_title(fig):
-    fig.axes[2].set_title("C$_2$H$_2$ Population diagram")
+    # A second line: only a title's height changes the layout.
+    fig.axes[2].set_title("C$_2$H$_2$\nPopulation diagram")
 
 
 def _set_two_line_label(fig):
@@ -181,6 +203,121 @@ def test_relayout_matches_stock_engine(change, layout_runs):
     # and the new layout is kept for the next draw
     cached.canvas.draw()
     assert _runs_for(layout_runs, cached) == runs + 1
+
+
+def _drawn_after(stock, cached, change, layout_runs):
+    """Apply *change* to both figures and draw them; returns the cached figure's layout runs it caused."""
+    runs = _runs_for(layout_runs, cached)
+    change(stock)
+    change(cached)
+    stock.canvas.draw()
+    cached.canvas.draw()
+    return _runs_for(layout_runs, cached) - runs
+
+
+class TestReachKey:
+    """Changes that leave every axes' reach (how far its decorations stick out) alone keep the layout."""
+
+    def test_new_tick_labels_of_the_same_width(self, layout_runs):
+        stock, cached = _pair()
+        _drawn_after(stock, cached, lambda fig: fig.axes[2].set_ylim(31.0, 69.0), layout_runs)
+        before = [t.get_text() for t in cached.axes[2].get_yticklabels()]
+        assert _drawn_after(stock, cached, lambda fig: fig.axes[2].set_ylim(41.0, 79.0), layout_runs) == 0
+        assert [t.get_text() for t in cached.axes[2].get_yticklabels()] != before
+        _assert_same_layout(cached, stock)
+
+    def test_text_moved_and_changed_inside_the_axes(self, layout_runs):
+        stock, cached = _pair()
+        for fig in (stock, cached):
+            fig.axes[1].text(0.5, 0.5, "12.407", transform=fig.axes[1].transAxes)
+        _drawn_after(stock, cached, lambda fig: None, layout_runs)
+
+        def move(fig):
+            label = fig.axes[1].texts[0]
+            label.set_position((0.2, 0.7))
+            label.set_text("H2O 14.950")
+        assert _drawn_after(stock, cached, move, layout_runs) == 0
+        _assert_same_layout(cached, stock)
+
+    def test_legend_hidden_inside_the_axes(self, layout_runs):
+        stock, cached = _pair()
+        assert _drawn_after(stock, cached, lambda fig: fig.axes[0].get_legend().set_visible(False), layout_runs) == 0
+        _assert_same_layout(cached, stock)
+
+    def test_title_renamed_at_the_same_height(self, layout_runs):
+        stock, cached = _pair()
+        assert _drawn_after(stock, cached, lambda fig: fig.axes[2].set_title("H2O Population diagram"), layout_runs) == 0
+        _assert_same_layout(cached, stock)
+
+    def test_legend_moved_outside_relays_out(self, layout_runs):
+        stock, cached = _pair()
+
+        def move(fig):
+            fig.axes[0].get_legend().set_loc((1.0, 1.05))
+        assert _drawn_after(stock, cached, move, layout_runs) == 1
+        _assert_same_layout(cached, stock)
+
+    def test_reach_is_what_constrained_layout_measures(self):
+        """The reach is the layout-only tight bbox minus the axes box.
+
+        Exact above, below and on the left (y tick labels).  On the right the
+        reach leaves out x tick labels sticking out sideways, so it can only
+        be smaller there.
+        """
+        fig = _figure(CachedConstrainedLayoutEngine())
+        fig.canvas.draw()
+        renderer = fig._get_renderer()
+        for ax in fig.axes:
+            axbox = ax.get_window_extent(renderer)
+            tight = ax.get_tightbbox(renderer, for_layout_only=True)
+            left, right, bottom, top = axes_reach(ax, renderer)
+            expected = (axbox.x0 - tight.x0, axbox.y0 - tight.y0, tight.y1 - axbox.y1)
+            np.testing.assert_allclose((left, bottom, top), expected, rtol=0, atol=1e-6)
+            assert -1e-6 <= right <= tight.x1 - axbox.x1 + 1e-6
+
+    def test_reach_measured_only_for_axes_whose_cheap_key_changed(self, reach_calls):
+        stock, cached = _pair()
+        reach_calls.clear()
+        cached.axes[0].set_xlim(5.25, 9.85)  # a pan
+        cached.canvas.draw()
+        cached.canvas.draw()
+        assert reach_calls == []
+        cached.axes[2].set_title("H2O Population diagram")
+        cached.canvas.draw()
+        assert reach_calls == [cached.axes[2]]
+
+    def test_figure_change_lays_out_without_measuring_first(self, reach_calls, layout_runs):
+        stock, cached = _pair()
+        reach_calls.clear()
+        assert _drawn_after(stock, cached, _resize, layout_runs) == 1
+        assert len(reach_calls) == len(cached.axes)  # only after the layout, for the next comparison
+        _assert_same_layout(cached, stock)
+
+    def test_kept_changes_add_up(self, layout_runs):
+        """After several kept changes a change that does alter a reach still lays out."""
+        stock, cached = _pair()
+        assert _drawn_after(stock, cached, lambda fig: fig.axes[2].set_title("H2O Population diagram"), layout_runs) == 0
+        assert _drawn_after(stock, cached, lambda fig: fig.axes[1].set_title("Line inspection 12.4"), layout_runs) == 0
+        assert _drawn_after(stock, cached, _set_ylim_new_labels, layout_runs) == 1
+        _assert_same_layout(cached, stock)
+
+    def test_aligned_labels_measure_every_axes(self, reach_calls, layout_runs):
+        """Aligned labels are placed with the other axes' tick labels, so every axes is measured."""
+        cached = _figure(CachedConstrainedLayoutEngine())
+        cached.align_ylabels()
+        cached.canvas.draw()
+        runs = _runs_for(layout_runs, cached)
+        reach_calls.clear()
+        cached.axes[2].set_title("H2O Population diagram")
+        cached.canvas.draw()
+        assert sorted(map(id, reach_calls)) == sorted(map(id, cached.axes))
+        assert _runs_for(layout_runs, cached) == runs
+
+    def test_hidden_axes_have_no_reach(self):
+        fig = _figure(CachedConstrainedLayoutEngine())
+        fig.canvas.draw()
+        fig.axes[1].set_visible(False)
+        assert axes_reach(fig.axes[1], fig._get_renderer()) is None
 
 
 class TestEdgeGuard:
