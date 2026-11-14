@@ -64,18 +64,25 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         return getattr(self._islat, "molecules_dict", None)
 
     def _build_plot(self) -> None:
-        """Create (or recreate) the owned figure and :class:`LineInspectionPlot`."""
-        # Close the previous figure to avoid memory leaks
-        if self._fig is not None:
-            plt.close(self._fig)
-            self._fig = None
-            self._plot = None
+        """Draw the plot for the current selection into the owned figure.
+
+        The figure is created once and then cleared and redrawn, so the canvas
+        showing it is kept.  A new figure would need a new canvas widget, which
+        must wait for Tk to lay it out before its first draw.  Clearing the
+        figure and adding a new axes gives the same plot as a new figure:
+        ``Axes.clear()`` alone would keep state such as autoscaling switched
+        off by manual Y limits.
+        """
+        self._plot = None
 
         # Clear active lines from any previous render
         self.active_lines.clear()
         self.selected_line = None
 
-        self._fig = plt.Figure(figsize=(10, 5), constrained_layout=True)
+        if self._fig is None:
+            self._fig = plt.Figure(figsize=(10, 5), constrained_layout=True)
+        else:
+            self._fig.clear()
         ax = self._fig.add_subplot(111)
 
         sel = self._current_selection
@@ -290,10 +297,10 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     def _on_canvas_created(self, canvas: Any) -> None:
         """Keep the pick handler attached to every new canvas.
 
-        Every selection change creates a fresh figure, so the canvas is
-        replaced.  The old pick connection dies with the old canvas, so
-        forget its id and connect again on the new one; otherwise clicks on
-        line markers stop working after the first rebuild.
+        The view redraws into the same figure and canvas, but the canvas is
+        built again if the figure is ever replaced.  The old pick connection
+        dies with the old canvas, so forget its id and connect again on the
+        new one; otherwise clicks on line markers would stop working.
         """
         self._pick_cid = None
         self._connect_pick_event()
@@ -422,12 +429,17 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
             self._repaint_shown_frame()
             return
 
+        rebuilt_on = None
         if not self._initialised or self._needs_refresh:
+            rebuilt_on = self._canvas
             self._build_plot()
             self._initialised = True
             self._needs_refresh = False
 
         self._ensure_canvas()
+        if rebuilt_on is not None and self._canvas is rebuilt_on:
+            # New content on the kept canvas: its zoom history no longer applies.
+            self._notify_canvas_changed()
         self.apply_theme(self._pm.theme)
         self.sync_toggle_state(self._pm.toggle_state)
         self._register_control_fields()
@@ -436,18 +448,24 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         self.draw()
 
     def _rebuild_and_show(self) -> None:
-        """Rebuild the figure (once the view has been shown) and show it, themed, on its new canvas.
+        """Redraw the plot (once the view has been shown) on its canvas, themed.
 
         Before the first activation the view is only marked stale; the
-        next :meth:`activate` builds it.
+        next :meth:`activate` builds it.  The canvas is kept, so the main
+        toolbar is told the content changed: zoom history from the previous
+        selection no longer applies, and the new axes need its pan / zoom mode.
         """
         self._needs_refresh = True
         if not self._initialised:
             return
+        canvas = self._canvas
         self._build_plot()
         self._needs_refresh = False
         self._show_canvas()
         self.apply_theme(self._pm.theme)
+        if canvas is not None and self._canvas is canvas:
+            # A new canvas has already told the toolbar (_ensure_canvas).
+            self._notify_canvas_changed()
 
     # ==================================================================
     # PlotView - interaction context

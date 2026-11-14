@@ -401,22 +401,29 @@ class TestLineInspectionViewPickSurvivesRebuild:
     def _pick_handlers(canvas):
         return [cb for name, cb in canvas.connections if name == "pick_event"]
 
-    def test_pick_reconnected_on_each_new_canvas(self, monkeypatch):
+    def test_pick_stays_connected_when_redrawn_on_the_same_canvas(self, monkeypatch):
+        view = self._make_view(monkeypatch)
+        view._ensure_canvas()
+        view._connect_pick_event()
+        canvas = view._canvas
+        assert self._pick_handlers(canvas) == [view._on_pick_line]
+
+        view.on_selection(6.5, 7.5)       # redraws into the same figure and canvas
+        view.update_model_plot()          # and again
+        assert view._canvas is canvas
+        assert self._pick_handlers(canvas) == [view._on_pick_line]
+
+    def test_pick_reconnected_on_a_new_canvas(self, monkeypatch):
         view = self._make_view(monkeypatch)
         view._ensure_canvas()
         view._connect_pick_event()
         first = view._canvas
-        assert self._pick_handlers(first) == [view._on_pick_line]
 
-        view.on_selection(6.5, 7.5)       # rebuilds figure -> new canvas
+        view._fig = Figure()              # a replaced figure gets a new canvas
+        view._ensure_canvas()
         second = view._canvas
         assert second is not first
         assert self._pick_handlers(second) == [view._on_pick_line]
-
-        view.update_model_plot()          # and again
-        third = view._canvas
-        assert third is not second
-        assert self._pick_handlers(third) == [view._on_pick_line]
 
     def test_pick_not_duplicated_when_canvas_unchanged(self, monkeypatch):
         view = self._make_view(monkeypatch)
