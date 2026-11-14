@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 
+from .ErrorBars import fast_errorbar
 from .SpectralPanel import SpectralPanel, GapMode
 
 if TYPE_CHECKING:
@@ -120,12 +121,15 @@ class ResidualPanel(SpectralPanel):
 
         # -- Residual data points ---------------------------------------
         if panel_err is not None and len(panel_err) == len(residuals):
-            ax.errorbar(
+            # Same artists as ax.errorbar, with the bars in one path (see ErrorBars).
+            fast_errorbar(
+                ax,
                 panel_wave,
                 residuals,
-                yerr=panel_err,
+                panel_err,
                 fmt=".",
-                ms=2,
+                markersize=2,
+                linewidth=None,
                 color=fg,
                 ecolor="lightgray",
                 elinewidth=0.5,

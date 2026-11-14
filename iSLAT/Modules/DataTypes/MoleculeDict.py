@@ -1070,11 +1070,13 @@ class MoleculeDict(ObservableMixin, dict):
         update_global_parameters : bool, default True
             Whether to update global parameters from first molecule
         strategy : str, default "auto"
-            Loading strategy: "auto", "sequential", or "parallel"
+            Loading strategy: "auto", "sequential", or "parallel".  "auto"
+            loads sequentially unless *force_multiprocessing* is set and
+            :meth:`_should_use_multiprocessing` expects a gain.
         max_workers : Optional[int]
             Maximum number of workers for parallel loading
         force_multiprocessing : bool, default False
-            Force use of multiprocessing
+            Let "auto" use multiprocessing when the line files are large
         defer_calculations : bool, default True
             If True, defer intensity calculations until needed (faster startup).
             If False, calculate intensities immediately after loading.
@@ -1100,11 +1102,12 @@ class MoleculeDict(ObservableMixin, dict):
             return {'success': 0, 'failed': 0, 'molecules': [], 'errors': ['No valid molecules to load']}
         
         # Determine strategy
-        n_molecules = len(valid_molecules_data)
         if strategy == "auto":
+            # Building a Molecule is cheap: line lists and intensities load on
+            # first use, in this process.  A process pool only adds its start-up
+            # cost (~1 s for 12 molecules against ~2 ms sequentially), so the
+            # molecule count alone never selects it.
             if force_multiprocessing and self._should_use_multiprocessing(valid_molecules_data):
-                strategy = "parallel"
-            elif n_molecules >= 8:
                 strategy = "parallel"
             else:
                 strategy = "sequential"

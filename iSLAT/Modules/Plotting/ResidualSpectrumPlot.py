@@ -19,6 +19,7 @@ from matplotlib.text import Text
 from matplotlib.ticker import MaxNLocator
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
+from .ErrorBars import fast_errorbar
 from .FullSpectrumPlot import FullSpectrumPlot
 from .SpectralPanel import SpectralPanel, GapMode
 from .SpectrumPanel import SpectrumPanel
@@ -810,10 +811,11 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
             ax_res.cla()
 
             if panel_err is not None and len(panel_err) == len(residuals):
-                ax_res.errorbar(
-                    panel_wave, residuals, yerr=panel_err,
-                    fmt=".", ms=2, color=fg, ecolor="lightgray",
-                    elinewidth=0.5, zorder=2,
+                # Same artists as ax.errorbar, with the bars in one path (see ErrorBars).
+                fast_errorbar(
+                    ax_res, panel_wave, residuals, panel_err,
+                    fmt=".", markersize=2, linewidth=None, color=fg,
+                    ecolor="lightgray", elinewidth=0.5, zorder=2,
                 )
             else:
                 ax_res.plot(panel_wave, residuals, ".", ms=2, color=fg, zorder=2)

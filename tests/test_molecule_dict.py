@@ -807,3 +807,65 @@ class TestGetSummedFluxCanonicalGrid:
         assert len(wave_out) > 0
         assert len(flux_out) == len(wave_out)
         assert np.all(np.isfinite(flux_out))
+
+
+# ======================================================================
+# load_molecules strategy
+# ======================================================================
+
+def _save_row(name):
+    """One row of a saved molecule list; the line file is only read on first use."""
+    return {"Molecule Name": name, "File Path": "not_read_at_load.par", "Molecule Label": name,
+            "Temp": 600.0, "Rad": 0.5, "N_Mol": 1e17, "Color": "#ff0000", "Vis": True,
+            "Dist": 140.0, "StellarRV": 0.0, "FWHM": 130.0, "Broad": 2.5, "RV Shift": 0.0}
+
+
+@pytest.fixture
+def empty_md():
+    from iSLAT.Modules.DataTypes.Molecule import Molecule
+    from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
+    md = MoleculeDict(global_wavelength_range=(4.9, 5.2))
+    yield md
+    Molecule.remove_molecule_parameter_change_callback(md._on_molecule_parameter_changed)
+
+
+@pytest.fixture
+def parallel_loads(empty_md, monkeypatch):
+    """Record calls to the process-pool loader (and load sequentially instead)."""
+    calls = []
+
+    def recording(molecules_data, initial_molecule_parameters, max_workers=None):
+        calls.append([row["Molecule Name"] for row in molecules_data])
+        return empty_md._load_molecules_sequential(molecules_data, initial_molecule_parameters)
+
+    monkeypatch.setattr(empty_md, "_load_molecules_parallel", recording)
+    return calls
+
+
+class TestLoadMoleculesStrategy:
+    """Molecule construction is lazy, so "auto" never starts a process pool by molecule count alone.
+
+    A pool cost ~1 s at startup for 12 molecules against ~2 ms sequentially.
+    """
+
+    NAMES = [f"M{i:02d}" for i in range(12)]
+
+    def test_auto_loads_many_molecules_sequentially_in_file_order(self, empty_md, parallel_loads):
+        results = empty_md.load_molecules([_save_row(n) for n in self.NAMES], {})
+        assert parallel_loads == []
+        assert results["success"] == len(self.NAMES)
+        assert list(empty_md.keys()) == self.NAMES
+
+    def test_molecules_are_built_without_reading_line_files(self, empty_md, parallel_loads):
+        empty_md.load_molecules([_save_row(n) for n in self.NAMES], {})
+        assert all(empty_md[n].lines is None for n in self.NAMES)
+
+    def test_forced_multiprocessing_still_uses_the_pool_when_worthwhile(
+            self, empty_md, parallel_loads, monkeypatch):
+        monkeypatch.setattr(empty_md, "_should_use_multiprocessing", lambda data: True)
+        empty_md.load_molecules([_save_row(n) for n in self.NAMES], {}, force_multiprocessing=True)
+        assert parallel_loads == [self.NAMES]
+
+    def test_explicit_parallel_strategy_is_kept(self, empty_md, parallel_loads):
+        empty_md.load_molecules([_save_row(n) for n in self.NAMES[:2]], {}, strategy="parallel")
+        assert parallel_loads == [self.NAMES[:2]]

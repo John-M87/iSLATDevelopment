@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""fast_errorbar: the observed spectrum's error bars drawn as one path.
+"""fast_errorbar: the observed spectrum's and the residuals' error bars drawn as one path.
 
 ``Axes.errorbar`` makes one path per error bar, which takes ~280 ms for a
 MIRI spectrum and slows every redraw.  ErrorBars.fast_errorbar puts all the
 bars in one compound path (an ErrorBarCollection).  It must give the same
 artists, styles, legend entry, data limits and segments as ``Axes.errorbar``,
 and the same pixels to within one color level while the bars do not share
-pixel columns (the zoomed-in views the GUI shows).
+pixel columns (the zoomed-in views the GUI shows).  That includes the
+residual panels' style (dot markers, light gray bars), which the residual
+plots draw with it both on first render and on an in-place update.
 """
 
 import matplotlib
@@ -23,6 +25,8 @@ from matplotlib.figure import Figure
 
 from iSLAT.Modules.Plotting.ArtistTags import OBSERVED_TAG, iter_tagged
 from iSLAT.Modules.Plotting.ErrorBars import ErrorBarCollection, fast_errorbar
+from iSLAT.Modules.Plotting.ResidualPanel import ResidualPanel
+from iSLAT.Modules.Plotting.ResidualSpectrumPlot import ResidualSpectrumPlot
 from iSLAT.Modules.Plotting.SpectrumPanel import SpectrumPanel
 
 STYLE = dict(fmt="-", color="black", linewidth=1, elinewidth=0.5, zorder=2, label="Data")
@@ -190,6 +194,81 @@ def _axes_with_line(wave, flux):
     ax.plot(wave, flux, "-")
     ax.figure.canvas.draw()
     return ax
+
+
+# The residual panels' style: dots in the foreground color, light gray bars,
+# matplotlib's default line width.
+RESIDUAL_STOCK = dict(fmt=".", ms=2, color="black", ecolor="lightgray", elinewidth=0.5, zorder=2)
+RESIDUAL_FAST = dict(fmt=".", markersize=2, linewidth=None, color="black", ecolor="lightgray",
+                     elinewidth=0.5, zorder=2)
+
+
+def _residual_pair(xlim):
+    """(stock, fast) axes with residual-style error bars, both rendered."""
+    wave, flux, err = _spectrum()
+    resid = flux - 0.05
+    out = []
+    for draw in (lambda ax: ax.errorbar(wave, resid, yerr=err, capsize=0, **RESIDUAL_STOCK),
+                 lambda ax: fast_errorbar(ax, wave, resid, err, **RESIDUAL_FAST)):
+        ax = _axes()
+        container = draw(ax)
+        ax.set_xlim(*xlim)
+        ax.figure.canvas.draw()
+        out.append((ax, container))
+    return out
+
+
+class TestResidualStyle:
+    def test_markers_and_bar_color_like_errorbar(self):
+        (_, stock), (_, fast) = _residual_pair((15.0, 15.6))
+        (s_line, s_caps, (s_bars,)), (f_line, f_caps, (f_bars,)) = stock, fast
+        assert f_caps == s_caps == ()
+        for getter in ("get_marker", "get_markersize", "get_linestyle", "get_linewidth",
+                       "get_color", "get_zorder"):
+            assert getattr(f_line, getter)() == getattr(s_line, getter)(), getter
+        np.testing.assert_array_equal(f_bars.get_color(), s_bars.get_color())
+        np.testing.assert_array_equal(f_bars.get_linewidth(), s_bars.get_linewidth())
+        assert f_bars.get_zorder() == s_bars.get_zorder()
+
+    def test_bars_default_to_the_line_color_without_ecolor(self):
+        ax = _axes()
+        line, _, (bars,) = fast_errorbar(ax, *_spectrum(n=20), color="tab:red")
+        np.testing.assert_array_equal(bars.get_color(), [matplotlib.colors.to_rgba("tab:red")])
+
+    @pytest.mark.parametrize("xlim", [(15.0, 15.6), (16.4, 17.0)])
+    def test_zoomed_pixels_match_errorbar(self, xlim):
+        (stock, _), (fast, _) = _residual_pair(xlim)
+        assert np.abs(_pixels(fast) - _pixels(stock)).max() <= 1
+
+
+def _one_path_bars(ax):
+    return [c for c in ax.collections if isinstance(c, ErrorBarCollection)]
+
+
+class TestResidualPlots:
+    def test_residual_panel_uses_one_path_bars(self):
+        wave, flux, err = _spectrum(n=400)
+        ax = _axes()
+        panel = ResidualPanel(wave, flux, 15.0, 15.6, model_flux_adj=flux - 0.01,
+                              error_data=err, error_adj=err, ax=ax)
+        panel.generate_plot()
+        (bars,) = _one_path_bars(ax)
+        assert len(bars.get_paths()) == 1
+        assert not [c for c in ax.collections if type(c) is LineCollection]
+
+    def test_residual_spectrum_plot_in_place_update_uses_one_path_bars(self):
+        wave, flux, err = _spectrum(n=400)
+        rsp = ResidualSpectrumPlot(wave, flux, flux - 0.01, error_data=err, n_panels=2)
+        rsp.generate_plot()
+        new_err = np.full_like(err, 0.05)
+        rsp.update_data(wave, flux, error_data=new_err)
+        rsp.update_panels_inplace()
+        for _ax_spec, ax_res in rsp.subplots.values():
+            (bars,) = _one_path_bars(ax_res)
+            assert not [c for c in ax_res.collections if type(c) is LineCollection]
+            segs = np.asarray(bars.get_segments())
+            assert len(segs) > 0
+        rsp.close()
 
 
 class TestSpectrumPanel:

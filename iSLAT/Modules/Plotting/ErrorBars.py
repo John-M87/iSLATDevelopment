@@ -109,7 +109,9 @@ def fast_errorbar(
     *,
     fmt: str = "-",
     color: Any = None,
-    linewidth: float = 1.0,
+    ecolor: Any = None,
+    linewidth: Optional[float] = 1.0,
+    markersize: Optional[float] = None,
     elinewidth: float = 0.5,
     zorder: float = 2,
     label: Optional[str] = None,
@@ -117,25 +119,32 @@ def fast_errorbar(
     """Draw *y* with symmetric vertical error bars *yerr*, like ``ax.errorbar``.
 
     Gives the same artists and styles as ``ax.errorbar(x, y, yerr=yerr,
-    fmt=fmt, color=color, linewidth=linewidth, elinewidth=elinewidth,
-    capsize=0, zorder=zorder, label=label)``: a data line at *zorder* + 0.1
-    and the bars at *zorder*, both unlabelled, in an ``ErrorbarContainer``
-    that carries *label* and is added to *ax*.  The bars are one
-    :class:`ErrorBarCollection`.  Unlike ``ax.errorbar``, negative errors
-    are drawn (as the same bar) instead of raising ``ValueError``.
+    fmt=fmt, color=color, ecolor=ecolor, linewidth=linewidth, ms=markersize,
+    elinewidth=elinewidth, capsize=0, zorder=zorder, label=label)``: a data
+    line at *zorder* + 0.1 and the bars at *zorder*, both unlabelled, in an
+    ``ErrorbarContainer`` that carries *label* and is added to *ax*.  The
+    bars are one :class:`ErrorBarCollection`, in *ecolor* or else the data
+    line's color.  *linewidth* or *markersize* ``None`` leaves matplotlib's
+    default, as leaving the keyword out of ``ax.errorbar`` does.  Unlike
+    ``ax.errorbar``, negative errors are drawn (as the same bar) instead of
+    raising ``ValueError``.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     yerr = np.asarray(yerr, dtype=float)
-    line_kwargs = {"linewidth": linewidth, "zorder": zorder + 0.1, "label": "_nolegend_"}
+    line_kwargs = {"zorder": zorder + 0.1, "label": "_nolegend_"}
+    if linewidth is not None:
+        line_kwargs["linewidth"] = linewidth
+    if markersize is not None:
+        line_kwargs["markersize"] = markersize
     if color is not None:
         line_kwargs["color"] = color
     (data_line,) = ax.plot(x, y, fmt, **line_kwargs)
 
     bars = ErrorBarCollection(
         x, y - yerr, y + yerr,
-        colors=data_line.get_color(), linewidths=elinewidth,
-        zorder=zorder, label="_nolegend_",
+        colors=data_line.get_color() if ecolor is None else ecolor,
+        linewidths=elinewidth, zorder=zorder, label="_nolegend_",
     )
     ax.add_collection(bars, autolim=False)
     _update_datalim_like_vlines(ax, bars)
