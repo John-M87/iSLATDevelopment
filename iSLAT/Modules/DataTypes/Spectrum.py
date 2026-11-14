@@ -16,6 +16,10 @@ This class Spectrum creates a spectrum from intensity instances
 
 """
 
+import itertools
+import threading
+from collections import OrderedDict
+
 import numpy as np
 from typing import Optional, List, Dict, Any, Union
 
@@ -23,6 +27,130 @@ import iSLAT.Constants as c
 
 from ._pandas_import import get_pandas as _get_pandas
 from ._mixins import CacheStatsMixin, WavelengthRangeMixin
+
+
+# ---------------------------------------------------------------------------
+# Convolution helpers (module level, shared by all Spectrum instances)
+# ---------------------------------------------------------------------------
+# Kernel elements evaluated per numpy block in the uncached path; a block of
+# this size stays in L2/L3 so the memory-bound passes are cheap.
+_CHUNK_ELEMENTS = 65536
+# Kernels smaller than this are cheap enough to evaluate uncached every time.
+_CACHE_MIN_ELEMENTS = 1 << 15
+
+
+class _ByteLRU:
+    """Thread-safe LRU (key -> value) bounded by an explicit byte count."""
+
+    def __init__(self, max_bytes):
+        self.max_bytes = int(max_bytes)
+        self._entries = OrderedDict()
+        self._nbytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, key, verify):
+        """Return the value stored under *key* if ``verify(value)`` is true."""
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None or not verify(entry[0]):
+                return None
+            self._entries.move_to_end(key)
+            return entry[0]
+
+    def put(self, key, value, nbytes):
+        with self._lock:
+            old = self._entries.pop(key, None)
+            if old is not None:
+                self._nbytes -= old[1]
+            if nbytes > self.max_bytes:
+                return
+            self._entries[key] = (value, nbytes)
+            self._nbytes += nbytes
+            while self._nbytes > self.max_bytes:
+                _, (_, nb) = self._entries.popitem(last=False)
+                self._nbytes -= nb
+
+    def resize(self, max_bytes):
+        with self._lock:
+            self.max_bytes = int(max_bytes)
+            while self._nbytes > self.max_bytes and self._entries:
+                _, (_, nb) = self._entries.popitem(last=False)
+                self._nbytes -= nb
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+            self._nbytes = 0
+
+    @property
+    def nbytes(self):
+        return self._nbytes
+
+    def __len__(self):
+        return len(self._entries)
+
+
+# Gaussian line-spread kernels keyed by (grid, line wavelengths, sigma).  They
+# do not depend on T, N, dv, radius or distance, so GUI parameter changes and
+# slab-fit iterations reuse them.  8 bytes per kernel element (the 6 default
+# molecules on the CITau MIRI range need ~65 MiB in total).
+_KERNEL_CACHE_DEFAULT_BYTES = 128 * 2 ** 20
+_KERNEL_CACHE = _ByteLRU(_KERNEL_CACHE_DEFAULT_BYTES)
+# Kernels requested once so far (identity and requester only); a second
+# request builds the kernel.  Kept apart so one-off kernels (FWHM slider,
+# fits with a free FWHM) never evict built kernels.
+_PENDING_KERNELS = _ByteLRU(16 * 2 ** 20)
+# np.unique(..., return_inverse=True) of the concatenated line wavelengths.
+_UNIQUE_CACHE = _ByteLRU(32 * 2 ** 20)
+# Request tokens: a Spectrum takes a new one whenever its intensities change,
+# so the flux and optical depth of the same model count as one request.
+_REQUEST_TOKENS = itertools.count()
+
+
+def _bits_equal(a, b):
+    """Bitwise array equality (what comparing ``tobytes()`` does, without copies)."""
+    if a.shape != b.shape or a.dtype != b.dtype:
+        return False
+    if a.dtype.kind == "f":
+        as_int = np.dtype("i%d" % a.dtype.itemsize)
+        return bool(np.array_equal(a.view(as_int), b.view(as_int)))
+    return bool(np.array_equal(a, b))
+
+
+def _fingerprint(a):
+    """Cheap lookup key for a 1-D array (always verified with _bits_equal)."""
+    step = max(1, a.shape[0] // 61)
+    return (a.shape[0], a.dtype.str, hash(a[::step].tobytes()), hash(a[-1:].tobytes()))
+
+
+def _read_only(a):
+    """Mark *a* read-only (it is shared through a cache) and return it."""
+    a.flags.writeable = False
+    return a
+
+
+def _kernel_block(lamgrid, n_grid, start, K, lam, neg_inv2s):
+    """Gaussian of one chunk of lines (sorted by wavelength) as a (2K+1, n) block.
+
+    Row r holds kernel offset K - r (descending offsets), column c line c:
+    exp((lamgrid[start_c + 2K - r] - lambda_c)^2 * neg_inv2s_c).  For a fixed
+    grid bin the elements of the block then appear in ascending line order,
+    which is the order in which a line-major np.bincount adds them.  Returns
+    the (clipped) grid indices, the kernel and the in-grid mask (None when no
+    window of the chunk crosses a grid end)."""
+    W = 2 * K + 1
+    idx = start[np.newaxis, :] + np.arange(W - 1, -1, -1, dtype=np.intp)[:, np.newaxis]
+    mask = None
+    if start[0] < 0 or start[-1] + (W - 1) > n_grid - 1:
+        mask = (idx >= 0) & (idx < n_grid)
+        np.clip(idx, 0, n_grid - 1, out=idx)
+    kern = lamgrid[idx]
+    kern -= lam[np.newaxis, :]
+    np.multiply(kern, kern, out=kern)
+    kern *= neg_inv2s[np.newaxis, :]
+    np.exp(kern, out=kern)
+    return idx, kern, mask
+
 
 class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
     """
@@ -44,7 +172,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         '_components', '_flux_valid', '_convolution_cache',
         '_kernel_cache', '_cache_stats', '_n_grid_points', '_unique_cache',
         '_wavelength_range', '_tau_profile', '_tau_profile_valid',
-        '_tau_peak_profile',
+        '_tau_peak_profile', '_request_token',
     )
     
     def __init__(self, lam_min: float = None, lam_max: float = None, 
@@ -160,7 +288,9 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         self._convolution_cache = {}
         self._kernel_cache = {}
         self._init_cache_stats()
-        self._unique_cache = None  # Cached (key, lam, index_wavelength) from np.unique
+        self._unique_cache = None  # Cached (lam_array, lam, index_wavelength) from np.unique
+        # Identifies this spectrum's current intensities in kernel-cache requests.
+        self._request_token = next(_REQUEST_TOKENS)
 
     @staticmethod
     def build_R_func(profile, kep_fwhm_kms: float, fwhm_fallback_kms: float):
@@ -241,6 +371,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         self._tau_profile_valid = False
         self._tau_peak_profile = None
         self._unique_cache = None
+        self._request_token = next(_REQUEST_TOKENS)
 
     def add_intensity(self, intensity, dA: float):
         """Adds an intensity component to the spectrum
@@ -308,6 +439,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         self._tau_profile_valid = False
         self._tau_peak_profile = None
         self._unique_cache = None
+        self._request_token = next(_REQUEST_TOKENS)
         self._record_cache_invalidation()
 
     # Number of sigma bins for per-group kernel sizing.
@@ -315,6 +447,307 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
     # kernel instead of the global maximum. More bins = tighter kernels per
     # group (faster), but more loop iterations. 5 is a good balance.
     _N_SIGMA_BINS = 5
+
+    # ------------------------------------------------------------------
+    # Convolution kernel cache control
+    # ------------------------------------------------------------------
+    @staticmethod
+    def clear_convolution_cache() -> None:
+        """Release all cached convolution kernels and unique-wavelength tables.
+
+        The caches are keyed by content (line wavelengths, kernel widths and
+        grid), so they never return stale results; clearing only frees memory,
+        e.g. after a molecule was removed or its line list replaced.
+        """
+        _KERNEL_CACHE.clear()
+        _PENDING_KERNELS.clear()
+        _UNIQUE_CACHE.clear()
+
+    @staticmethod
+    def set_convolution_cache_limit(max_bytes: int) -> None:
+        """Set the byte budget of the shared kernel cache (0 disables caching)."""
+        _KERNEL_CACHE.resize(max_bytes)
+
+    @staticmethod
+    def convolution_cache_info() -> Dict[str, int]:
+        """Entries and bytes held by the shared kernel cache."""
+        return {
+            "kernels": len(_KERNEL_CACHE),
+            "kernel_bytes": _KERNEL_CACHE.nbytes,
+            "max_bytes": _KERNEL_CACHE.max_bytes,
+            "pending": len(_PENDING_KERNELS),
+        }
+
+    # ------------------------------------------------------------------
+    # Convolution internals
+    # ------------------------------------------------------------------
+    def _unique_lines(self, lam_array: np.ndarray, use_instance_cache: bool = True):
+        """``np.unique(lam_array, return_inverse=True)``, cached per instance and
+        in a small process-wide LRU (a new Spectrum is built on every model
+        parameter change, so the per-instance cache alone rarely hits).
+
+        The returned arrays may be shared through the cache, so they are
+        read-only."""
+        uc = self._unique_cache if use_instance_cache else None
+        if uc is not None and isinstance(uc[0], np.ndarray) and _bits_equal(uc[0], lam_array):
+            return uc[1], uc[2]
+        if lam_array.ndim == 1 and lam_array.shape[0] > 0 and lam_array.dtype == np.float64:
+            key = _fingerprint(lam_array)
+            hit = _UNIQUE_CACHE.get(key, lambda e: _bits_equal(e[0], lam_array))
+            if hit is not None:
+                lam, index_wavelength = hit[1], hit[2]
+            else:
+                lam, index_wavelength = np.unique(lam_array, return_inverse=True)
+                _read_only(lam)
+                _read_only(index_wavelength)
+                _UNIQUE_CACHE.put(key, (_read_only(lam_array.copy()), lam, index_wavelength),
+                                  2 * lam_array.nbytes + lam.nbytes + index_wavelength.nbytes)
+        else:
+            lam, index_wavelength = np.unique(lam_array, return_inverse=True)
+        if use_instance_cache:
+            self._unique_cache = (lam_array, lam, index_wavelength)
+        return lam, index_wavelength
+
+    def _line_sigma(self, lam: np.ndarray) -> np.ndarray:
+        """Gaussian sigma (micron) of every unique line.
+
+        Uses the wavelength-dependent R(lambda) when a callable is provided,
+        otherwise the fixed scalar R."""
+        if self._R_func is not None:
+            R_per_line = np.atleast_1d(np.asarray(self._R_func(lam), dtype=float))
+            fwhm = lam / R_per_line
+        else:
+            fwhm = lam / self._R
+        return fwhm / self._FWHM_TO_SIGMA
+
+    def _sigma_groups(self, sigma: np.ndarray):
+        """Per-group kernel sizing: bin lines by similar sigma.
+
+        Instead of using the global max sigma for every line (which wastes
+        computation on narrow lines at short wavelengths), lines are binned in
+        logarithmically spaced sigma bins (sigma is proportional to the
+        wavelength) and every group uses its own kernel half-width."""
+        sigma_min = sigma.min()
+        sigma_max = sigma.max()
+        if sigma_min == sigma_max or sigma.shape[0] <= 1:
+            # All lines have the same width -- single group, no binning overhead
+            return [np.arange(sigma.shape[0])], [sigma_max]
+        bin_edges = np.geomspace(sigma_min * 0.999, sigma_max * 1.001,
+                                 num=self._N_SIGMA_BINS + 1)
+        group_ids = np.digitize(sigma, bin_edges) - 1  # 0-based bin index
+        group_ids = np.clip(group_ids, 0, self._N_SIGMA_BINS - 1)
+        unique_groups = np.unique(group_ids)
+        sigma_groups = [np.where(group_ids == g)[0] for g in unique_groups]
+        sigma_maxes = [sigma[idx].max() for idx in sigma_groups]
+        return sigma_groups, sigma_maxes
+
+    def _grid_position(self, lam: np.ndarray) -> np.ndarray:
+        """Grid positions for each unique line wavelength."""
+        n_grid = self._n_grid_points
+        return (n_grid * (lam - self._lam_min) /
+                (self._lam_max - self._lam_min)).astype(np.int32)
+
+    def _line_norm(self, sigma: np.ndarray, weights: np.ndarray, normalization: str) -> np.ndarray:
+        """Per-line kernel height: unit-area Gaussians for ``"area"``, unit height for ``"peak"``."""
+        if normalization == "area":
+            return (self._INV_SQRT_2PI / sigma) * weights
+        return weights
+
+    def _convolve_lines_reference(self, lam, weights, sigma, normalization="area"):
+        """The original per-group bincount loop, kept for the inputs the fast
+        paths do not cover (empty, non-finite or non-positive sigma, non-finite
+        wavelengths, a malformed R_func), so results and exceptions stay
+        unchanged there.  The tests also use it as the reference."""
+        n_grid = self._n_grid_points
+        norm = self._line_norm(sigma, weights, normalization)
+        inv_2sigma_sq = 0.5 / (sigma ** 2)
+        lam_grid_position = self._grid_position(lam)
+        out = np.zeros(n_grid, dtype=np.float64)
+        sigma_groups, sigma_maxes = self._sigma_groups(sigma)
+        lamgrid = self._lamgrid
+        for group_idx, group_sigma_max in zip(sigma_groups, sigma_maxes):
+            kernel_range_size = int(15.0 * group_sigma_max / self._dlambda)
+            kernel_range = np.arange(-kernel_range_size, kernel_range_size + 1,
+                                     dtype=np.int32)
+            g_pos = lam_grid_position[group_idx]
+            g_norm = norm[group_idx]
+            g_inv2s = inv_2sigma_sq[group_idx]
+            g_lam = lam[group_idx]
+            grid_indices = g_pos[:, np.newaxis] + kernel_range[np.newaxis, :]
+            valid_mask = (grid_indices >= 0) & (grid_indices < n_grid)
+            safe_indices = np.clip(grid_indices, 0, n_grid - 1)
+            kernel = lamgrid[safe_indices] - g_lam[:, np.newaxis]
+            np.multiply(kernel, kernel, out=kernel)
+            kernel *= -g_inv2s[:, np.newaxis]
+            np.exp(kernel, out=kernel)
+            kernel *= g_norm[:, np.newaxis]
+            kernel *= valid_mask
+            out += np.bincount(safe_indices.ravel(), weights=kernel.ravel(),
+                               minlength=n_grid)
+        return out
+
+    def _kernel_groups(self, lam, sigma, inv_2sigma_sq):
+        """Per sigma group: (line indices, half-width K in pixels, window start
+        per line, lambda, -1/(2 sigma^2)).  Lines inside a group are sorted by
+        wavelength, so the window starts are non-decreasing."""
+        lam_grid_position = self._grid_position(lam)
+        sigma_groups, sigma_maxes = self._sigma_groups(sigma)
+        neg_inv2s = -inv_2sigma_sq
+        groups = []
+        for group_idx, group_sigma_max in zip(sigma_groups, sigma_maxes):
+            K = int(15.0 * group_sigma_max / self._dlambda)
+            start = lam_grid_position[group_idx].astype(np.intp)
+            start -= K
+            groups.append((group_idx, K, start, lam[group_idx], neg_inv2s[group_idx]))
+        return groups
+
+    def _convolve_lines_direct(self, norm, groups):
+        """Uncached evaluation; bitwise identical to the original loop.
+
+        The original code built a (n_lines, 2K+1) kernel per sigma group and
+        summed it with one np.bincount, so every grid bin received its
+        contributions in ascending line order.  Here chunks of ~64k elements
+        are evaluated as offset-major blocks (see _kernel_block), which list
+        the contributions of each bin in the same ascending line order, and
+        np.add.at (sequential, unbuffered) continues that order from chunk to
+        chunk in one per-group accumulator.  Clip + mask are only applied to
+        chunks that touch a grid end."""
+        n_grid = self._n_grid_points
+        lamgrid = self._lamgrid
+        out = np.zeros(n_grid, dtype=np.float64)
+        for group_idx, K, start, g_lam, g_neg in groups:
+            g_norm = norm[group_idx]
+            n_g = start.shape[0]
+            step = max(1, _CHUNK_ELEMENTS // (2 * K + 1))
+            acc = np.zeros(n_grid, dtype=np.float64)
+            for r0 in range(0, n_g, step):
+                r1 = min(n_g, r0 + step)
+                idx, kern, mask = _kernel_block(lamgrid, n_grid, start[r0:r1], K,
+                                                g_lam[r0:r1], g_neg[r0:r1])
+                kern *= g_norm[np.newaxis, r0:r1]
+                if mask is not None:
+                    kern *= mask
+                np.add.at(acc, idx.ravel(), kern.ravel())
+            out += acc
+        return out
+
+    def _build_kernel_blocks(self, norm, groups):
+        """Evaluate the kernel like _convolve_lines_direct and keep its blocks.
+
+        Returns (profile for these weights, cached blocks, bytes).  The blocks
+        hold exp(...) * mask (read-only, as they are shared); the grid indices
+        are rebuilt on every use."""
+        n_grid = self._n_grid_points
+        lamgrid = self._lamgrid
+        out = np.zeros(n_grid, dtype=np.float64)
+        cached = []
+        nbytes = 0
+        for group_idx, K, start, g_lam, g_neg in groups:
+            g_norm = norm[group_idx]
+            n_g = start.shape[0]
+            step = max(1, _CHUNK_ELEMENTS // (2 * K + 1))
+            acc = np.zeros(n_grid, dtype=np.float64)
+            blocks = []
+            for r0 in range(0, n_g, step):
+                r1 = min(n_g, r0 + step)
+                idx, kern, mask = _kernel_block(lamgrid, n_grid, start[r0:r1], K,
+                                                g_lam[r0:r1], g_neg[r0:r1])
+                if mask is not None:
+                    kern *= mask
+                blocks.append((r0, r1, _read_only(kern), mask is not None))
+                nbytes += kern.nbytes
+                np.add.at(acc, idx.ravel(), (kern * g_norm[np.newaxis, r0:r1]).ravel())
+            out += acc
+            cached.append((_read_only(group_idx), K, _read_only(start), blocks))
+            nbytes += group_idx.nbytes + start.nbytes
+        return out, cached, nbytes
+
+    def _apply_kernel_blocks(self, norm, cached):
+        """Profile for new line weights from cached kernel blocks.
+
+        (exp * mask) * w is bitwise equal to (exp * w) * mask for every w
+        (also inf / NaN), and the accumulation order is that of the direct
+        path, so the result equals the uncached one bit for bit."""
+        n_grid = self._n_grid_points
+        out = np.zeros(n_grid, dtype=np.float64)
+        for group_idx, K, start, blocks in cached:
+            g_norm = norm[group_idx]
+            kdesc = np.arange(2 * K, -1, -1, dtype=np.intp)
+            acc = np.zeros(n_grid, dtype=np.float64)
+            for r0, r1, kern, clipped in blocks:
+                idx = start[np.newaxis, r0:r1] + kdesc[:, np.newaxis]
+                if clipped:
+                    np.clip(idx, 0, n_grid - 1, out=idx)
+                np.add.at(acc, idx.ravel(), (kern * g_norm[np.newaxis, r0:r1]).ravel())
+            out += acc
+        return out
+
+    def _convolve_lines(self, lam: np.ndarray, weights: np.ndarray,
+                        normalization: str = "area") -> np.ndarray:
+        """Spread per-line weights (I*dA or tau, at the sorted unique line
+        wavelengths *lam*) over Gaussians of the instrumental width on the grid.
+
+        *normalization* is ``"area"`` (unit-area Gaussians) or ``"peak"``
+        (unit height).  Bitwise identical to the original per-group bincount
+        loop.  The kernel exp(-(lambda_j - lambda_i)^2 / (2 sigma_i^2)) depends
+        only on the line wavelengths, sigma and the grid: when the same kernel
+        is requested again by another spectrum, or by this one after its
+        intensities changed, its blocks are kept in the process-wide
+        _KERNEL_CACHE, and later calls only multiply by the new weights and
+        accumulate.  Flux and optical depth of the same model share one kernel.
+        The cache is content keyed, so it needs no explicit invalidation."""
+        if self._R_func is not None:
+            # lam may be shared with the process-wide unique cache: hand the
+            # user callable a private copy (as np.unique did before), so a
+            # callable that writes into its argument cannot corrupt the cache.
+            lam = lam.copy()
+        sigma = self._line_sigma(lam)
+        norm = self._line_norm(sigma, weights, normalization)
+        inv_2sigma_sq = 0.5 / (sigma ** 2)
+        n_grid = self._n_grid_points
+        span = self._lam_max - self._lam_min
+        well_formed = (
+            lam.ndim == 1 and lam.shape[0] > 0 and sigma.shape == lam.shape
+            and bool(np.isfinite(lam).all())
+            and bool(np.isfinite(sigma).all()) and bool((sigma > 0).all())
+            and bool(np.isfinite(inv_2sigma_sq).all())
+            and abs(n_grid * (lam[0] - self._lam_min) / span) < 2 ** 30
+            and abs(n_grid * (lam[-1] - self._lam_min) / span) < 2 ** 30
+        )
+        if not well_formed:
+            return self._convolve_lines_reference(lam, weights, sigma, normalization)
+
+        lamgrid = self._lamgrid
+        if _KERNEL_CACHE.max_bytes <= 0:
+            return self._convolve_lines_direct(
+                norm, self._kernel_groups(lam, sigma, inv_2sigma_sq))
+        key = (n_grid, float(self._lam_min), float(self._lam_max), float(self._dlambda),
+               int(self._N_SIGMA_BINS), _fingerprint(lam), _fingerprint(sigma))
+        entry = _KERNEL_CACHE.get(key, lambda e: (_bits_equal(e[0], lam)
+                                                  and _bits_equal(e[1], sigma)
+                                                  and _bits_equal(e[2], lamgrid)))
+        if entry is not None:
+            return self._apply_kernel_blocks(norm, entry[3])        # cache hit
+        groups = self._kernel_groups(lam, sigma, inv_2sigma_sq)
+        seen = _PENDING_KERNELS.get(key, lambda e: (_bits_equal(e[0], lam)
+                                                    and _bits_equal(e[1], sigma)))
+        if seen is not None and seen[2] != self._request_token:
+            # Requested again by another model: evaluate it once more and keep it.
+            out, blocks, nbytes = self._build_kernel_blocks(norm, groups)
+            entry = (seen[0], seen[1], _read_only(lamgrid.copy()), blocks)
+            _KERNEL_CACHE.put(key, entry, nbytes + entry[0].nbytes
+                              + entry[1].nbytes + entry[2].nbytes)
+            return out
+        if seen is None:
+            n_el = sum(g[2].shape[0] * (2 * g[1] + 1) for g in groups)
+            est = 8 * n_el + 5 * lam.nbytes + lamgrid.nbytes      # size if it gets cached
+            if n_el >= _CACHE_MIN_ELEMENTS and est <= _KERNEL_CACHE.max_bytes:
+                # First request: only remember the kernel identity and requester
+                # (cheap).  The same model asking again (flux, then tau) does not
+                # count, so kernels of a one-off width (FWHM slider) are not kept.
+                record = (_read_only(lam.copy()), _read_only(sigma.copy()), self._request_token)
+                _PENDING_KERNELS.put(key, record, record[0].nbytes + record[1].nbytes)
+        return self._convolve_lines_direct(norm, groups)
 
     def _convol_flux(self):
         """Internal procedure to carry out the convolution, should never be called directly
@@ -324,7 +757,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         np.ndarray:
             List with fluxes, convolved to the spectral resolution
         """
-        
+
         # Check if we have any intensities to process
         if len(self._I_arrays) == 0:
             # Return a zero flux array if no intensities were added
@@ -337,105 +770,16 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         # 1. Summarize intensities at the (exactly) same wavelength. This improves
         #    performance because only one convolution kernel needs to be evaluated per
         #    unique line wavelength (independent of how many intensity components share it).
-        #
-        #    Cache the np.unique result: when the same Spectrum is reused in a fitting
-        #    loop (via reset()), the wavelength arrays don't change between calls -- only
-        #    the intensities do. Skipping the sort saves ~5-10% of convolution time.
-        lam_key = lam_array.data.tobytes()
-        if self._unique_cache is not None and self._unique_cache[0] == lam_key:
-            lam, index_wavelength = self._unique_cache[1], self._unique_cache[2]
-        else:
-            lam, index_wavelength = np.unique(lam_array, return_inverse=True)
-            self._unique_cache = (lam_key, lam, index_wavelength)
+        lam, index_wavelength = self._unique_lines(lam_array)
 
         # np.bincount is ~5-20x faster than np.add.at for scatter-add accumulation
         intens = np.bincount(index_wavelength, weights=I_array,
                              minlength=lam.shape[0]).astype(np.float64)
-        
-        n_grid = self._n_grid_points
 
-        # 2. Calculate width and normalization of convolution kernel
-        # Use wavelength-dependent R(λ) when a callable is provided;
-        # otherwise fall back to the fixed scalar R.
-        if self._R_func is not None:
-            R_per_line = np.atleast_1d(np.asarray(self._R_func(lam), dtype=float))
-            fwhm = lam / R_per_line
-        else:
-            fwhm = lam / self._R
-        sigma = fwhm / self._FWHM_TO_SIGMA
-        
-        # Pre-compute terms that will be reused: norm * intens and 1/(2*sigma^2)
-        norm_intens = (self._INV_SQRT_2PI / sigma) * intens  # shape: (n_lines,)
-        inv_2sigma_sq = 0.5 / (sigma ** 2)                   # shape: (n_lines,)
+        # 2. Gaussian instrumental profile, normalised per unit wavelength
+        flux = self._convolve_lines(lam, intens, "area")
 
-        # Grid positions for each unique line wavelength
-        lam_grid_position = (n_grid * (lam - self._lam_min) /
-                             (self._lam_max - self._lam_min)).astype(np.int32)
-
-        # 3. Per-group kernel sizing
-        #    Instead of using the global max sigma for every line (which wastes
-        #    computation on narrow lines at short wavelengths), we bin lines by
-        #    similar sigma and use a tight kernel range per group.
-        flux = np.zeros(n_grid, dtype=np.float64)
-
-        sigma_min = sigma.min()
-        sigma_max = sigma.max()
-
-        if sigma_min == sigma_max or lam.shape[0] <= 1:
-            # All lines have the same width -- single group, no binning overhead
-            sigma_groups = [np.arange(lam.shape[0])]
-            sigma_maxes = [sigma_max]
-        else:
-            # Create logarithmically-spaced bins so each group spans a similar
-            # ratio of sigma values (appropriate because sigma is proportional to wavelength).
-            bin_edges = np.geomspace(sigma_min * 0.999, sigma_max * 1.001,
-                                     num=self._N_SIGMA_BINS + 1)
-            group_ids = np.digitize(sigma, bin_edges) - 1  # 0-based bin index
-            group_ids = np.clip(group_ids, 0, self._N_SIGMA_BINS - 1)
-
-            unique_groups = np.unique(group_ids)
-            sigma_groups = [np.where(group_ids == g)[0] for g in unique_groups]
-            sigma_maxes = [sigma[idx].max() for idx in sigma_groups]
-
-        lamgrid = self._lamgrid  # local reference avoids repeated attribute lookup
-
-        for group_idx, group_sigma_max in zip(sigma_groups, sigma_maxes):
-            # Tight kernel range for this group
-            kernel_range_size = int(15.0 * group_sigma_max / self._dlambda)
-            kernel_range = np.arange(-kernel_range_size, kernel_range_size + 1,
-                                     dtype=np.int32)
-
-            g_pos = lam_grid_position[group_idx]          # (n_group,)
-            g_norm = norm_intens[group_idx]                # (n_group,)
-            g_inv2s = inv_2sigma_sq[group_idx]             # (n_group,)
-            g_lam = lam[group_idx]                         # (n_group,)
-
-            # 4. 2D broadcasting: compute all (line, offset) pairs
-            #    grid_indices shape: (n_group, kernel_size)
-            grid_indices = g_pos[:, np.newaxis] + kernel_range[np.newaxis, :]
-
-            # Validity mask for in-bounds indices
-            valid_mask = (grid_indices >= 0) & (grid_indices < n_grid)
-
-            # Clip to avoid out-of-bounds; masked values will be zeroed below
-            safe_indices = np.clip(grid_indices, 0, n_grid - 1)
-
-            # Wavelength differences -> Gaussian kernel (in-place)
-            kernel = lamgrid[safe_indices] - g_lam[:, np.newaxis]  # delta_lam
-            np.multiply(kernel, kernel, out=kernel)                 # delta_lam^2
-            kernel *= -g_inv2s[:, np.newaxis]                       # -delta_lam^2 / (2*sigma^2)
-            np.exp(kernel, out=kernel)                              # exp(...)
-            kernel *= g_norm[:, np.newaxis]                         # norm * exp(...)
-
-            # Zero out invalid (out-of-grid) positions
-            kernel *= valid_mask
-
-            # 6. Scatter-add via np.bincount (much faster than np.add.at)
-            flat_idx = safe_indices.ravel()
-            flat_wt = kernel.ravel()
-            flux += np.bincount(flat_idx, weights=flat_wt, minlength=n_grid)
-
-        # 7. Scale for distance and correct units for the area
+        # 3. Scale for distance and correct units for the area
         inv_dist_sq = 1.0 / (self._distance ** 2)
         scaled_flux = flux * (self._AU_PC_RATIO_SQ * inv_dist_sq)
 
@@ -487,7 +831,8 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         """Spread line-centre optical depths over Gaussians of the instrumental width on ``_lamgrid``.
 
         Uses the same kernels as :meth:`_convol_flux` (per-group kernel sizing,
-        ~15 sigma), without distance or area scaling.
+        ~15 sigma, and the same cached kernel for the same lines), without
+        distance or area scaling.
 
         Parameters
         ----------
@@ -508,69 +853,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         np.ndarray
             The profile on ``_lamgrid``.
         """
-        n_grid = self._n_grid_points
-
-        if self._R_func is not None:
-            R_per_line = np.atleast_1d(np.asarray(self._R_func(lam), dtype=float))
-            fwhm = lam / R_per_line
-        else:
-            fwhm = lam / self._R
-        sigma = fwhm / self._FWHM_TO_SIGMA
-
-        if normalization == "area":
-            norm_tau = (self._INV_SQRT_2PI / sigma) * tau_sum
-        else:
-            norm_tau = tau_sum
-        inv_2sigma_sq = 0.5 / (sigma ** 2)
-
-        lam_grid_position = (n_grid * (lam - self._lam_min) /
-                             (self._lam_max - self._lam_min)).astype(np.int32)
-
-        result = np.zeros(n_grid, dtype=np.float64)
-
-        sigma_min = sigma.min()
-        sigma_max = sigma.max()
-
-        if sigma_min == sigma_max or lam.shape[0] <= 1:
-            sigma_groups = [np.arange(lam.shape[0])]
-            sigma_maxes = [sigma_max]
-        else:
-            bin_edges = np.geomspace(sigma_min * 0.999, sigma_max * 1.001,
-                                     num=self._N_SIGMA_BINS + 1)
-            group_ids = np.digitize(sigma, bin_edges) - 1
-            group_ids = np.clip(group_ids, 0, self._N_SIGMA_BINS - 1)
-            unique_groups = np.unique(group_ids)
-            sigma_groups = [np.where(group_ids == g)[0] for g in unique_groups]
-            sigma_maxes = [sigma[idx].max() for idx in sigma_groups]
-
-        lamgrid = self._lamgrid
-
-        for group_idx, group_sigma_max in zip(sigma_groups, sigma_maxes):
-            kernel_range_size = int(15.0 * group_sigma_max / self._dlambda)
-            kernel_range = np.arange(-kernel_range_size, kernel_range_size + 1,
-                                     dtype=np.int32)
-
-            g_pos = lam_grid_position[group_idx]
-            g_norm = norm_tau[group_idx]
-            g_inv2s = inv_2sigma_sq[group_idx]
-            g_lam = lam[group_idx]
-
-            grid_indices = g_pos[:, np.newaxis] + kernel_range[np.newaxis, :]
-            valid_mask = (grid_indices >= 0) & (grid_indices < n_grid)
-            safe_indices = np.clip(grid_indices, 0, n_grid - 1)
-
-            kernel = lamgrid[safe_indices] - g_lam[:, np.newaxis]
-            np.multiply(kernel, kernel, out=kernel)
-            kernel *= -g_inv2s[:, np.newaxis]
-            np.exp(kernel, out=kernel)
-            kernel *= g_norm[:, np.newaxis]
-            kernel *= valid_mask
-
-            flat_idx = safe_indices.ravel()
-            flat_wt = kernel.ravel()
-            result += np.bincount(flat_idx, weights=flat_wt, minlength=n_grid)
-
-        return result
+        return self._convolve_lines(lam, tau_sum, normalization)
 
     def _convol_tau(self, normalization: str = "area") -> np.ndarray:
         """Convolve the per-line optical depths of all components into a profile on ``_lamgrid``.
@@ -594,12 +877,7 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
         tau_array = np.concatenate(self._tau_arrays)
         lam_array = np.concatenate(self._lam_arrays)
 
-        lam_key = lam_array.data.tobytes()
-        if self._unique_cache is not None and self._unique_cache[0] == lam_key:
-            lam, index_wavelength = self._unique_cache[1], self._unique_cache[2]
-        else:
-            lam, index_wavelength = np.unique(lam_array, return_inverse=True)
-            self._unique_cache = (lam_key, lam, index_wavelength)
+        lam, index_wavelength = self._unique_lines(lam_array)
 
         tau_sum = np.bincount(index_wavelength, weights=tau_array,
                               minlength=lam.shape[0]).astype(np.float64)
@@ -671,7 +949,8 @@ class Spectrum(CacheStatsMixin, WavelengthRangeMixin):
             if len(tau_arr) == 0:
                 profile = np.zeros(n_grid, dtype=np.float64)
             else:
-                lam, index_wavelength = np.unique(lam_arr, return_inverse=True)
+                lam, index_wavelength = self._unique_lines(np.asarray(lam_arr),
+                                                           use_instance_cache=False)
                 tau_sum = np.bincount(index_wavelength, weights=tau_arr,
                                       minlength=lam.shape[0]).astype(np.float64)
                 profile = self._gaussian_tau_profile(lam, tau_sum, normalization)

@@ -23,6 +23,15 @@ def _get_spectral_utils():
         _spectral_utils_cache = (make_bins, spectres)
     return _spectral_utils_cache
 
+def _release_convolution_kernels() -> None:
+    """Free the shared convolution kernels after molecules were removed.
+
+    The kernels are keyed by content, so this only releases memory; the
+    remaining molecules rebuild theirs on later parameter changes.
+    """
+    from .Spectrum import Spectrum
+    Spectrum.clear_convolution_cache()
+
 def _ci_get(data: dict, key: str):
     """Look up *key* in *data* with a case-insensitive fallback.
 
@@ -131,12 +140,14 @@ class MoleculeDict(ObservableMixin, dict):
         self._clear_all_caches()
         self._visible_molecules = set()  # Clear visibility cache
         self._release_removed_molecules()
+        _release_convolution_kernels()
         print("MoleculeDict cleared.")
 
     def __delitem__(self, key: str) -> None:
         """Remove a molecule; it also stops being the active or a comparison molecule."""
         super().__delitem__(key)
         self._release_removed_molecules()
+        _release_convolution_kernels()
 
     def _release_removed_molecules(self) -> None:
         """Drop references to molecules that are no longer in the dict.
@@ -1626,15 +1637,16 @@ class MoleculeDict(ObservableMixin, dict):
     
     def _on_molecule_parameter_changed(self, molecule_name: str, parameter_name: str, 
                                       old_value: Any, new_value: Any) -> None:
-        """Handle molecule parameter changes with selective cache invalidation."""
+        """Drop the summed-flux cache when a parameter that affects a molecule's flux changes.
+
+        Uses :attr:`Molecule.FLUX_AFFECTING_PARAMS` (plus a replaced
+        partition function), so parameters such as ``keplerian_fwhm`` or
+        ``instrumental_profile_key`` are not missed.  The cache entries are
+        also checked against each molecule's current parameter hash.
+        """
         if old_value != new_value:
-            # For flux-affecting parameters, clear all caches for now
-            # In the future, we could be more selective
-            if parameter_name in ['temp', 'radius', 'n_mol', 'rv_shift', 'fwhm', 'broad', 'distance', 'wavelength_range', 'partition_function']:
+            if parameter_name in Molecule.FLUX_AFFECTING_PARAMS or parameter_name == 'partition_function':
                 self._selective_cache_invalidation([molecule_name])
-            else:
-                # For other parameters, we might not need to clear all caches
-                pass
     
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get comprehensive cache statistics."""

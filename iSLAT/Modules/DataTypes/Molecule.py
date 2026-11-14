@@ -72,6 +72,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         '_molar_mass', '_thermal_broad',
         '_intensity_calculation_method',
         '_line_data_source', '_line_format',
+        '_line_list_version',
     )
     
     _class_callbacks: list = []
@@ -131,8 +132,11 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
             self._flux_cache.clear()
     
     def __init__(self, **kwargs):
+        # Counts replacements of the line data or partition function (see
+        # _line_data_replaced); part of the 'full' parameter hash.
+        self._line_list_version = 0
         self._initialize_caching_system()
-        
+
         if 'hitran_data' in kwargs and kwargs['hitran_data'] is not None:
             #print("Generating new molecule from default parameters.")
             self.user_save_data = None
@@ -228,10 +232,24 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
 
         # Invalidate all computation caches and reset dirty flags
         self._initialize_caching_system()
+        self._line_data_replaced()
+
+        # Free the convolution kernels of the old lines (they are keyed by
+        # content, so this only releases memory).
+        _get_spectrum_module().clear_convolution_cache()
 
         # Recompute parameter hashes from the current (non-line-list) params
         self._calculate_initial_parameter_hashes()
-    
+
+    def _line_data_replaced(self) -> None:
+        """Record that the line data or partition function was replaced.
+
+        No parameter changes in that case, so the 'full' parameter hash
+        (which MoleculeDict uses to validate its summed-flux cache) includes
+        this counter.
+        """
+        self._line_list_version = getattr(self, '_line_list_version', 0) + 1
+
     def _calculate_initial_parameter_hashes(self):
         self._param_hash_cache = {
             'intensity': self._compute_intensity_hash(),
@@ -259,7 +277,8 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         ))
 
     def _compute_full_parameter_hash(self):
-        return hash((self._compute_spectrum_hash(), self._model_pixel_res))
+        return hash((self._compute_spectrum_hash(), self._model_pixel_res,
+                     getattr(self, '_line_list_version', 0)))
 
     def _load_from_user_save_data(self, kwargs: Dict[str, Any]):
         """Load parameters from user save data"""
@@ -497,9 +516,18 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         self._ensure_intensity_calculated()
     
     def get_parameter_hash(self, cache_type='full'):
-        """Get parameter hash for given cache type"""
-        if cache_type in self._param_hash_cache:
-            return self._param_hash_cache[cache_type]
+        """Hash of the *current* parameters that affect *cache_type*.
+
+        Computed on every call.  ``_param_hash_cache`` records what was last
+        calculated, and its 'full' entry was only set at construction, so
+        returning it let ``MoleculeDict.get_summed_flux`` serve a stale sum
+        after a Keplerian FWHM, instrumental profile, pixel resolution,
+        intensity method or line-list change.
+        """
+        if cache_type == 'intensity':
+            return self._compute_intensity_hash()
+        if cache_type == 'spectrum':
+            return self._compute_spectrum_hash()
         return self._compute_full_parameter_hash()
 
     def _clear_specific_cache(self, cache_type):
@@ -905,6 +933,7 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
         # The Intensity object caches results keyed only on T, N and dv
         self.intensity = None
         self.clear_all_caches()
+        self._line_data_replaced()
         self._notify_my_parameter_change(
             'partition_function', old_signature,
             self._partition_signature(self.lines.partition_function),

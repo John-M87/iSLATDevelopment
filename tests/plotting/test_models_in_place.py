@@ -35,13 +35,19 @@ def _molecules():
     return md
 
 
-def _grid():
-    """A rendered three-panel grid in borrowed-axes mode, as the GUI uses it."""
+def _grid(before_render=None):
+    """A rendered three-panel grid in borrowed-axes mode, as the GUI uses it.
+
+    *before_render(molecules)*, if given, changes the molecules before the
+    first render (so nothing of the old state is cached).
+    """
     fig = Figure(figsize=(12, 7), dpi=80)
     FigureCanvasAgg(fig)
     ax1, ax2, ax3 = MainPlotGrid.create_three_panel_axes(fig)
     wave, flux, err = make_wave_flux(n=600)
     md = _molecules()
+    if before_render is not None:
+        before_render(md)
     grid = MainPlotGrid(
         wave, flux, error_data=err, molecules=md, active_molecule=md["H2O"],
         ax_spectrum=ax1, ax_inspection=ax2, ax_popdiagram=ax3,
@@ -86,6 +92,26 @@ class TestMatchesFullRender:
             np.testing.assert_array_equal(a.get_xydata(), b.get_xydata())
             assert (a.get_color(), a.get_linewidth(), a.get_label()) == (b.get_color(), b.get_linewidth(), b.get_label())
         assert _legend_texts(in_place.ax_spectrum) == _legend_texts(full.ax_spectrum)
+
+    @pytest.mark.parametrize("change", [
+        lambda md: setattr(md["CO"], "keplerian_fwhm", 40.0),
+        lambda md: setattr(md["H2O"], "instrumental_profile_key", "miri_mrs"),
+    ], ids=["keplerian_fwhm", "instrumental_profile_key"])
+    def test_summed_fill_follows_broadening_changes(self, change):
+        """Regression: the summed model kept its old shape after a Keplerian FWHM change.
+
+        The grid that is changed after rendering must draw the same summed fill
+        as one whose molecules had the new setting from the start.
+        """
+        in_place, fresh = _grid(), _grid(before_render=change)
+        before = [f.get_paths()[0].vertices.copy() for f in iter_tagged(in_place.ax_spectrum, SUMMED_TAG, lines=False)]
+        change(in_place.molecules)
+        assert in_place.update_models_in_place()
+        after = [f.get_paths()[0].vertices for f in iter_tagged(in_place.ax_spectrum, SUMMED_TAG, lines=False)]
+        expected = [f.get_paths()[0].vertices for f in iter_tagged(fresh.ax_spectrum, SUMMED_TAG, lines=False)]
+        assert len(after) == len(expected) == 1
+        np.testing.assert_array_equal(after[0], expected[0])
+        assert not np.array_equal(after[0], before[0])
 
     def test_models_actually_change(self):
         grid = _grid()

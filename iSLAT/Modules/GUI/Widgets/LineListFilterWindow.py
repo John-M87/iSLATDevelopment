@@ -2195,6 +2195,10 @@ class LineListFilterWindow(tk.Toplevel):
         # Nullify already-computed results so they are recalculated
         mol_obj.intensity = None
         mol_obj.spectrum = None
+        # Let the summed-model cache see the new lines (no parameter changed)
+        replaced = getattr(mol_obj, "_line_data_replaced", None)
+        if callable(replaced):
+            replaced()
         # Mark all dirty flags
         try:
             mol_obj._dirty_flags['intensity'] = True
