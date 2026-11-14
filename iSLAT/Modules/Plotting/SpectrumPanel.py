@@ -12,6 +12,7 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 
 from .SpectralPanel import SpectralPanel, GapMode
+from .ErrorBars import fast_errorbar
 from .ModelOverlays import draw_molecule_traces, draw_summed_fill
 
 if TYPE_CHECKING:
@@ -172,11 +173,13 @@ class SpectrumPanel(SpectralPanel):
         if deduplicate:
             BasePlot._clear_tagged_artists(ax, "_islat_observed")
         if error_data is not None and len(error_data) == len(flux_data):
-            container = ax.errorbar(
-                wave_data, flux_data, yerr=error_data,
+            # Same artists as ax.errorbar, with the bars in one path: ~2 ms
+            # instead of ~280 ms to create for a MIRI spectrum (see ErrorBars).
+            container = fast_errorbar(
+                ax, wave_data, flux_data, error_data,
                 fmt="-", color=color, linewidth=1, label=label,
                 zorder=self._get_theme_value("zorder_observed", 2),
-                elinewidth=0.5, capsize=0,
+                elinewidth=0.5,
             )
             container[0]._islat_observed = True
             for cap in container[1]:
