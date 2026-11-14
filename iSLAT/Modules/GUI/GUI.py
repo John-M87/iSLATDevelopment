@@ -19,6 +19,124 @@ from .Tooltips import set_tooltip_theme
 from .GUIFunctions import configure_all_button_styles
 from .ThemeFonts import apply_theme_fonts
 
+#: Sizes in the Windows window / taskbar icon made from the logo PNG.
+ICON_SIZES = ((16, 16), (32, 32), (48, 48), (64, 64))
+
+def windows_icon_file(png_path) -> str:
+    """Return a ``.ico`` of *png_path* (at :data:`ICON_SIZES`) for Windows, made once and kept."""
+    import hashlib
+    import tempfile
+
+    stat = os.stat(png_path)
+    key = f"{stat.st_size}:{stat.st_mtime_ns}:{ICON_SIZES}"
+    digest = hashlib.sha1(key.encode("ascii")).hexdigest()[:12]
+    ico_path = os.path.join(tempfile.gettempdir(), f"islat_icon_{digest}.ico")
+    if os.path.isfile(ico_path) and os.path.getsize(ico_path) > 0:
+        return ico_path
+
+    from PIL import Image
+    partial_path = f"{ico_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with Image.open(png_path) as image:
+            image.save(partial_path, format="ICO", sizes=list(ICON_SIZES))
+        try:
+            os.replace(partial_path, ico_path)
+        except OSError:
+            # Windows refuses while another launch has the finished file
+            # open; that launch already wrote it.
+            if not os.path.isfile(ico_path):
+                raise
+    finally:
+        if os.path.exists(partial_path):
+            os.remove(partial_path)
+    return ico_path
+
+def _windows_user32():
+    """A private ``user32`` handle with 64-bit-safe signatures (leaves ``ctypes.windll`` alone)."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                  ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user32.SendMessageW.restype = wintypes.LPARAM
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    # SetClassLongPtrW exists only in 64-bit user32; 32-bit Windows has SetClassLongW.
+    set_class = getattr(user32, "SetClassLongPtrW", None) or user32.SetClassLongW
+    set_class.restype = ctypes.c_size_t
+    set_class.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    user32.set_class_icon = set_class
+    user32.DestroyIcon.restype = wintypes.BOOL
+    user32.DestroyIcon.argtypes = [wintypes.HICON]
+    return user32
+
+def set_windows_frame_icon(window, ico_path) -> None:
+    """Put the ``.ico`` on *window*'s frame and on the Tk toplevel window class (Windows).
+
+    ``wm iconbitmap`` gives the frame window its own icon, but the window
+    class keeps Tk's feather.  When the taskbar's query for the window's
+    icon is not answered in time, it shows the class icon instead (the
+    feather) and keeps it.  That happens at startup: the window appears while
+    the model calculation runs on another thread and the main thread is slow
+    to answer.  So the logo is also put on the class, which every Tk toplevel
+    of this process shares, and :meth:`GUI._refresh_window_icon` calls this
+    again once startup is done: new icon handles sent with ``WM_SETICON``
+    make the taskbar ask again, and then the main thread answers.
+
+    Tk creates the frame (the window that owns the taskbar button) when the
+    window is first mapped, so before that this waits for the first
+    ``<Map>``.  ``winfo_id()`` is Tk's inner child window, not the frame.
+    The previous call's icon handles are released once replaced.
+    """
+    WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+    IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
+    GCLP_HICON, GCLP_HICONSM = -14, -34
+
+    user32 = _windows_user32()
+    big = user32.LoadImageW(None, str(ico_path), IMAGE_ICON, 64, 64, LR_LOADFROMFILE)
+    small = user32.LoadImageW(None, str(ico_path), IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+    if not big and not small:
+        return
+    previous = getattr(window, "_islat_icon_handles", ())
+    window._islat_icon_handles = (big, small)  # kept for the window's life
+
+    def frame_hwnd():
+        try:
+            frame = int(window.wm_frame(), 16)
+        except (tk.TclError, ValueError):
+            return None
+        # Before the first map the frame does not exist yet and Tk reports the window itself.
+        return None if frame == window.winfo_id() else frame
+
+    def apply() -> bool:
+        frame = frame_hwnd()
+        if frame is None:
+            return False
+        for which, class_index, hicon in ((ICON_BIG, GCLP_HICON, big), (ICON_SMALL, GCLP_HICONSM, small)):
+            if hicon:
+                user32.set_class_icon(frame, class_index, hicon)
+                user32.SendMessageW(frame, WM_SETICON, which, hicon)
+        for old in previous:
+            if old and old not in (big, small):
+                user32.DestroyIcon(old)
+        return True
+
+    if apply():
+        return
+    state = {"applied": False}
+
+    def on_map(event):
+        # The root's bindings see every widget's <Map>; only the root's own counts.
+        if state["applied"] or event.widget is not window:
+            return
+        try:
+            state["applied"] = apply()
+        except Exception:
+            state["applied"] = True  # icon is cosmetic; do not retry on every map
+
+    window.bind("<Map>", on_map, add="+")
+
 class GUI:
     def __init__(self, master, molecule_data, wave_data, flux_data, config, islat_class_ref,
                  model_calculation=None):
@@ -89,8 +207,6 @@ class GUI:
             if platform.system() == "Windows":
                 try:
                     import ctypes
-                    import tempfile
-                    from PIL import Image
 
                     # Without a distinct App User Model ID, Windows groups
                     # every Python script under python.exe and shows that
@@ -104,39 +220,10 @@ class GUI:
                     except Exception:
                         pass
 
-                    pil_img = Image.open(str(icon_path))
-                    ico_path = os.path.join(
-                        tempfile.gettempdir(), "islat_icon_tmp.ico"
-                    )
-                    pil_img.save(
-                        ico_path,
-                        format="ICO",
-                        sizes=[(16, 16), (32, 32), (48, 48), (64, 64)],
-                    )
+                    ico_path = windows_icon_file(icon_path)
                     window.iconbitmap(ico_path)
-
-                    # Also push the icon directly onto the HWND via WM_SETICON
-                    # so the taskbar button picks up the large variant.
-                    WM_SETICON = 0x0080
-                    ICON_SMALL = 0
-                    ICON_BIG = 1
-                    IMAGE_ICON = 1
-                    LR_LOADFROMFILE = 0x0010
-                    hwnd = window.winfo_id()
-                    hicon_big = ctypes.windll.user32.LoadImageW(
-                        None, ico_path, IMAGE_ICON, 64, 64, LR_LOADFROMFILE
-                    )
-                    hicon_small = ctypes.windll.user32.LoadImageW(
-                        None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE
-                    )
-                    if hicon_big:
-                        ctypes.windll.user32.SendMessageW(
-                            hwnd, WM_SETICON, ICON_BIG, hicon_big
-                        )
-                    if hicon_small:
-                        ctypes.windll.user32.SendMessageW(
-                            hwnd, WM_SETICON, ICON_SMALL, hicon_small
-                        )
+                    set_windows_frame_icon(window, ico_path)
+                    window._islat_icon_file = ico_path  # for _refresh_window_icon
                     return
                 except Exception:
                     pass  # fall through to iconphoto
@@ -503,11 +590,38 @@ class GUI:
     
     def _on_async_display_complete(self, success):
         """Called when async spectrum display completes."""
+        self._refresh_window_icon_after_next_draw()
         if success:
             # Update file label if available
             if (hasattr(self, "file_interaction_pane") and 
                 hasattr(self.islat_class, 'loaded_spectrum_name')):
                 self.file_interaction_pane.update_file_label(self.islat_class.loaded_spectrum_name)
+
+    def _refresh_window_icon_after_next_draw(self):
+        """Send the window icon again once the plot's startup draw is done (Windows)."""
+        if not getattr(getattr(self, "master", None), "_islat_icon_file", None):
+            return
+        canvas = getattr(getattr(self, "plot", None), "canvas", None)
+        if canvas is None or not hasattr(canvas, "mpl_connect"):
+            self.master.after_idle(self._refresh_window_icon)
+            return
+        connection = {}
+
+        def on_draw(_event):
+            canvas.mpl_disconnect(connection["id"])
+            self.master.after_idle(self._refresh_window_icon)
+
+        connection["id"] = canvas.mpl_connect("draw_event", on_draw)
+
+    def _refresh_window_icon(self):
+        """Load the window icon again and send it to the frame (Windows; see :func:`set_windows_frame_icon`)."""
+        ico_path = getattr(self.master, "_islat_icon_file", None)
+        if not ico_path:
+            return
+        try:
+            set_windows_frame_icon(self.master, ico_path)
+        except Exception:
+            pass  # Icon is cosmetic
 
     def on_closing(self):
         #if messagebox.askokcancel("Quit", "Do you want to save your work?"):
@@ -665,68 +779,11 @@ class GUI:
 
     @staticmethod
     def file_selector(title : str = None, filetypes=None, initialdir=None, use_abspath=True, allow_multiple=False):
-        window_title = title if title else "Select File"
-        if use_abspath and initialdir:
-            initialdir = os.path.abspath(initialdir)
-        elif initialdir is None:
-            initialdir = os.getcwd()
+        """Ask for one file or several; see :func:`iSLAT.Modules.FileHandling.file_dialogs.file_selector`."""
+        from iSLAT.Modules.FileHandling.file_dialogs import file_selector
+        return file_selector(title=title, filetypes=filetypes, initialdir=initialdir,
+                             use_abspath=use_abspath, allow_multiple=allow_multiple)
 
-        if filetypes is None:
-            filetypes = [("All Files", "*.*")]
-        elif isinstance(filetypes, str):
-            filetypes = [(filetypes, "*.*")]
-        else:
-            filetypes = filetypes
-
-        # If no Tk root window exists yet (initial launch), create one and
-        # bring the app to the foreground so the native file dialog is
-        # visible and interactive on macOS.
-        temp_root = None
-        if tk._default_root is None:
-            temp_root = tk.Tk()
-            temp_root.withdraw()
-
-        # On macOS, nudge the process to the foreground so the file
-        # dialog is not hidden behind other application windows.
-        if platform.system() == "Darwin":
-            try:
-                from AppKit import NSApplication, NSApp  # type: ignore[import-untyped]
-                NSApplication.sharedApplication()
-                NSApp.activateIgnoringOtherApps_(True)
-            except ImportError:
-                # PyObjC not available — fall back to osascript
-                try:
-                    import subprocess
-                    subprocess.Popen(
-                        ["osascript", "-e",
-                         'tell application "System Events" to set frontmost '
-                         'of the first process whose unix id is '
-                         + str(os.getpid()) + ' to true'],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                except Exception:
-                    pass
-
-        try:
-            if allow_multiple:
-                file_paths = filedialog.askopenfilenames(
-                    title=window_title,
-                    filetypes=filetypes,
-                    initialdir=initialdir,
-                )
-                return list(file_paths)
-
-            file_path = filedialog.askopenfilename(
-                title=window_title,
-                filetypes=filetypes,
-                initialdir=initialdir,
-            )
-            return file_path
-        finally:
-            if temp_root is not None:
-                temp_root.destroy()
-    
     @staticmethod
     def add_molecule_name_popup(title : str = "Assign label"):
         """Open a popup to add a new molecule name."""
