@@ -1089,6 +1089,13 @@ class MoleculeLineList(WavelengthRangeMixin):
             
             # Create MoleculeLine objects from filtered structured array
             from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
+            if filtered_raw.dtype == _LINE_DTYPE:
+                # tolist() turns each record into a tuple of Python int / str /
+                # float in C: the same values and types as the int(row['nr']),
+                # str(row['lev_up']), float(row['lam']), ... below, ~3x faster.
+                names = _LINE_DTYPE.names
+                return [MoleculeLine(self.molecule_id, dict(zip(names, row)))
+                        for row in filtered_raw.tolist()]
             return [
                 MoleculeLine(self.molecule_id, {
                     'nr': int(row['nr']),

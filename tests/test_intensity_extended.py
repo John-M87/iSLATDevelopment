@@ -657,8 +657,45 @@ class TestFullRangeCache(_IntensityTestBase):
         before = inten.build_table(full_range=True)["intens"].to_numpy()
         inten.calc_intensity(**params)
         after = inten.build_table(full_range=True)["intens"].to_numpy()
-        assert len(rebuilds) == 2
+        # Recalculated with the new parameters, on the full line list already built
+        assert len(rebuilds) == 1
         assert not np.allclose(before, after)
+        from iSLAT.Modules.DataTypes.Intensity import Intensity
+        fresh = Intensity(self._make_line_list(n_lines=self.N_LINES))
+        fresh.calc_intensity(**params)
+        np.testing.assert_array_equal(after, fresh.intensity)
+
+    def test_kept_list_gives_what_a_new_one_would(self, rebuilds):
+        """Over a series of parameter changes the kept full list matches one rebuilt each time."""
+        from iSLAT.Modules.DataTypes.Intensity import Intensity
+        inten = self._intensity()
+        series = [
+            dict(t_kin=900.0, n_mol=1e20, dv=2.0),
+            dict(t_kin=900.0, n_mol=1e16, dv=0.5, method="curve_growth_no_overlap"),
+            dict(t_kin=1900.0, n_mol=1e22, dv=20.0, method="radex"),
+            dict(t_kin=500.0, n_mol=1e20, dv=2.0),
+        ]
+        earlier = []
+        for params in series:
+            inten.calc_intensity(**params)
+            table = inten.build_table(full_range=True)
+            fresh = Intensity(self._make_line_list(n_lines=self.N_LINES))
+            fresh.calc_intensity(**params)
+            np.testing.assert_array_equal(table["intens"].to_numpy(), fresh.intensity)
+            np.testing.assert_array_equal(table["tau"].to_numpy(), fresh.tau)
+            earlier.append((table, fresh.intensity.copy()))
+        assert len(rebuilds) == 1
+        # tables handed out before are not changed by later calculations
+        for table, expected in earlier:
+            np.testing.assert_array_equal(table["intens"].to_numpy(), expected)
+
+    def test_new_file_rebuilds_the_full_list(self, rebuilds):
+        inten = self._intensity()
+        inten.build_table(full_range=True)
+        inten.molecule._filename = "another_file.par"
+        inten.calc_intensity(t_kin=900.0, n_mol=1e20, dv=2.0)
+        inten.build_table(full_range=True)
+        assert len(rebuilds) == 2
 
     def test_new_line_list_recalculates(self, rebuilds):
         inten = self._intensity()
@@ -674,6 +711,33 @@ class TestFullRangeCache(_IntensityTestBase):
         first.loc[0, "intens"] = -1.0
         first["intens"] *= 2.0
         np.testing.assert_array_equal(inten.build_table(full_range=True)["intens"].to_numpy(), expected)
+
+    def test_level_labels_converted_once_per_line_array(self):
+        """The U64 level labels become pandas strings once; tables stay equal and independent."""
+        import pandas as pd
+        inten = self._intensity()
+        first = inten.build_table()
+        cached = inten._table_strings["active"]
+        inten.calc_intensity(t_kin=900.0, n_mol=1e20, dv=2.0)
+        second = inten.build_table()
+        assert inten._table_strings["active"] is cached
+        pd.testing.assert_series_equal(first["lev_up"], second["lev_up"])
+        raw = inten.molecule._get_active_raw_data()
+        assert list(second["lev_up"]) == [str(v) for v in raw["lev_up"]]
+        assert list(second["lev_low"]) == [str(v) for v in raw["lev_low"]]
+        # editing a returned table does not reach the cache
+        second.loc[0, "lev_up"] = "edited"
+        assert inten.build_table()["lev_up"].iloc[0] == str(raw["lev_up"][0])
+
+    def test_level_labels_follow_a_new_line_array(self):
+        inten = self._intensity()
+        inten.build_table()
+        old = inten.molecule._get_active_raw_data()
+        new = old.copy()
+        new["lev_up"][0] = "replaced"
+        inten.molecule._filtered_raw_data = new
+        inten.molecule._raw_lines_data = new
+        assert inten.build_table()["lev_up"].iloc[0] == "replaced"
 
     def test_list_without_source_file_is_not_cached(self):
         # The rebuild comes back empty; the active arrays are used and nothing is cached.

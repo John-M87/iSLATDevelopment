@@ -90,6 +90,24 @@ class TestMoleculeLineList:
         lines = molecule_line_list.get_lines_in_range(10.0, 15.0)
         assert len(lines) == 2  # 12.407 and 14.95
 
+    def test_get_lines_in_range_values_and_types(self, molecule_line_list):
+        """Lines carry Python int / str / float values, as the per-field conversion gave them."""
+        raw = molecule_line_list._get_active_raw_data()
+        expected = [
+            dict(nr=int(r['nr']), lev_up=str(r['lev_up']), lev_low=str(r['lev_low']),
+                 lam=float(r['lam']), freq=float(r['freq']), a_stein=float(r['a_stein']),
+                 e_up=float(r['e_up']), e_low=float(r['e_low']),
+                 g_up=int(r['g_up']), g_low=int(r['g_low']))
+            for r in raw
+        ]
+        lines = molecule_line_list.get_lines_in_range(0.0, 100.0)
+        assert len(lines) == len(expected)
+        for line, want in zip(lines, expected):
+            assert line.molecule_id == molecule_line_list.molecule_id
+            for field, value in want.items():
+                got = getattr(line, field)
+                assert got == value and type(got) is type(value), field
+
     def test_get_lines_in_range_empty(self, molecule_line_list):
         lines = molecule_line_list.get_lines_in_range(30.0, 40.0)
         assert len(lines) == 0

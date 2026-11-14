@@ -16,6 +16,7 @@ The class Intensity calculates the intensities
 
 """
 import numpy as np
+import threading
 import time
 from typing import Optional, Union, Literal, TYPE_CHECKING, Any
 import iSLAT.Constants as c
@@ -52,7 +53,8 @@ __all__ = ["Intensity"]
 class Intensity(WavelengthRangeMixin):
     __slots__ = ('_molecule', '_intensity', '_tau', '_t_kin', '_n_mol', '_dv', '_method', '_cache_valid', '_sorted_idx', '_sorted_freq',
                  '_cached_line_scalar', '_cached_e_delta', '_cached_dv_star',
-                 '_cached_freq_ratio', '_wavelength_range', '_full_range_cache')
+                 '_cached_freq_ratio', '_wavelength_range', '_full_range_cache',
+                 '_full_range_helper', '_table_strings')
     
     def __init__(self, molecule_line_list: 'MoleculeLineList',
                  wavelength_range: Optional[tuple] = None) -> None:
@@ -95,6 +97,16 @@ class Intensity(WavelengthRangeMixin):
         # (raw lines, (t_kin, n_mol, dv, method), intensity, tau) of the last
         # full-range calculation (see _compute_full_range_intensity).
         self._full_range_cache: Optional[tuple] = None
+        # (raw lines, file name, Intensity): the unfiltered line list and its
+        # Intensity, kept between parameter changes (see _compute_full_range_intensity).
+        self._full_range_helper: Optional[tuple] = None
+        # {"full" / "active": (raw lines, lev_up, lev_low)}: the level labels
+        # converted to pandas strings once per line array (see _build_table).
+        self._table_strings: dict = {}
+
+    #: Serialises use of the kept full-range helpers (each is shared by the
+    #: calls of one Intensity; only the GUI thread uses them today).
+    _FULL_RANGE_LOCK = threading.Lock()
 
     # Pre-computed constants for blackbody calculation (class-level for efficiency)
     _BB_COEFF_RJ = 2.0 * c.BOLTZMANN_CONSTANT / (c.SPEED_OF_LIGHT_CGS ** 2)
@@ -1157,9 +1169,10 @@ class Intensity(WavelengthRangeMixin):
             # data they did before wavelength-range filtering existed.
             intens_col, tau_col = self._compute_full_range_intensity(raw)
 
+        lev_up, lev_low = self._level_strings(pd, raw, "full" if full_range else "active")
         return pd.DataFrame({
-            'lev_up': raw['lev_up'],
-            'lev_low': raw['lev_low'],
+            'lev_up': lev_up,
+            'lev_low': lev_low,
             'lam': raw['lam'],
             'tau': tau_col,
             'intens': intens_col,
@@ -1169,6 +1182,24 @@ class Intensity(WavelengthRangeMixin):
             'g_up': raw['g_up'].astype(int),
             'g_low': raw['g_low'].astype(int),
         })
+
+    def _level_strings(self, pd, raw, kind: str) -> tuple:
+        """``raw['lev_up']`` and ``raw['lev_low']`` as pandas string arrays, converted once per line array.
+
+        Converting the two fixed-width (U64) label columns was most of the
+        cost of each table build, and they do not depend on the parameters.
+        One entry is kept per *kind* (``"full"`` / ``"active"``), so a
+        replaced line array (e.g. a new wavelength range) is not kept alive.
+        ``pd.DataFrame`` copies dict inputs, so tables never share the cached
+        arrays.
+        """
+        entry = self._table_strings.get(kind)
+        if entry is not None and entry[0] is raw:
+            return entry[1], entry[2]
+        labels = pd.DataFrame({'lev_up': raw['lev_up'], 'lev_low': raw['lev_low']})
+        lev_up, lev_low = labels['lev_up'].array, labels['lev_low'].array
+        self._table_strings[kind] = (raw, lev_up, lev_low)
+        return lev_up, lev_low
 
     def _compute_full_range_intensity(self, raw) -> tuple:
         """Compute intensity and tau for all lines in the HITRAN file.
@@ -1204,25 +1235,36 @@ class Intensity(WavelengthRangeMixin):
         if cached is not None and cached[0] is raw and cached[1] == params:
             return cached[2], cached[3]
 
-        # Create a temporary unfiltered MoleculeLineList and Intensity
-        # so the full calculation pipeline runs over all lines.
-        from .MoleculeLineList import MoleculeLineList as _MLL
-        tmp_mll = _MLL(
-            molecule_id=self.molecule.molecule_id,
-            filename=self.molecule._filename,
-            wavelength_range=None,
-        )
-        tmp_intens = Intensity(tmp_mll, wavelength_range=None)
-        try:
-            tmp_intens.calc_intensity(
-                t_kin=self._t_kin,
-                n_mol=self._n_mol,
-                dv=self._dv,
-                method=self._method or "curve_growth",
-            )
-            full_i, full_t = tmp_intens._intensity, tmp_intens._tau
-        except Exception:
-            full_i = full_t = None
+        # An unfiltered MoleculeLineList and Intensity so the full calculation
+        # pipeline runs over all lines.  They depend only on the line data, so
+        # they are kept for the next parameter change of the same line array
+        # and file: re-opening the file and recomputing the per-line constants
+        # was most of the cost of each change.
+        filename = self.molecule._filename
+        with Intensity._FULL_RANGE_LOCK:
+            helper = self._full_range_helper
+            if helper is None or helper[0] is not raw or helper[1] != filename:
+                from .MoleculeLineList import MoleculeLineList as _MLL
+                tmp_mll = _MLL(
+                    molecule_id=self.molecule.molecule_id,
+                    filename=filename,
+                    wavelength_range=None,
+                )
+                helper = (raw, filename, Intensity(tmp_mll, wavelength_range=None))
+                self._full_range_helper = helper
+            tmp_intens = helper[2]
+            try:
+                tmp_intens.calc_intensity(
+                    t_kin=self._t_kin,
+                    n_mol=self._n_mol,
+                    dv=self._dv,
+                    method=self._method or "curve_growth",
+                )
+                # calc_intensity assigns new arrays (it never writes into the
+                # ones handed out before), so earlier results stay as they were.
+                full_i, full_t = tmp_intens._intensity, tmp_intens._tau
+            except Exception:
+                full_i = full_t = None
 
         if full_i is not None and len(full_i) == n_rows:
             full_i.setflags(write=False)
