@@ -1174,7 +1174,14 @@ class iSLAT:
             if not hasattr(self, "GUI") or self.GUI is None:
                 section.mark("import_gui_module")
                 from .Modules.GUI import GUI as GUIClass
-                
+
+                # Compute the model spectra while the window is being built,
+                # so they are usually ready for the plot's first draw.
+                section.mark("start_model_calculation")
+                model_calculation = None
+                if getattr(self, 'wave_data_original', None) is not None:
+                    model_calculation = GUIClass.start_model_calculation(self)
+
                 section.mark("create_gui_object")
                 self.GUI = GUIClass(
                     master=None,
@@ -1182,7 +1189,8 @@ class iSLAT:
                     wave_data=getattr(self, 'wave_data', None),
                     flux_data=getattr(self, 'flux_data', None),
                     config=self.user_settings,
-                    islat_class_ref=self
+                    islat_class_ref=self,
+                    model_calculation=model_calculation,
                 )
                 
                 if self.GUI is None:

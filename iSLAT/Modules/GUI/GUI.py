@@ -20,7 +20,17 @@ from .GUIFunctions import configure_all_button_styles
 from .ThemeFonts import apply_theme_fonts
 
 class GUI:
-    def __init__(self, master, molecule_data, wave_data, flux_data, config, islat_class_ref):
+    def __init__(self, master, molecule_data, wave_data, flux_data, config, islat_class_ref,
+                 model_calculation=None):
+        """
+        Parameters
+        ----------
+        model_calculation : queue.Queue, optional
+            Result queue of a model calculation already running (from
+            :meth:`start_model_calculation`).  The spectrum display uses it
+            instead of starting its own calculation.
+        """
+        self._pending_model_calculation = model_calculation
         if master is None:
             self.master = tk.Tk()
             # Apply system DPI scaling for HiDPI / Retina displays
@@ -544,41 +554,78 @@ class GUI:
         This method shows a loading indicator, runs the intensive spectrum calculations
         in a background thread, and updates the GUI when complete.
         
+        When a calculation started before the window was built
+        (``model_calculation`` in the constructor) has already finished, the
+        models are put on the plot at once, without the loading indicator, so
+        the first draw already shows them.  Otherwise the observed spectrum is
+        shown with a loading indicator until the calculation finishes.
+
         Parameters
         ----------
         callback : callable, optional
             Function to call when display is complete
         """
-        self._async_result_queue = queue.Queue()
         self._async_callback = callback
-        
+        pending = getattr(self, '_pending_model_calculation', None)
+        self._pending_model_calculation = None
+
+        if pending is not None and not pending.empty():
+            self._async_result_queue = pending
+            self._poll_async_result()
+            return
+
         # Show loading state immediately
         if hasattr(self, 'plot') and self.plot is not None:
             self.plot.show_loading_indicator("Calculating molecule spectra...")
-        
-        # Start background calculation thread
-        calc_thread = threading.Thread(
-            target=self._async_spectrum_calculation,
-            daemon=True
-        )
-        calc_thread.start()
-        
+
+        if pending is not None:
+            self._async_result_queue = pending
+        else:
+            self._async_result_queue = queue.Queue()
+            calc_thread = threading.Thread(
+                target=self._async_spectrum_calculation,
+                daemon=True
+            )
+            calc_thread.start()
+
         # Start polling for completion (non-blocking)
         self._poll_async_result()
-    
+
+    @staticmethod
+    def start_model_calculation(islat_class):
+        """Start computing the visible molecules' summed model spectrum on a background thread.
+
+        Called before the window is built, so the calculation runs while Tk
+        builds the window.  Pass the returned queue to the constructor as
+        ``model_calculation``; it receives ``('success', None)`` or
+        ``('error', message)`` when the calculation ends.
+        """
+        result_queue = queue.Queue()
+        threading.Thread(
+            target=GUI._calculate_models,
+            args=(islat_class, result_queue),
+            daemon=True,
+        ).start()
+        return result_queue
+
     def _async_spectrum_calculation(self):
         """Background thread: perform spectrum calculations using parallel intensity calculation."""
+        self._calculate_models(self.islat_class, self._async_result_queue)
+
+    @staticmethod
+    def _calculate_models(islat_class, result_queue):
+        """Compute the visible molecules' summed flux (fills their caches) and report to *result_queue*."""
         try:
             # This triggers lazy intensity calculations for all visible molecules
-            if (hasattr(self.islat_class, 'molecules_dict') and 
-                hasattr(self.islat_class, 'wave_data_original')):
-                wave_data = self.islat_class.wave_data_original
+            if (hasattr(islat_class, 'molecules_dict') and
+                hasattr(islat_class, 'wave_data_original')):
+                wave_data = islat_class.wave_data_original
                 # Use parallel pre-calculation for significant speedup
-                self.islat_class.molecules_dict.get_summed_flux_parallel(wave_data, visible_only=True)
-            
-            self._async_result_queue.put(('success', None))
+                islat_class.molecules_dict.get_summed_flux_parallel(wave_data, visible_only=True)
+
+            result_queue.put(('success', None))
         except Exception as e:
-            self._async_result_queue.put(('error', str(e)))
+            result_queue.put(('error', str(e)))
     
     def _poll_async_result(self):
         """Poll for async calculation completion (runs on main thread)."""
