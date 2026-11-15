@@ -322,6 +322,15 @@ class TestPlotSettingsHelpers:
             "shape": {**settings["shape"]},
         }
 
+    def test_all_lines_round_trips(self, pdp):
+        """A color mapping with all_lines (set from the API) survives capture / apply."""
+        pdp.color_by("eu", all_lines=True, regenerate=False)
+        settings = capture_plot_settings(pdp)
+        assert settings["color"]["all_lines"] is True
+        pdp.clear_color_mapping(regenerate=False)
+        apply_plot_settings(pdp, settings)
+        assert pdp._color_mapping["all_lines"] is True
+
     def test_reset_clears_everything(self, pdp):
         pdp.color_by("eu", regenerate=False)
         pdp.shape_by("vib_band", regenerate=False)

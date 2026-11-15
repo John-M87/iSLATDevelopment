@@ -192,6 +192,10 @@ class PopulationDiagramPlot(BasePlot):
         self._shape_mapping: Optional[Dict[str, Any]] = None
         # Fixed marker size override (None = use per-mode default)
         self._marker_size: Optional[float] = None
+        # Marker-size mapping (set by size_by / clear_size_mapping) and the
+        # value range / categories it scales over (set per render)
+        self._size_mapping: Optional[Dict[str, Any]] = None
+        self._size_scale: Optional[Dict[str, Any]] = None
         # Category order of each categorical X / Y property (set per render)
         self._axis_categories: Dict[str, List[str]] = {}
         self._axis_category_index: Dict[str, Dict[str, int]] = {}
@@ -450,6 +454,8 @@ class PopulationDiagramPlot(BasePlot):
         # Categorical X / Y properties become category axes; their order
         # must be known before any point position is computed.
         self._update_axis_categories()
+        # The size scale spans every component, so it is set before any is drawn.
+        self._update_size_scale()
 
         all_valid_x: List[np.ndarray] = []
         all_valid_y: List[np.ndarray] = []
@@ -598,6 +604,10 @@ class PopulationDiagramPlot(BasePlot):
         # Legend for multi-component mode
         if len(self._component_data) > 1 and self._color_mapping is None:
             self._render_component_legend(ax)
+
+        # Size legend: added as an extra artist, so it keeps the legends above.
+        if self._size_mapping is not None and self._size_mapping.get("legend", True):
+            self._add_size_legend(ax)
 
         # Re-render any previously plotted active-line scatter so it
         # persists across axes changes and color_by calls - but only while
@@ -859,7 +869,7 @@ class PopulationDiagramPlot(BasePlot):
             if x_arr is None or y_arr is None:
                 continue
 
-            s_val = self._get_marker_size(0.5 if single else 5)
+            s_val = self._sizes_for(cdata, None, 0.5 if single else 5)
             wav = cdata.get("wavelength")
 
             if self._shape_mapping is not None:
@@ -928,6 +938,7 @@ class PopulationDiagramPlot(BasePlot):
         pmin: Optional[float] = None,
         pmax: Optional[float] = None,
         log_scale: bool = False,
+        all_lines: bool = False,
         regenerate: bool = True,
     ) -> None:
         """Re-color the scatter points by a molecular property.
@@ -961,6 +972,14 @@ class PopulationDiagramPlot(BasePlot):
             receive the maximum color.
         log_scale : bool
             Use a logarithmic color-norm (default ``False``).
+        all_lines : bool
+            Color every line of the line list, as the uncolored diagram
+            shows them.  By default (``False``) only the lines whose flux is
+            above 1 % of the strongest line's (``valid_mask`` in
+            :attr:`component_data`) are drawn and used for the color scale.
+            With ``True`` the color scale also spans every line, so it stays
+            the same when a parameter change makes other lines strong (e.g.
+            for quantum numbers in an animation).
         regenerate : bool
             If ``True`` (default) the plot is regenerated immediately.
         """
@@ -972,6 +991,7 @@ class PopulationDiagramPlot(BasePlot):
             "pmin": pmin,
             "pmax": pmax,
             "log_scale": log_scale,
+            "all_lines": all_lines,
         }
         if regenerate:
             self.generate_plot()
@@ -1064,6 +1084,222 @@ class PopulationDiagramPlot(BasePlot):
         return self._marker_size if self._marker_size is not None else default
 
     # ------------------------------------------------------------------
+    # Marker-size mapping API
+    # ------------------------------------------------------------------
+    def size_by(
+        self,
+        prop: str,
+        *,
+        min_size: float = 2.0,
+        max_size: float = 40.0,
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        log_scale: bool = False,
+        legend: bool = True,
+        legend_loc: Optional[str] = None,
+        regenerate: bool = True,
+    ) -> None:
+        """Vary the scatter marker size by a molecular property.
+
+        Each point's marker area goes linearly from *min_size* at *vmin* to
+        *max_size* at *vmax* (on a log10 scale with *log_scale*); values
+        outside are clipped to the nearest end, and points without a value
+        get *min_size*.  This overrides :meth:`set_marker_size` while it is
+        on.  The highlighted / active-line markers keep their own sizes.
+
+        Parameters
+        ----------
+        prop : str
+            Property key - the same set accepted by :meth:`color_by`, e.g.
+            ``'tau'`` (the line-center optical depth), ``'intens'``,
+            ``'a_stein'`` or a quantum number ``"qn_upper:J"``.  A
+            categorical property gives each category its own size, in the
+            category order.
+        min_size, max_size : float
+            Smallest and largest marker area, in points^2 (matplotlib
+            ``s=``).
+        vmin, vmax : float, optional
+            The values that get *min_size* / *max_size*.  By default the
+            smallest and largest value of every line on the diagram
+            (positive values only with *log_scale*).  Fixed values keep a
+            size meaning the same value from one plot to the next, e.g. in
+            an animation.
+        log_scale : bool
+            Scale the sizes with log10 of the value (default ``False``);
+            suited to properties spanning decades, such as ``'tau'``.
+        legend : bool
+            Add a legend of example sizes (default ``True``).
+        legend_loc : str, optional
+            Legend location; by default ``"lower left"``, or
+            ``"lower center"`` when the marker-shape legend is there.
+        regenerate : bool
+            If ``True`` (default) the plot is regenerated immediately.
+        """
+        if not (min_size >= 0 and max_size >= 0):
+            raise ValueError("min_size and max_size must not be negative")
+        if vmin is not None and vmax is not None and not vmin < vmax:
+            raise ValueError("vmin must be less than vmax")
+        if log_scale and ((vmin is not None and vmin <= 0) or (vmax is not None and vmax <= 0)):
+            raise ValueError("vmin and vmax must be positive with log_scale")
+        self._size_mapping = {
+            "prop": prop,
+            "min_size": float(min_size),
+            "max_size": float(max_size),
+            "vmin": vmin,
+            "vmax": vmax,
+            "log_scale": bool(log_scale),
+            "legend": bool(legend),
+            "legend_loc": legend_loc,
+        }
+        if regenerate:
+            self.generate_plot()
+
+    def clear_size_mapping(self, *, regenerate: bool = True) -> None:
+        """Remove the marker-size mapping and revert to uniform sizes.
+
+        Parameters
+        ----------
+        regenerate : bool
+            If ``True`` (default) the plot is regenerated immediately.
+        """
+        self._size_mapping = None
+        self._size_scale = None
+        if regenerate:
+            self.generate_plot()
+
+    # ------------------------------------------------------------------
+    # Size-mapping helpers
+    # ------------------------------------------------------------------
+    def _size_values(self, cdata: Dict[str, Any]) -> Optional[np.ndarray]:
+        """The size property of every line of *cdata* as floats (category index for a categorical one)."""
+        mapping = self._size_mapping
+        scale = self._size_scale
+        if mapping is None or scale is None:
+            return None
+        vals = _AxisReg.resolve_array(_AxisReg.canonical_key(mapping["prop"]), cdata)
+        if vals is None:
+            return None
+        categories = scale.get("categories")
+        if categories is not None:
+            return np.array([categories.get(lbl, np.nan) for lbl in _label_strings(vals)], dtype=float)
+        try:
+            return np.asarray(vals, dtype=float)
+        except (TypeError, ValueError):
+            return None
+
+    def _update_size_scale(self) -> None:
+        """Set the value range (and category order) the marker sizes span, over every component."""
+        self._size_scale = None
+        mapping = self._size_mapping
+        if mapping is None:
+            return
+        key = _AxisReg.canonical_key(mapping["prop"])
+        arrays = [_AxisReg.resolve_array(key, cdata) for cdata in self._component_data]
+        arrays = [a for a in arrays if a is not None and len(a)]
+        if not arrays:
+            return
+        if _AxisReg.get_kind(key) == "categorical":
+            labels = sorted({lbl for a in arrays for lbl in _label_strings(a)}, key=_natural_key)
+            self._size_scale = {
+                "categories": {lbl: float(i) for i, lbl in enumerate(labels)},
+                "lo": 0.0, "hi": float(max(len(labels) - 1, 1)), "log": False,
+            }
+            return
+        try:
+            values = np.concatenate([np.asarray(a, dtype=float) for a in arrays])
+        except (TypeError, ValueError):
+            return
+        log = mapping["log_scale"]
+        usable = values[np.isfinite(values) & (values > 0)] if log else values[np.isfinite(values)]
+        lo, hi = mapping["vmin"], mapping["vmax"]
+        if lo is None:
+            lo = float(usable.min()) if usable.size else (1.0 if log else 0.0)
+        if hi is None:
+            hi = float(usable.max()) if usable.size else lo * 10.0 if log else lo + 1.0
+        self._size_scale = {"categories": None, "lo": float(lo), "hi": float(hi), "log": log}
+
+    def _scaled_sizes(self, values: np.ndarray) -> np.ndarray:
+        """Marker areas for *values* on the current size scale (see :meth:`size_by`)."""
+        mapping, scale = self._size_mapping, self._size_scale
+        lo, hi = scale["lo"], scale["hi"]
+        v = np.asarray(values, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if scale["log"]:
+                v = np.where(v > 0, np.log10(v), np.nan)
+                lo, hi = np.log10(lo), np.log10(hi)
+            t = (v - lo) / (hi - lo) if hi > lo else np.full_like(v, 0.5)
+        t = np.where(np.isfinite(t), np.clip(t, 0.0, 1.0), 0.0)
+        return mapping["min_size"] + t * (mapping["max_size"] - mapping["min_size"])
+
+    def _sizes_for(
+        self, cdata: Dict[str, Any], mask: Optional[np.ndarray], default: float,
+    ) -> Union[float, np.ndarray]:
+        """Marker size(s) for the lines of *cdata* that are drawn (*mask*, or all).
+
+        One number without a size mapping (:meth:`_get_marker_size` of
+        *default*), else one area per drawn line.
+        """
+        values = self._size_values(cdata)
+        if values is None:
+            return self._get_marker_size(default)
+        if mask is not None:
+            values = values[np.asarray(mask, dtype=bool)]
+        return self._scaled_sizes(values)
+
+    def _add_size_legend(self, ax: Axes) -> None:
+        """Add a legend of example marker sizes, without replacing the axes' other legend."""
+        from matplotlib.legend import Legend
+        from matplotlib.lines import Line2D
+
+        mapping, scale = self._size_mapping, self._size_scale
+        if mapping is None or scale is None:
+            return
+        if scale["categories"] is not None:
+            labels = list(scale["categories"])[:8]
+            values = [scale["categories"][lbl] for lbl in labels]
+        else:
+            lo, hi = scale["lo"], scale["hi"]
+            if hi <= lo:
+                values = [lo]
+            elif scale["log"]:
+                # Whole decades inside the range (at most 5), else 4 even steps.
+                exps = np.arange(np.ceil(np.log10(lo) - 1e-9), np.floor(np.log10(hi) + 1e-9) + 1)
+                if len(exps) >= 3:
+                    values = list(10.0 ** exps[::int(np.ceil(len(exps) / 5))])
+                else:
+                    values = list(np.geomspace(lo, hi, 4))
+            else:
+                values = list(np.linspace(lo, hi, 4))
+            labels = [f"{v:.3g}" for v in values]
+            # The ends of the range also stand for the clipped values beyond them.
+            if len(values) > 1 and np.isclose(values[0], lo):
+                labels[0] = f"<= {labels[0]}"
+            if len(values) > 1 and np.isclose(values[-1], hi):
+                labels[-1] = f">= {labels[-1]}"
+        sizes = self._scaled_sizes(np.asarray(values, dtype=float))
+        # Themed here: the theme pass only styles the axes' own legend (ax.get_legend()).
+        fg = self._get_theme_value("foreground", "black")
+        bg = self._get_theme_value("graph_fill_color", self._get_theme_value("background", "white"))
+        marker_color = self._get_theme_value("scatter_main_color", "#808080")
+        handles = [
+            Line2D([0], [0], marker="o", color="none", markerfacecolor=marker_color,
+                   markeredgecolor=marker_color, markersize=float(np.sqrt(max(s, 0.0))),
+                   label=lbl, linewidth=0)
+            for s, lbl in zip(sizes, labels)
+        ]
+        loc = mapping.get("legend_loc") or (
+            "lower center" if self._shape_mapping is not None else "lower left")
+        legend = Legend(
+            ax, handles, labels, title=self._property_label(mapping["prop"]), loc=loc,
+            fontsize="x-small", title_fontsize="x-small", framealpha=0.7,
+            labelspacing=1.0, borderpad=0.8, labelcolor=fg,
+        )
+        legend.get_frame().set_facecolor(bg)
+        legend.get_frame().set_edgecolor(fg)
+        legend.get_title().set_color(fg)
+        ax.add_artist(legend)
+
+    # ------------------------------------------------------------------
     # Shape-mapping helpers
     # ------------------------------------------------------------------
     def _resolve_shape_indices(
@@ -1133,7 +1369,7 @@ class PopulationDiagramPlot(BasePlot):
         y_arr: np.ndarray,
         shape_vals: np.ndarray,
         *,
-        s: float = 5,
+        s: Union[float, np.ndarray] = 5,
         alpha: float = 0.8,
         picker: bool = True,
         color=None,
@@ -1155,7 +1391,8 @@ class PopulationDiagramPlot(BasePlot):
                 continue
             gx, gy = x_arr[gmask], y_arr[gmask]
             kw: Dict[str, Any] = dict(
-                s=s, alpha=alpha, picker=picker, marker=marker,
+                s=np.asarray(s)[gmask] if np.ndim(s) else s,  # per-point sizes from size_by
+                alpha=alpha, picker=picker, marker=marker,
             )
             if c is not None:
                 kw["c"] = np.asarray(c)[gmask]
@@ -1203,6 +1440,20 @@ class PopulationDiagramPlot(BasePlot):
             )
 
     # ------------------------------------------------------------------
+    def _color_mask(self, cdata: Dict[str, Any]) -> Optional[np.ndarray]:
+        """The lines a color-mapped render draws: ``valid_mask``, or ``None`` (every line) with ``all_lines``."""
+        if self._color_mapping is not None and self._color_mapping.get("all_lines"):
+            return None
+        return cdata.get("valid_mask")
+
+    def _concatenated_sizes(self, sizes: List[Union[float, np.ndarray]], counts: List[int],
+                            default: float) -> Union[float, np.ndarray]:
+        """One size array for points concatenated from several components (one number without size_by)."""
+        if self._size_mapping is None or not sizes:
+            return self._get_marker_size(default)
+        return np.concatenate([np.broadcast_to(np.asarray(s, dtype=float), (n,))
+                               for s, n in zip(sizes, counts)])
+
     def _render_colormapped(self, ax: Axes) -> None:
         """Render all components with a single property-based colormap."""
         mapping = self._color_mapping
@@ -1235,6 +1486,7 @@ class PopulationDiagramPlot(BasePlot):
         all_vals: List[np.ndarray] = []
         all_wav: List[np.ndarray] = []
         all_shape_vals: List[np.ndarray] = []
+        all_sizes: List[Union[float, np.ndarray]] = []
 
         for cdata in self._component_data:
             vals_arr = _AxisReg.resolve_array(internal_key, cdata)
@@ -1244,8 +1496,9 @@ class PopulationDiagramPlot(BasePlot):
                 continue
 
             # Apply the valid_mask so that only lines above the 1%-of-max
-            # flux threshold are plotted and used for scale computation.
-            mask = cdata.get("valid_mask")
+            # flux threshold are plotted and used for scale computation,
+            # unless every line was asked for.
+            mask = self._color_mask(cdata)
             if mask is not None:
                 mask = np.asarray(mask, dtype=bool)
                 x_arr = x_arr[mask]
@@ -1264,6 +1517,7 @@ class PopulationDiagramPlot(BasePlot):
             all_x.append(x_arr)
             all_y.append(y_arr)
             all_vals.append(vals_arr)
+            all_sizes.append(self._sizes_for(cdata, mask, 5))
 
             # Shape-by: collect shape property values with same masking
             if self._shape_mapping is not None:
@@ -1313,6 +1567,7 @@ class PopulationDiagramPlot(BasePlot):
         cmap_obj = matplotlib.colormaps.get_cmap(cmap_name)
 
         wav_cat = np.concatenate(all_wav) if all_wav else None
+        size_cat = self._concatenated_sizes(all_sizes, [len(a) for a in all_x], 5)
         label = self._property_label(display_prop)
         fig = ax.get_figure()
 
@@ -1320,7 +1575,7 @@ class PopulationDiagramPlot(BasePlot):
             shape_cat = np.concatenate(all_shape_vals)
             shape_results = self._scatter_with_shape_groups(
                 ax, eu_cat, rd_cat, shape_cat,
-                s=self._get_marker_size(5), c=val_cat, norm=norm, cmap=cmap_obj,
+                s=size_cat, c=val_cat, norm=norm, cmap=cmap_obj,
                 alpha=0.8, picker=True,
                 wav_arr=wav_cat,
             )
@@ -1332,7 +1587,7 @@ class PopulationDiagramPlot(BasePlot):
         else:
             sc = ax.scatter(
                 eu_cat, rd_cat,
-                c=val_cat, s=self._get_marker_size(5),
+                c=val_cat, s=size_cat,
                 cmap=cmap_obj, norm=norm,
                 alpha=0.8, picker=True,
             )
@@ -1356,13 +1611,14 @@ class PopulationDiagramPlot(BasePlot):
         all_y: List[np.ndarray] = []
         all_labels: List[np.ndarray] = []
         all_shape_vals: List[np.ndarray] = []
+        all_sizes: List[Union[float, np.ndarray]] = []
 
         for cdata in self._component_data:
             x_arr = self._get_axis_array(cdata, self._x_prop)
             y_arr = self._get_axis_array(cdata, self._y_prop)
             if x_arr is None or y_arr is None:
                 continue
-            mask = cdata.get("valid_mask")
+            mask = self._color_mask(cdata)
             if mask is not None:
                 mask = np.asarray(mask, dtype=bool)
                 x_arr = x_arr[mask]
@@ -1380,6 +1636,7 @@ class PopulationDiagramPlot(BasePlot):
             all_x.append(x_arr)
             all_y.append(y_arr)
             all_labels.append(labels)
+            all_sizes.append(self._sizes_for(cdata, mask, 5))
 
             # Shape-by: collect with same masking
             if self._shape_mapping is not None:
@@ -1425,15 +1682,16 @@ class PopulationDiagramPlot(BasePlot):
             }
 
         colors = np.array([label_to_color[lbl] for lbl in label_cat])
+        size_cat = self._concatenated_sizes(all_sizes, [len(a) for a in all_x], 5)
 
         if self._shape_mapping is not None and all_shape_vals:
             shape_cat = np.concatenate(all_shape_vals)
             shape_results = self._scatter_with_shape_groups(
                 ax, eu_cat, rd_cat, shape_cat,
-                s=self._get_marker_size(5), c=colors, alpha=0.8, picker=True,
+                s=size_cat, c=colors, alpha=0.8, picker=True,
             )
         else:
-            ax.scatter(eu_cat, rd_cat, c=colors, s=self._get_marker_size(5), alpha=0.8)
+            ax.scatter(eu_cat, rd_cat, c=colors, s=size_cat, alpha=0.8)
             shape_results = []
 
         # Legend for categories (limit to 20 entries max for readability)

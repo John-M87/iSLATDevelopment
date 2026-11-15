@@ -165,7 +165,8 @@ def apply_pdp_style(pdp: Any, style: Optional[Dict[str, Any]], *,
         # when set, so None cannot override color_by's own default.
         kwargs = {"vmin": color.get("vmin"), "vmax": color.get("vmax"),
                   "pmin": color.get("pmin"), "pmax": color.get("pmax"),
-                  "log_scale": bool(color.get("log_scale", False))}
+                  "log_scale": bool(color.get("log_scale", False)),
+                  "all_lines": bool(color.get("all_lines", False))}
         if color.get("cmap"):
             kwargs["cmap"] = color["cmap"]
         try:
