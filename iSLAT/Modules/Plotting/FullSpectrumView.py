@@ -31,7 +31,7 @@ import matplotlib
 from matplotlib.figure import Figure as MplFigure
 from matplotlib.widgets import SpanSelector
 
-from .FigureExport import save_figure_file, save_figures_to_pdf
+from .FigureExport import save_figure_file, save_figure_pages, save_figures_to_pdf
 from .FigureFonts import (
     FONT_SIZE_KINDS, apply_figure_font_sizes, default_font_sizes, validate_font_size, validate_font_sizes,
 )
@@ -2292,7 +2292,10 @@ def output_full_spectrum(
     font_sizes: Optional[Dict[str, Optional[float]]] = None,
 ) -> str | None:
     """
-    Create a fresh full-spectrum PDF and a companion parameters CSV.
+    Create a fresh full-spectrum figure (PDF, PNG or SVG) and a companion parameters CSV.
+
+    The save dialog offers the formats of :attr:`FullSpectrumView.SAVE_FORMATS`;
+    the file type selected there (or the extension typed) decides the format.
 
     The figure is the kind of plot the Full Spectrum view shows (the sample
     stack with *Stack Sample Spectra*, residual sub-panels with *Residuals*,
@@ -2336,12 +2339,14 @@ def output_full_spectrum(
         FullSpectrumView.SAVE_DIALOG_TITLE, "pdf",
         initialfile=default_save_name(islat_ref, FullSpectrumView.SAVE_FILE_SUFFIX, "pdf"),
         initialdir=absolute_data_files_path,
+        formats=FullSpectrumView.SAVE_FORMATS,
     )
     if not save_path:
         standalone.close()
         return None
 
     try:
+        # The format is the file's extension (the type chosen in the dialog), PDF without one.
         save_figure_file(standalone.fig, save_path, file_format="pdf", rasterized=rasterized)
     finally:
         standalone.close()
@@ -2361,6 +2366,8 @@ _PAGE_SETTINGS_ATTR = "full_spectrum_page_settings"
 PAGES_FILE_SUFFIX = "full_output_pages"
 PAGES_DIALOG_TITLE = "Save Multi-page Spectrum Output"
 PAGES_MESSAGE = "Multi-page spectrum output ({pages} pages) saved to: {path}"
+#: Message when each page is its own file (PNG, SVG): ``{first}`` / ``{last}`` are the first and last page files.
+PAGES_FILES_MESSAGE = "Multi-page spectrum output ({pages} pages) saved to: {first} ... {last}"
 
 
 def get_page_settings(plot_manager: Any) -> Dict[str, str]:
@@ -2465,7 +2472,12 @@ def output_full_spectrum_pages(
     save_path: Optional[str] = None,
     font_sizes: Optional[Dict[str, Optional[float]]] = None,
 ) -> Optional[str]:
-    """Save a multi-page full-spectrum PDF and a companion parameters CSV.
+    """Save a multi-page full-spectrum PDF (or one PNG / SVG per page) and a companion parameters CSV.
+
+    The format is *save_path*'s extension, or the file type chosen in the
+    save dialog (PDF, PNG or SVG).  A PDF holds every page; in PNG or SVG
+    page *n* is ``<name>_page<n>.<ext>`` (a single page is the file itself),
+    see :func:`~.FigureExport.save_figure_pages`.
 
     Each page shows one ``(start, end)`` wavelength range of *page_ranges*
     (rest frame, as the plots show it), split into stacked panels;
@@ -2496,7 +2508,8 @@ def output_full_spectrum_pages(
         Override font sizes for this export only, as in
         :func:`output_full_spectrum`.
 
-    Returns the saved path, or ``None`` when the dialog was cancelled.
+    Returns the saved path (for PNG / SVG, the path the page files and the
+    parameters CSV are named after), or ``None`` when the dialog was cancelled.
 
     Raises
     ------
@@ -2513,6 +2526,7 @@ def output_full_spectrum_pages(
             PAGES_DIALOG_TITLE, "pdf",
             initialfile=default_save_name(islat_ref, PAGES_FILE_SUFFIX, "pdf"),
             initialdir=absolute_data_files_path,
+            formats=FullSpectrumView.SAVE_FORMATS,
         )
         if not save_path:
             return None
@@ -2526,9 +2540,13 @@ def output_full_spectrum_pages(
             finally:
                 plot.close()
 
-    save_figures_to_pdf(_figures(), save_path, rasterized=rasterized)
+    written = save_figure_pages(_figures(), save_path, len(pages), file_format="pdf", rasterized=rasterized)
     _write_output_parameters(islat_ref, save_path)
-    notify_user(islat_ref, PAGES_MESSAGE.format(pages=len(pages), path=save_path))
+    if len(written) == 1:
+        message = PAGES_MESSAGE.format(pages=len(pages), path=written[0])
+    else:
+        message = PAGES_FILES_MESSAGE.format(pages=len(pages), first=written[0], last=written[-1])
+    notify_user(islat_ref, message)
     return save_path
 
 

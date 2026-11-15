@@ -4,6 +4,7 @@ save-figure template, data-field messages and the shared debug logger."""
 
 import importlib
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -16,7 +17,8 @@ import pytest
 from matplotlib.figure import Figure
 
 from iSLAT.Modules.Plotting.FigureExport import (
-    default_export_dpi, export_format, save_figure_file, save_figures_to_pdf,
+    default_export_dpi, export_format, page_file_path, save_figure_file, save_figure_pages,
+    save_figures_to_pdf,
 )
 from iSLAT.Modules.Plotting.PlotView import PlotView, default_save_name, notify_user
 from iSLAT.Modules.Plotting.ToggleMixin import ToggleMixin
@@ -548,6 +550,44 @@ class TestMultiPagePdf:
         out = tmp_path / "empty.pdf"
         assert save_figures_to_pdf([], out) == 0
         assert not out.exists()
+
+
+class TestFigurePages:
+    """save_figure_pages: one PDF, or one PNG / SVG file per page."""
+
+    def test_page_file_names_are_numbered_in_order(self):
+        assert page_file_path("d/out.png", 1, 3) == str(Path("d/out_page1.png"))
+        assert page_file_path("d/out.png", 2, 12) == str(Path("d/out_page02.png"))
+        assert page_file_path("d/out.png", 1, 1) == "d/out.png"   # one page: the file itself
+
+    def test_pdf_is_one_file(self, tmp_path):
+        out = tmp_path / "pages.pdf"
+        assert save_figure_pages([_figure(), _figure()], out, 2, dpi=20) == [str(out)]
+        assert _pdf_page_count(out) == 2
+
+    @pytest.mark.parametrize("ext, magic", [("png", b"\x89PNG"), ("svg", b"<?xml")])
+    def test_other_formats_write_one_file_per_page(self, tmp_path, ext, magic):
+        out = tmp_path / f"pages.{ext}"
+        written = save_figure_pages([_figure(), _figure(), _figure()], out, 3, dpi=20)
+        assert written == [str(tmp_path / f"pages_page{n}.{ext}") for n in (1, 2, 3)]
+        assert not out.exists()
+        for path in written:
+            assert Path(path).read_bytes().startswith(magic)
+
+    def test_path_without_extension_uses_file_format(self, tmp_path):
+        written = save_figure_pages([_figure()], tmp_path / "pages", 1, file_format="png", dpi=20)
+        assert Path(written[0]).read_bytes().startswith(b"\x89PNG")
+
+    def test_pages_are_built_one_at_a_time(self, tmp_path):
+        events = []
+        save_figure_pages(_recorded_pages(events, 2), tmp_path / "p.png", 2, dpi=20)
+        assert events == ["build 0", "close 0", "build 1", "close 1"]
+
+    def test_failed_page_removes_the_pages_written(self, tmp_path):
+        events = []
+        with pytest.raises(RuntimeError):
+            save_figure_pages(_recorded_pages(events, 3, fail_after=2), tmp_path / "p.png", 3, dpi=20)
+        assert list(tmp_path.iterdir()) == []
 
 
 # ======================================================================
