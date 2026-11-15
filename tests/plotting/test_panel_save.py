@@ -168,7 +168,8 @@ class TestPlotViewPanelSave:
         fig, left, _right = _two_panel_figure()
         view = _PanelView(fig, islat=SimpleNamespace(loaded_spectrum_file="/data/citau.csv"))
         assert view.save_panel(view.panel_at(_event(left)), file_format="png") is None
-        assert asked[0]["initialfile"] == "citau_view_left.png"
+        assert asked[0]["initialfile"] == "citau_view_left"
+        assert asked[0]["filetypes"][0] == ("PNG files", "*.png")
 
     def test_views_without_panels_offer_none(self):
         fig, left, _right = _two_panel_figure()

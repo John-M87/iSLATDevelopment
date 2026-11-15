@@ -465,13 +465,15 @@ class TestSaveTemplate:
         for cls in (FullSpectrumView, OpticalDepthView, WindowFullSpectrumView):
             cls(pm)._ask_save_path("png")
         fsv, odv, window = asked
+        # Several formats: the name has no extension, the selected type gives it.
         assert (fsv["title"], fsv["initialfile"], fsv["initialdir"]) == (
-            "Save Spectrum Output", "spec_full_output.png", absolute_data_files_path)
+            "Save Spectrum Output", "spec_full_output", absolute_data_files_path)
         assert (odv["title"], odv["initialfile"], odv["initialdir"]) == (
-            "Save Optical Depth Figure", "spec_optical_depth.png", absolute_data_files_path)
-        assert fsv["filetypes"] == [("PNG files", "*.png")]
-        assert window["initialfile"] == "spec_full_output.png" and "initialdir" not in window
-        assert window["filetypes"] == [("PNG files", "*.png"), ("All files", "*.*")]
+            "Save Optical Depth Figure", "spec_optical_depth", absolute_data_files_path)
+        formats = [("PNG files", "*.png"), ("PDF files", "*.pdf"), ("SVG files", "*.svg")]
+        assert fsv["filetypes"] == formats and "defaultextension" not in fsv
+        assert window["initialfile"] == "spec_full_output" and "initialdir" not in window
+        assert window["filetypes"] == formats + [("All files", "*.*")]
 
     def test_default_save_name_without_a_spectrum(self):
         assert default_save_name(SimpleNamespace(loaded_spectrum_file="a/b.csv"), "x", "pdf") == "b_x.pdf"
