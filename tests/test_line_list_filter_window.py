@@ -795,8 +795,18 @@ def test_window_whole_list_model_quantities_cover_every_line(tk_root, renamed_co
         own = mol.intensity.get_population_diagram_data(
             mol.radius, mol.distance, molecule=mol, full_range=False)
         inside = ((base['lam'] >= 4.9) & (base['lam'] <= 5.2)).to_numpy()
-        np.testing.assert_allclose(derived['intens'].to_numpy()[inside],
-                                   np.asarray(own['intens'], float), rtol=1e-6)
+        whole = derived['intens'].to_numpy()[inside]
+        in_range = np.asarray(own['intens'], float)
+        # Some lines of the whole list overlap, so it takes the per-line overlap
+        # integral, which is exact for every line.  No line in range has a
+        # neighbour, so that list takes the isolated-line fast path, whose
+        # thin shortcut (tau < 0.01) is high by up to tau / (2 sqrt(2)).
+        tau = np.asarray(mol.intensity.tau)
+        thin = tau < 0.01
+        assert thin.any() and (~thin).any()
+        np.testing.assert_allclose(whole[~thin], in_range[~thin], rtol=1e-6)
+        assert np.all(np.abs(whole[thin] / in_range[thin] - 1.0)
+                      <= tau[thin] / (2.0 * np.sqrt(2.0)) + 1e-6)
     finally:
         win._on_close()
 

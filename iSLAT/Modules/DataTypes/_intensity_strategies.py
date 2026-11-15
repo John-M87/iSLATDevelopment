@@ -100,9 +100,10 @@ class RadexStrategy:
 class CurveOfGrowthStrategy:
     """Full curve-of-growth with overlap treatment (McCaskill et al. 2026).
 
-    Delegates to ``Intensity._fint_multi`` which handles isolated-line
-    fast paths, tau-regime shortcuts, and multi-line Gauss-Legendre
-    quadrature for blended groups.
+    Delegates to ``Intensity._fint_multi``: the isolated-line fast path
+    (with its tau-regime shortcut) when no line has a neighbour, otherwise
+    Gauss-Legendre quadrature on a window per line, with the opacity of
+    the neighbouring lines summed in.
     """
 
     __slots__ = ()
@@ -176,9 +177,9 @@ DEFAULT_STRATEGIES: dict[str, IntensityStrategy] = {
 STRATEGY_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "curve_growth": (
         "Curve of growth (with line overlap)",
-        "Full curve-of-growth integral (McCaskill et al. 2026). Lines that "
-        "overlap in velocity are integrated together, so blended optically "
-        "thick lines are not over-counted. Default.",
+        "Full curve-of-growth integral (McCaskill et al. 2026). Every line is "
+        "integrated with the opacity of the lines that overlap it in velocity, "
+        "so blended optically thick lines are not over-counted. Default.",
     ),
     "curve_growth_no_overlap": (
         "Curve of growth (no overlap)",
