@@ -896,7 +896,7 @@ class iSLAT:
         new_index = (self.sample_spectra_index + direction) % len(self.sample_spectra)
         self.switch_to_spectrum(new_index)
 
-    def load_spectrum(self, file_path=None, load_parameters=False, force_dialog=False):
+    def load_spectrum(self, file_path=None, load_parameters=False, force_dialog=False, selected_file=None):
         """
         Load a spectrum from file or show file dialog.
         
@@ -907,7 +907,11 @@ class iSLAT:
         force_dialog : bool, optional
             If True, always show the file dialog regardless of default settings.
             Used when the user explicitly clicks the Load Spectrum button.
-            
+        selected_file : str, optional
+            A file the user already picked in a file dialog (the startup
+            dialog): loaded instead of the default spectrum or the dialog,
+            and treated as chosen by the user, like a file picked here.
+
         Returns
         -------
         bool
@@ -925,8 +929,10 @@ class iSLAT:
         
         # Track whether the user is explicitly choosing a new file
         user_initiated = (file_path is None)
-        
-        if file_path is None and not force_dialog:
+
+        if file_path is None and selected_file:
+            file_path = selected_file
+        elif file_path is None and not force_dialog:
             if self.user_settings.get("default_spectra_file_to_load", None) is not None:
                 file_path = self.user_settings.get("default_spectra_file_to_load", None)
 
@@ -1224,20 +1230,27 @@ class iSLAT:
             self.GUI = None
             raise
 
-    def run(self):
+    def run(self, spectrum_file: Optional[str] = None, show_banner: bool = True):
         """
         Run the iSLAT application.
+
+        Parameters
+        ----------
+        spectrum_file : str, optional
+            A spectrum the user already chose (the startup dialog of
+            :func:`iSLAT.startup.main`); loaded as if picked in the dialog
+            here.  Without it the configured default spectrum is loaded, or
+            the dialog is shown.
+        show_banner : bool, default True
+            Print the version banner (the startup already printed it).
         """
-        print("\n" + "="*60)
-        print(f"iSLAT {iSLAT_version} - interactive Spectral-Line Analysis Tool")
-        print("="*60)
-        
+        if show_banner:
+            from .startup import print_banner
+            print_banner()
+
         try:
-            print("\n" + "="*60)
-            print("Please select a spectrum file to load.")
-            print("="*60)
             self.check_HITRAN()
-            continue_init = self.load_spectrum()
+            continue_init = self.load_spectrum(selected_file=spectrum_file)
             if not continue_init:
                 print("No spectrum selected. Exiting...")
                 sys.exit(0)
@@ -1496,6 +1509,10 @@ class iSLAT:
         print("--- Ready for Analysis ---\n")'''
 
 def _cli_entry():
-    """Console-script entry point for ``islat`` command."""
-    app = iSLAT()
-    app.run()
+    """Former console-script entry point for the ``islat`` command; see :func:`iSLAT.startup.main`.
+
+    The script now starts at :func:`iSLAT.startup.main` (installs made before
+    that still call this, after this module is already imported).
+    """
+    from .startup import main
+    main()

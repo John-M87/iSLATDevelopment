@@ -49,7 +49,7 @@ Homepage = "https://github.com/spexod/iSLAT"
 Repository = "https://github.com/spexod/iSLAT"
 
 [project.scripts]
-islat = "iSLAT.iSLATClass:_cli_entry"
+islat = "iSLAT.startup:main"
 
 [tool.setuptools.packages.find]
 include = ["iSLAT*"]

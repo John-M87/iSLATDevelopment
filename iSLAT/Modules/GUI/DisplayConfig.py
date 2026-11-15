@@ -55,15 +55,10 @@ def _detect_windows_scale_factor() -> float:
     """Return the Windows DPI scale factor (e.g. 1.25, 1.5, 2.0)."""
     try:
         import ctypes
-        # Enable Per-Monitor DPI awareness (V2 preferred, V1 fallback)
-        # so that Tk reports real screen dimensions and renders correctly.
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE_V2
-        except Exception:
-            try:
-                ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
-            except Exception:
-                ctypes.windll.user32.SetProcessDPIAware()
+        from iSLAT.startup import enable_windows_dpi_awareness
+        # DPI awareness so that Tk reports real screen dimensions and renders
+        # correctly (already on when the startup dialog came first).
+        enable_windows_dpi_awareness()
         hdc = ctypes.windll.user32.GetDC(0)
         dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
         ctypes.windll.user32.ReleaseDC(0, hdc)
