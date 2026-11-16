@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_molecule_lines, iter_tagged, set_tagged_visible
+from .FigureClipboard import ClipboardError, copy_figure_to_clipboard
 from .FigureExport import isolated_axes, save_figure_file
 from .PlotDebug import debug_config
 
@@ -1111,6 +1112,50 @@ class PlotView(ABC):
             self._notify_user(self.SAVE_MESSAGE.format(path=saved))
         return saved
 
+    #: Data-field message after the figure was copied to the clipboard.
+    COPY_MESSAGE: str = "Figure copied to the clipboard."
+
+    def copy_figure_to_clipboard(self, dpi: int | None = None) -> bool:
+        """Copy the view's figure to the clipboard as a PNG image.
+
+        The image is the one :meth:`save_figure` would write
+        (:meth:`_build_export_figure`, export resolution unless *dpi* is
+        given).  The outcome is shown in the data field.  Returns ``True``
+        when the image was copied.
+        """
+        if not self._can_save_figure():
+            return False
+        return self._copy_export(self._build_export_figure, dpi)
+
+    def copy_panel_to_clipboard(self, panel: FigurePanel, dpi: int | None = None) -> bool:
+        """Copy one *panel* of the view (from :meth:`panel_at`) to the clipboard as a PNG image.
+
+        As :meth:`copy_figure_to_clipboard`, with the figure from
+        :meth:`_build_panel_export_figure`.  Returns ``True`` when copied.
+        """
+        return self._copy_export(lambda: self._build_panel_export_figure(panel), dpi)
+
+    def _copy_export(
+        self,
+        build: Callable[[], Tuple[Optional["Figure"], Optional[Callable[[], None]]]],
+        dpi: int | None,
+    ) -> bool:
+        """Copy the figure *build* returns to the clipboard, release it, and report the outcome."""
+        fig, release = build()
+        try:
+            if fig is None:
+                return False
+            copy_figure_to_clipboard(fig, dpi=dpi)
+        except ClipboardError as exc:
+            debug_config.warning("plot_view", f"Copy to clipboard failed: {exc}")
+            self._notify_user(f"Could not copy the figure to the clipboard: {exc}")
+            return False
+        finally:
+            if release is not None:
+                release()
+        self._notify_user(self.COPY_MESSAGE)
+        return True
+
     def panel_at(self, event: Any) -> Optional[FigurePanel]:
         """The panel under the right-click *event* that can be saved on its own, or ``None``.
 
@@ -1200,8 +1245,9 @@ class PlotView(ABC):
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Optional[Any]:
         """Build and return a ``tk.Menu`` for a right-click at *event*.
 
-        The default creates a minimal menu containing only "Save Figure"
-        (and "Save <panel>" when :meth:`panel_at` finds one).  Views that
+        The default creates a minimal menu containing only "Save Figure" and
+        "Copy Figure to Clipboard" (and the same for the panel when
+        :meth:`panel_at` finds one).  Views that
         provide additional items should create their own menu, append items,
         and call :meth:`_append_save_figure_item` with the *event* before
         returning.
@@ -1223,11 +1269,15 @@ class PlotView(ABC):
         return menu
 
     def _append_save_figure_item(self, menu: Any, event: Any = None) -> None:
-        """Append a ``Save Figure…`` command to *menu*, and ``Save <panel>…`` for the panel under *event*.
+        """Append the save and copy commands to *menu*, for the figure and the panel under *event*.
 
-        Both open a file dialog so the user can choose the destination and
-        format: :meth:`save_figure` saves the whole figure, :meth:`save_panel`
-        the panel :meth:`panel_at` finds under the right-click *event*.
+        ``Save Figure…`` / ``Save <panel>…`` open a file dialog so the user
+        can choose the destination and format (:meth:`save_figure`,
+        :meth:`save_panel`); ``Copy Figure to Clipboard`` / ``Copy <panel>
+        to Clipboard`` put the same image on the clipboard as a PNG
+        (:meth:`copy_figure_to_clipboard`, :meth:`copy_panel_to_clipboard`).
+        The panel items appear when :meth:`panel_at` finds one under the
+        right-click *event*.
         """
         if menu.index("end") is not None:  # nothing to separate from in an empty menu
             menu.add_separator()
@@ -1235,6 +1285,10 @@ class PlotView(ABC):
         panel = self.panel_at(event) if event is not None else None
         if panel is not None:
             menu.add_command(label=f"Save {panel.label}…", command=lambda: self.save_panel(panel))
+        menu.add_command(label="Copy Figure to Clipboard", command=self.copy_figure_to_clipboard)
+        if panel is not None:
+            menu.add_command(label=f"Copy {panel.label} to Clipboard",
+                             command=lambda: self.copy_panel_to_clipboard(panel))
 
     def _register_control_fields(self) -> None:
         """Register this view's :class:`ControlField` objects on the :class:`ControlBus`.

@@ -564,6 +564,7 @@ class PartitionFunctionWindow(tk.Toplevel):
         widget = self._canvas.get_tk_widget()
         menu = tk.Menu(widget, tearoff=0)
         menu.add_command(label="Save Figure\u2026", command=self.save_figure)
+        menu.add_command(label="Copy Figure to Clipboard", command=self.copy_figure_to_clipboard)
         try:
             menu.tk_popup(widget.winfo_pointerx(), widget.winfo_pointery())
         finally:
@@ -588,6 +589,20 @@ class PartitionFunctionWindow(tk.Toplevel):
             return None
         self._report(f"Figure saved to: {save_path}", "Save Complete")
         return str(save_path)
+
+    def copy_figure_to_clipboard(self) -> bool:
+        """Copy the plot to the clipboard as a PNG image. Returns True when copied."""
+        if self._fig is None:
+            return False
+        from iSLAT.Modules.Plotting.FigureClipboard import ClipboardError, copy_figure_to_clipboard
+        try:
+            copy_figure_to_clipboard(self._fig)
+        except ClipboardError as exc:
+            messagebox.showerror("Copy Error", f"Could not copy figure:\n{exc}", parent=self)
+            return False
+        if self.data_field is not None:
+            self.data_field.insert_text("Figure copied to the clipboard.")
+        return True
 
     # ------------------------------------------------------------------
     # Apply / duplicate / save

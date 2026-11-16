@@ -141,12 +141,13 @@ class TestPlotViewPanelSave:
         menu = tk.Menu(tk_root, tearoff=0)
         view._append_save_figure_item(menu, _event(left))
         assert menu.type(0) != "separator"  # no separator at the top of an empty menu
-        assert _labels(menu) == ["Save Figure…", "Save Left Panel…"]
+        assert _labels(menu) == ["Save Figure…", "Save Left Panel…",
+                                 "Copy Figure to Clipboard", "Copy Left Panel to Clipboard"]
 
         no_panel = tk.Menu(tk_root, tearoff=0)
         no_panel.add_command(label="Other")
         view._append_save_figure_item(no_panel, _event(None))
-        assert _labels(no_panel) == ["Other", "Save Figure…"]
+        assert _labels(no_panel) == ["Other", "Save Figure…", "Copy Figure to Clipboard"]
         assert no_panel.type(1) == "separator"
 
     def test_save_panel_crops_to_the_panel_and_restores_the_figure(self, tmp_path):
@@ -237,7 +238,9 @@ class TestFullSpectrumPanel:
         view, _pm = full_spectrum
         menu = view.build_context_menu(_event(_first_axes(view._plot.subplots[0])), tk_root)
         lo, hi = view.shown_panel_ranges()[0]
-        assert _labels(menu)[-2:] == ["Save Figure…", f"Save Panel 1 ({lo:.2f}–{hi:.2f} μm)…"]
+        panel = f"Panel 1 ({lo:.2f}–{hi:.2f} μm)"
+        assert _labels(menu)[-4:] == ["Save Figure…", f"Save {panel}…",
+                                      "Copy Figure to Clipboard", f"Copy {panel} to Clipboard"]
 
 
 class TestOpticalDepthPanel:
@@ -307,7 +310,8 @@ class TestThreePanel:
     def test_spectrum_panel_menu(self, three_panel, tk_root):
         view, pm, _fig = three_panel
         menu = view.build_context_menu(_event(pm.ax1), tk_root)
-        assert _labels(menu)[-2:] == ["Save Figure…", "Save Spectrum Panel…"]
+        assert _labels(menu)[-4:] == ["Save Figure…", "Save Spectrum Panel…",
+                                      "Copy Figure to Clipboard", "Copy Spectrum Panel to Clipboard"]
 
 
 class TestLineGrid:
