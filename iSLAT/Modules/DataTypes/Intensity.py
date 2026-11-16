@@ -2178,16 +2178,20 @@ def _register_standard_entries() -> None:
         # A lone line is infinitely isolated: no finite position on an axis.
         return _np.where(_np.isinf(arr), _np.nan, arr)
 
+    # Levels are read with the plotted molecule's own quantum schema, the
+    # same key the quantum-field properties and the line-list filter use.
     def _vib_band_array(cdata):
         up, low = cdata.get("lev_up"), cdata.get("lev_low")
         if up is None or low is None:
             return None
-        from iSLAT.Modules.DataProcessing.LineFilterExpression import vib_band_label
-        return _np.asarray([vib_band_label(u, l) for u, l in zip(up, low)], dtype=object)
+        from iSLAT.Modules.DataProcessing.LineFilterExpression import vib_band_labels
+        return vib_band_labels(up, low, cdata.get("molecule_id"))
 
-    def _vib_band_scalar(line, _mol_id):
+    def _vib_band_scalar(line, mol_id):
         from iSLAT.Modules.DataProcessing.LineFilterExpression import vib_band_label
-        return vib_band_label(getattr(line, "lev_up", ""), getattr(line, "lev_low", "")) or None
+        species = mol_id or getattr(line, "molecule_id", None)
+        return vib_band_label(getattr(line, "lev_up", ""),
+                              getattr(line, "lev_low", ""), species) or None
 
     def _molecule_array(cdata):
         wav = cdata.get("wavelength")

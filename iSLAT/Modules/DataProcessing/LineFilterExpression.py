@@ -27,7 +27,6 @@ direction is strictly ``LineListMaker -> LineFilterExpression``.
 from __future__ import annotations
 
 import functools
-import re
 from dataclasses import dataclass, field as _dc_field
 from typing import (
     Any,
@@ -63,6 +62,9 @@ __all__ = [
     "validate",
     "velocity_separation_kms",
     "vib_band_label",
+    "vib_band_labels",
+    "vib_band_mask",
+    "vib_levels",
 ]
 
 SCHEMA_VERSION = 1
@@ -118,6 +120,14 @@ def nearest_neighbour_separation_kms(lam: Any) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Vibrational-band helpers
 # ---------------------------------------------------------------------------
+#
+# A line's band is "vN-M": N is the vibrational level of its upper state and M
+# that of its lower state, where a state's level is its largest normal-mode
+# quantum number.  The mode values come from the species' quantum-state schema
+# (QuantumStateSchema.vib_modes), so packed or annotated global quanta - C2H2's
+# "000_1_1_1-1+_u", CO2's ranking digit, HCN's l2 - are read the way the
+# quantum-field filter reads them.  An unregistered species falls back to the
+# generic rule: the global part must be integers joined by underscores.
 
 def _vib_part(level_str: str) -> str:
     """Return the vibrational portion of a quantum-state label (before ``'|'``).
@@ -128,79 +138,92 @@ def _vib_part(level_str: str) -> str:
     return level_str.split("|")[0] if "|" in level_str else level_str
 
 
-#: A vibrational label the band filter can match: integers joined by
-#: underscores, e.g. ``"0_1_0"`` or ``"4"``.
-_VIB_LABEL_RE = re.compile(r"\d+(?:_\d+)*")
+def _vib_schema(species: Optional[str]) -> Any:
+    """The quantum-state schema *species* is parsed with (generic if unknown)."""
+    from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
+    import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401  (registers schemas)
+    return QuantumStateRegistry.get_schema(species)
 
 
-@functools.lru_cache(maxsize=4096)
-def _vib_level(vib_label: str) -> Optional[int]:
-    """Vibrational level of a vib label: its largest mode quantum number."""
-    if not _VIB_LABEL_RE.fullmatch(vib_label):
-        return None
-    return max(int(q) for q in vib_label.split("_"))
+@functools.lru_cache(maxsize=16384)
+def _vib_level(vib_label: str, schema: Any) -> Optional[int]:
+    """Vibrational level of a global label: its largest mode quantum number.
+
+    Cached per schema *object*, so re-registering a species never reads a
+    stale entry.  Distinct global labels number in the hundreds even for line
+    lists of 10^5 lines, which is what makes the per-line maps below cheap.
+    """
+    modes = schema.vib_modes(vib_label)
+    return max(modes) if modes else None
 
 
-def vib_band_label(lev_up: Any, lev_low: Any) -> str:
+def vib_levels(labels: Any, species: Optional[str] = None) -> np.ndarray:
+    """Vibrational level of every state label, as floats (NaN = no level).
+
+    Parameters
+    ----------
+    labels : array-like
+        ``lev_up`` or ``lev_low`` values.
+    species : str, optional
+        Schema lookup key (molecule id or quantum-format override).
+    """
+    schema = _vib_schema(species)
+    vib = [_vib_part(str(x)) for x in labels]
+    if not vib:
+        return np.empty(0, dtype=float)
+    uniq, inverse = np.unique(np.asarray(vib, dtype=str), return_inverse=True)
+    per_label = np.array(
+        [np.nan if (lv := _vib_level(str(u), schema)) is None else float(lv)
+         for u in uniq],
+        dtype=float,
+    )
+    return per_label[inverse.ravel()]
+
+
+def _band_text(up: float, low: float) -> str:
+    """``"vN-M"``, or ``""`` when either level is unknown."""
+    if np.isnan(up) or np.isnan(low):
+        return ""
+    return f"v{int(up)}-{int(low)}"
+
+
+def vib_band_labels(lev_up: Any, lev_low: Any,
+                    species: Optional[str] = None) -> np.ndarray:
+    """Per-line :func:`vib_band_label` for whole columns (object array)."""
+    up = vib_levels(lev_up, species)
+    low = vib_levels(lev_low, species)
+    return np.asarray([_band_text(u, l) for u, l in zip(up, low)], dtype=object)
+
+
+def vib_band_label(lev_up: Any, lev_low: Any,
+                   species: Optional[str] = None) -> str:
     """The band a line belongs to, as the ``"vN-M"`` the band filter accepts.
 
     This is the per-line value of the *Vib. band* property everywhere it is
     shown (population-diagram axes / color / shape, table column), so the
     label a point carries is exactly a band spec that selects it.  Returns
-    ``""`` when either level carries no parseable vibrational label.
+    ``""`` when either level carries no recognisable vibrational assignment.
+
+    *species* selects the quantum-state schema the levels are read with; it
+    must be the same key the band filter is evaluated with.
     """
-    up = _vib_level(_vib_part(str(lev_up)))
-    low = _vib_level(_vib_part(str(lev_low)))
-    if up is None or low is None:
-        return ""
-    return f"v{up}-{low}"
+    return str(vib_band_labels([lev_up], [lev_low], species)[0])
 
 
-def _vib_perms(n: int, n_modes: int = 3) -> set:
-    """All underscore-joined vibrational-mode tuples where ``max(qi) == n``.
-
-    Parameters
-    ----------
-    n : int
-        Target vibrational quantum number (the maximum across all modes).
-    n_modes : int
-        Number of vibrational modes (default 3 for H₂O, CO₂, etc.).
-    """
-    from itertools import product as _product
-    combos: set = set()
-    for vals in _product(range(n + 1), repeat=n_modes):
-        if max(vals) == n:
-            combos.add("_".join(str(v) for v in vals))
-    return combos
-
-
-def _vib_perms_up_to(n: int, n_modes: int = 3) -> set:
-    """All underscore-joined vibrational-mode tuples where ``max(qi) <= n``."""
-    result: set = set()
-    for m in range(n + 1):
-        result |= _vib_perms(m, n_modes)
-    return result
-
-
-def _parse_vib_band(spec: str, n_modes: int = 3):
-    """Parse a band-spec string into ``(up_set, low_set)``.
+def _parse_vib_band(spec: str) -> Tuple[int, Optional[int]]:
+    """Parse a band-spec string into ``(n_up, n_low)``.
 
     Supported formats
     -----------------
-    ``"v1"``   -> upper from exact v=1 states (``max(qi) == 1``),
-                  lower from *any* state up to v=1 (``max(qi) <= 1``).
-                  Captures all lines *from* the v=1 level, including both
-                  the fundamental band (v=1 → v=0) and hot bands (v=1 → v=1).
-    ``"v1-0"`` -> upper from exact v=1, lower from exact v=0.
-    ``"v2-1"`` -> upper from exact v=2, lower from exact v=1.
+    ``"v1"``   -> ``(1, None)``: upper level exactly v=1, lower level
+                  *any* v <= 1.  Captures all lines *from* the v=1 level,
+                  including both the fundamental band (v=1 -> v=0) and hot
+                  bands (v=1 -> v=1).
+    ``"v1-0"`` -> ``(1, 0)``: upper exactly v=1, lower exactly v=0.
+    ``"v2-1"`` -> ``(2, 1)``: upper exactly v=2, lower exactly v=1.
 
-    The leading ``'v'`` is optional.  For the two-number ``"vN-M"`` form both
-    sides use **exact** level matching.
-
-    Returns
-    -------
-    (up_set, low_set) : tuple of set of str
-        Sets of underscore-joined vibrational labels.
+    The leading ``'v'`` is optional.  A level is the largest normal-mode
+    quantum number of the state (see :func:`vib_levels`).
 
     Raises
     ------
@@ -212,17 +235,31 @@ def _parse_vib_band(spec: str, n_modes: int = 3):
         raise ValueError("Empty band spec.")
     parts = spec.split("-")
     if len(parts) == 1:
-        n_up = int(parts[0])
-        up_set = _vib_perms(n_up, n_modes)
-        low_set = _vib_perms_up_to(n_up, n_modes)  # cumulative: captures all bands from this level
-    elif len(parts) == 2:
-        n_up = int(parts[0])
-        n_low = int(parts[1])
-        up_set = _vib_perms(n_up, n_modes)
-        low_set = _vib_perms(n_low, n_modes)  # exact lower level
-    else:
-        raise ValueError(f"Cannot parse band spec: {spec!r}")
-    return up_set, low_set
+        return int(parts[0]), None
+    if len(parts) == 2:
+        return int(parts[0]), int(parts[1])
+    raise ValueError(f"Cannot parse band spec: {spec!r}")
+
+
+def vib_band_mask(lev_up: Any, lev_low: Any, spec: str,
+                  species: Optional[str] = None) -> np.ndarray:
+    """Boolean array: which lines belong to band *spec*.
+
+    Raises :class:`ValueError` for an unparseable *spec*.  Lines whose upper
+    or lower level is unknown never match.
+    """
+    n_up, n_low = _parse_vib_band(spec)
+    return _band_pred(vib_levels(lev_up, species), vib_levels(lev_low, species),
+                      n_up, n_low)
+
+
+def _band_pred(up: np.ndarray, low: np.ndarray,
+               n_up: int, n_low: Optional[int]) -> np.ndarray:
+    """Band membership from per-line levels (NaN never matches)."""
+    with np.errstate(invalid="ignore"):
+        keep = up == n_up
+        keep &= (low <= n_up) if n_low is None else (low == n_low)
+    return keep
 
 
 # ---------------------------------------------------------------------------
@@ -284,8 +321,6 @@ class Condition:
         support either.
     state : str
         ``"upper"`` reads ``lev_up``; anything else reads ``lev_low``.
-    n_modes : int
-        Vibrational mode count, ``vib_band`` only.
     regex : bool
         ``quantum_label`` only.  ``False`` (the default) means a **literal**
         substring, so a label fragment like ``"0|"`` matches those characters
@@ -306,7 +341,6 @@ class Condition:
     max_val: Optional[float] = None
     unit: str = ""
     state: str = "upper"
-    n_modes: int = 3
     regex: bool = False
     negate: bool = False
     enabled: bool = True
@@ -876,16 +910,17 @@ def _mask_vib_band(df: pd.DataFrame, c: Condition, ctx: MaskContext) -> pd.Serie
             "Vibrational-band condition has no band - e.g. 'v1', 'v1-0', 'v2-1'."
         )
     try:
-        up_set, low_set = _parse_vib_band(spec, int(c.n_modes))
+        n_up, n_low = _parse_vib_band(spec)
     except ValueError as exc:
         raise ConditionError(
             f"Cannot parse vibrational band {spec!r}: {exc}"
         ) from exc
-    pred = (
-        df["lev_up"].map(lambda x: _vib_part(str(x)) in up_set)
-        & df["lev_low"].map(lambda x: _vib_part(str(x)) in low_set)
-    )
-    valid = pd.Series(True, index=df.index)
+    up = vib_levels(df["lev_up"], ctx.species)
+    low = vib_levels(df["lev_low"], ctx.species)
+    pred = _band_pred(up, low, n_up, n_low)
+    # A line with no vibrational assignment is in no band, and - like an
+    # unparsed quantum field - is not swept in by "not band" either.
+    valid = _as_mask(~(np.isnan(up) | np.isnan(low)), df.index)
     return _as_mask(_polarity(_as_mask(pred, df.index), valid, c.negate), df.index)
 
 
@@ -1049,7 +1084,7 @@ def validate(df: pd.DataFrame, expr: FilterExpression,
 
 _CONDITION_DEFAULTS: Dict[str, Any] = {
     "field": "", "value": None, "min_val": None,
-    "max_val": None, "unit": "", "state": "upper", "n_modes": 3, "regex": False,
+    "max_val": None, "unit": "", "state": "upper", "regex": False,
     "negate": False, "enabled": True,
 }
 
@@ -1101,7 +1136,6 @@ def _cond_from_dict(d: Mapping[str, Any], path: Tuple[int, int] = (-1, -1)) -> C
         max_val=_opt_float(d.get("max_val")),
         unit=str(d.get("unit", _CONDITION_DEFAULTS["unit"])),
         state=str(d.get("state", _CONDITION_DEFAULTS["state"])),
-        n_modes=int(d.get("n_modes", _CONDITION_DEFAULTS["n_modes"])),
         regex=bool(d.get("regex", _CONDITION_DEFAULTS["regex"])),
         negate=bool(d.get("negate", _CONDITION_DEFAULTS["negate"])),
         enabled=bool(d.get("enabled", _CONDITION_DEFAULTS["enabled"])),

@@ -206,7 +206,9 @@ _PROPERTY_TIPS: Dict[str, str] = {
                            "broadening." + _ONE_SIDED_NOTE + _RELATIVE_NOTE),
     "velocity_sep": _VELOCITY_SEP_TIP,
     "vib_band": ("Filter lines belonging to a specific vibrational band.\n"
-                 "Examples: 'v1' (any band from mode 1), 'v1-0', 'v2-1'."),
+                 "Examples: 'v1' (any band from level v=1), 'v1-0', 'v2-1'.\n"
+                 "A level is a state's largest mode quantum number, read with\n"
+                 "the species' quantum format."),
     "molecule": ("Keep only the listed species.\n"
                  "Separate multiple names with commas."),
 }
@@ -557,18 +559,11 @@ def row_state_to_condition(state: Mapping[str, Any],
     # Everything else is operand-as-text: quantum labels, an exact quantum
     # field value, a vibrational band spec, or a species list.
     value: Any = v1
-    n_modes = 3
-    if spec.editor == "band":
-        try:
-            n_modes = int(state.get("modes", 3))
-        except (TypeError, ValueError):
-            errors.append(f"{label}: mode count must be a whole number.")
-            return None, errors
     regex = bool(state.get("regex", False)) if spec.kind == "quantum_label" else False
     if op == "matches":
         regex = True
     return Condition(kind=spec.kind, field=spec.field, op=op, value=value,
-                     state=spec.state, n_modes=n_modes, regex=regex,
+                     state=spec.state, regex=regex,
                      negate=negate, enabled=enabled), errors
 
 
@@ -753,7 +748,6 @@ class _ConditionRow(ttk.Frame):
         self.op_var = tk.StringVar()
         self.v1_var = tk.StringVar()
         self.v2_var = tk.StringVar()
-        self.modes_var = tk.IntVar(value=3)
         self.regex_var = tk.BooleanVar(value=False)
         self.err_var = tk.StringVar()
 
@@ -796,13 +790,6 @@ class _ConditionRow(ttk.Frame):
                       "Maximum value (inclusive).\n"
                       "'5%' = 5% of the largest value here; 'p90' = the 90th "
                       "percentile.")
-
-        self._modes = ttk.Spinbox(self, from_=2, to=6, width=3,
-                                  textvariable=self.modes_var,
-                                  command=self._changed)
-        self._modes.grid(row=0, column=6, padx=2, pady=1)
-        CreateToolTip(self._modes,
-                      "Number of vibrational modes (3 for H₂O, CO₂, …).")
 
         self._regex = ttk.Checkbutton(self, text="regex", variable=self.regex_var,
                                       command=self._changed)
@@ -856,7 +843,6 @@ class _ConditionRow(ttk.Frame):
             "op": self.op_var.get(),
             "v1": self.v1_var.get(),
             "v2": self.v2_var.get(),
-            "modes": self.modes_var.get(),
             "regex": self.regex_var.get(),
             "enabled": self.enabled_var.get(),
         }
@@ -869,10 +855,6 @@ class _ConditionRow(ttk.Frame):
             self.op_var.set(str(state["op"]))
         self.v1_var.set(str(state.get("v1", "")))
         self.v2_var.set(str(state.get("v2", "")))
-        try:
-            self.modes_var.set(int(state.get("modes", 3)))
-        except (TypeError, ValueError):
-            self.modes_var.set(3)
         self.regex_var.set(bool(state.get("regex", False)))
         self.enabled_var.set(bool(state.get("enabled", True)))
         self._sync_editor()
@@ -957,10 +939,6 @@ class _ConditionRow(ttk.Frame):
         if kind in _RELATIVE_KINDS:
             self._v1_tip.text += ("\n'5%' = 5% of the largest value here; "
                                   "'p90' = the 90th percentile.")
-        if editor == "band":
-            self._modes.grid()
-        else:
-            self._modes.grid_remove()
         if editor == "text" and display_op in ("contains", "does not contain"):
             self._regex.grid()
         else:
@@ -969,7 +947,7 @@ class _ConditionRow(ttk.Frame):
         # A disabled condition greys out so it reads as "ignored" rather than
         # "empty"; its values are kept so re-enabling restores them.
         entry_state = "normal" if self.enabled_var.get() else "disabled"
-        for w in (self._v1, self._v2, self._modes):
+        for w in (self._v1, self._v2):
             w.configure(state=entry_state)
         self._op_combo.configure(
             state="readonly" if self.enabled_var.get() else "disabled")
@@ -1067,7 +1045,6 @@ class _GroupRow(ttk.LabelFrame):
         if state is None and self._rows:
             prev = self._rows[-1 if at is None else max(at - 1, 0)]
             row.load_state({"prop": prev.prop_var.get(), "op": prev.op_var.get(),
-                            "modes": prev.modes_var.get(),
                             "regex": prev.regex_var.get()})
         elif state is not None:
             row.load_state(state)

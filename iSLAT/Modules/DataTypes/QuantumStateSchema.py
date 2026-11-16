@@ -75,6 +75,12 @@ _FLOAT_SENTINEL: float = float('nan')
 #: Sentinel returned for missing/unparseable string fields.
 _STR_SENTINEL: str = ''
 
+#: Name of a vibrational normal-mode field: ``v`` or ``v`` plus a mode number.
+_VIB_MODE_NAME_RE = re.compile(r'^v\d*$')
+
+#: A generic (schema-less) vibrational label: integers joined by underscores.
+_GENERIC_VIB_LABEL_RE = re.compile(r'\d+(?:_\d+)*')
+
 def _coerce(value: str, dtype: Literal['int', 'float', 'str']) -> Any:
     """Convert a string token to *dtype*, returning a sentinel on failure.
 
@@ -250,6 +256,38 @@ class QuantumStateSchema(ABC):
         """All field names in declaration order."""
         return tuple(f.name for f in self.all_fields)
 
+    # ── Vibrational modes ───────────────────────────────────────────
+
+    @property
+    def vib_mode_fields(self) -> Tuple[str, ...]:
+        """Names of the vibrational normal-mode quantum numbers.
+
+        By default these are the integer global fields named ``v`` or
+        ``v<n>`` (``v1``, ``v2``, ...), so vibrational angular momenta
+        (``l2``, ``l4``), Fermi rankings (``r``), torsional numbers and
+        symmetry labels are not counted as modes.  Override in a subclass
+        whose modes are named differently.
+        """
+        return tuple(f.name for f in self.global_fields
+                     if f.dtype == 'int' and _VIB_MODE_NAME_RE.match(f.name))
+
+    def vib_modes(self, label: str) -> Optional[Tuple[int, ...]]:
+        """Vibrational mode quantum numbers of a state label.
+
+        *label* may be a full ``"global|local"`` label or just its global
+        part.  Returns ``None`` when the schema declares no modes or any
+        mode is missing or negative (HITRAN writes ``-2`` for an unassigned
+        level).
+        """
+        names = self.vib_mode_fields
+        if not names:
+            return None
+        parsed = self.parse_label(label)
+        values = tuple(parsed.get(n, _INT_SENTINEL) for n in names)
+        if any(not isinstance(v, int) or v < 0 for v in values):
+            return None
+        return values
+
     def __repr__(self) -> str:
         g = [f.name for f in self.global_fields]
         l = [f.name for f in self.local_fields]
@@ -350,6 +388,15 @@ class GenericDelimitedSchema(QuantumStateSchema):
         for i, tok in enumerate(l_tokens):
             result[f'l{i}'] = tok
         return result
+
+    def vib_modes(self, label: str) -> Optional[Tuple[int, ...]]:
+        """Modes of a schema-less label: its global part must be integers
+        joined by underscores (``"0_1_0"``, ``"4"``); anything else is
+        unrecognised and returns ``None``."""
+        global_str = label.split('|', 1)[0]
+        if not _GENERIC_VIB_LABEL_RE.fullmatch(global_str):
+            return None
+        return tuple(int(q) for q in global_str.split('_'))
 
     def parse_bulk(self, labels: np.ndarray) -> Dict[str, np.ndarray]:
         if len(labels) == 0:

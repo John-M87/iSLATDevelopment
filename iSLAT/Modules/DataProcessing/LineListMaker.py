@@ -41,9 +41,7 @@ from .LineFilterExpression import (  # noqa: F401  (re-exported for back-compat)
     describe_expression,
     expression_mask,
     _parse_vib_band,
-    _vib_part,
-    _vib_perms,
-    _vib_perms_up_to,
+    vib_band_mask,
 )
 
 # ---------------------------------------------------------------------------
@@ -507,13 +505,14 @@ class LineListMaker:
     def filter_vib_band(
         self,
         spec: str,
-        n_modes: int = 3,
+        n_modes: Optional[int] = None,
     ) -> "LineListMaker":
         """Filter to a specific vibrational band.
 
-        Uses exact vibrational-level matching on both upper and lower states
-        (the vibrational portion is the part of the quantum label before the
-        ``'|'`` delimiter).
+        Each state's vibrational level is its largest normal-mode quantum
+        number, read from the vibrational part of the label (before ``'|'``)
+        with the quantum-state schema for :attr:`schema_species`, so packed
+        or annotated labels such as C₂H₂'s ``000_1_1_1-1+_u`` are handled.
 
         Parameters
         ----------
@@ -525,19 +524,21 @@ class LineListMaker:
             - ``"v1-0"`` — upper from exact v=1, lower from exact v=0.
             - ``"v2-1"`` — upper from exact v=2, lower from exact v=1.
 
-        n_modes : int
-            Number of vibrational modes (default 3 for H₂O, CO₂, etc.).
+        n_modes : int, optional
+            Ignored.  The mode count now comes from the species' schema; the
+            parameter is kept so filter logs saved by older versions replay.
 
         Raises
         ------
         ValueError
             If *spec* cannot be parsed.
         """
-        up_set, low_set = _parse_vib_band(spec, n_modes)
-        self._record_filter("filter_vib_band", spec=spec, n_modes=n_modes)
-        mask = (
-            self._df["lev_up"].apply(lambda x: _vib_part(x) in up_set)
-            & self._df["lev_low"].apply(lambda x: _vib_part(x) in low_set)
+        _parse_vib_band(spec)  # validate before recording
+        self._record_filter("filter_vib_band", spec=spec)
+        mask = pd.Series(
+            vib_band_mask(self._df["lev_up"], self._df["lev_low"], spec,
+                          self.schema_species),
+            index=self._df.index,
         )
         return self._apply_mask(mask)
 

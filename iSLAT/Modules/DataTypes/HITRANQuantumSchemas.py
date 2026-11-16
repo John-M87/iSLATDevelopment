@@ -551,8 +551,8 @@ class NH3Schema(_DelimitedSchema):
 #  Local:  Group 2a
 # ═══════════════════════════════════════════════════════════════════
 
-#: Regex for parsing the merged "l4 l5 [pm]" token in C₂H₂ global quanta.
-_C2H2_L4L5_RE = re.compile(r'^(-?\d+)(-\d+)?([+-]?)$')
+#: One (possibly negative) integer field in C₂H₂ global quanta.
+_C2H2_SIGNED_INT_RE = re.compile(r'-?\d+')
 class C2H2Schema(_DelimitedSchema):
     """Schema for acetylene C₂H₂ (HITRAN Class 5a).
 
@@ -583,39 +583,36 @@ class C2H2Schema(_DelimitedSchema):
     local_fields = _LOCAL_G2A
 
     def _fixup_global_tokens(self, tokens: List[str]) -> List[str]:
+        # Field order: v1 v2 v3 (packed "000"), v4 v5 l4 l5 (I2 each), then
+        # an optional ± glued to l5, then S.  A negative I2 value has no
+        # leading blank, so it merges with the field before it and the token
+        # count varies: "000_1_2-1_2_g" is v4=1 v5=2 l4=-1 l5=2, and
+        # "000_1_1_1-1+_u" is v4=1 v5=1 l4=1 l5=-1 ±=+.  Splitting the
+        # remainder into signed integers recovers every field regardless.
         if not tokens:
             return tokens
         result: List[str] = []
 
         # First token: v1v2v3 packed as 3 × I1
         first = tokens[0]
-        if len(first) >= 3 and all(c.isdigit() for c in first[:3]):
-            result.extend(list(first[:3]))   # v1, v2, v3
-            if len(first) > 3:
-                result.append(first[3:])     # overflow (shouldn't happen)
+        if len(first) == 3 and first.isdigit():
+            result.extend(list(first))       # v1, v2, v3
         else:
-            result.extend([first] + ['', ''])
+            result.extend([first, '', ''])
 
-        # Tokens 1, 2 → v4, v5 (simple integers)
-        for i in range(1, 3):
-            result.append(tokens[i] if i < len(tokens) else '')
-
-        # Token 3 (if present) → l4 [l5 [pm]] possibly merged
-        if 3 < len(tokens):
-            l_token = tokens[3]
-            m = _C2H2_L4L5_RE.match(l_token)
-            if m:
-                result.append(m.group(1) or '')   # l4
-                result.append(m.group(2) or '')   # l5 (may be empty)
-                result.append(m.group(3) or '')   # pm (may be empty)
-            else:
-                result.extend([l_token, '', ''])
+        rest = tokens[1:]
+        sym = rest.pop() if rest and rest[-1].isalpha() else ''
+        body = '_'.join(rest)
+        pm = ''
+        if len(body) >= 2 and body[-1] in '+-' and body[-2].isdigit():
+            body, pm = body[:-1], body[-1]
+        numbers = _C2H2_SIGNED_INT_RE.findall(body)
+        if len(numbers) == 4 and _C2H2_SIGNED_INT_RE.sub('', body).strip('_') == '':
+            result.extend(numbers)           # v4, v5, l4, l5
         else:
-            result.extend(['', '', ''])
-
-        # Token 4 → S
-        result.append(tokens[4] if 4 < len(tokens) else '')
-
+            # Unrecognised layout: leave v4..l5 unparsed rather than guess.
+            result.extend(['', '', '', ''])
+        result.extend([pm, sym])
         return result
 
     def _fixup_local_tokens(self, tokens: List[str]) -> List[str]:

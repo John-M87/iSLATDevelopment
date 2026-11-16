@@ -54,7 +54,7 @@ def _catalog():
 
 def _row(prop, op, v1='', v2='', **kw):
     state = {'prop': prop, 'op': op, 'v1': v1, 'v2': v2,
-             'modes': 3, 'regex': False, 'enabled': True}
+             'regex': False, 'enabled': True}
     state.update(kw)
     return state
 
@@ -361,10 +361,12 @@ def test_row_state_matches_regex_forces_regex():
     assert cond.op == 'matches' and cond.regex is True
 
 
-def test_row_state_vib_band_carries_modes():
-    cond, _ = row_state_to_condition(
+def test_row_state_vib_band():
+    # A legacy "modes" entry in saved row state is ignored.
+    cond, errors = row_state_to_condition(
         _row('Vib. band', 'is band', 'v1-0', modes=4), _catalog())
-    assert cond.kind == 'vib_band' and cond.value == 'v1-0' and cond.n_modes == 4
+    assert errors == []
+    assert cond == Condition(kind='vib_band', op='band', value='v1-0')
 
 
 def test_row_state_disabled_flag_is_carried():
