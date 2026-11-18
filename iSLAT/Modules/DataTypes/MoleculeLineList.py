@@ -1,3 +1,4 @@
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 import numpy as np
 import time
@@ -21,7 +22,55 @@ from ._pandas_import import get_pandas as _get_pandas
 # Cache version - increment when cache format changes
 # v2: Switched from compressed npz to separate uncompressed npy files for faster loading
 # v3: Added source_format tag and extra_columns support for multi-format readers
-_CACHE_VERSION = 3
+# v4: Lines are stored in wavelength order (ascending or descending) and the
+#     order is recorded in metadata[2], so wavelength ranges are found by
+#     binary search instead of reading every line.  Caches of any other
+#     version are deleted and rebuilt from the source file.
+_CACHE_VERSION = 4
+
+#: Values of a line list's wavelength order (``_lam_order``).
+_LAM_ASCENDING = 1
+_LAM_DESCENDING = -1
+_LAM_UNSORTED = 0
+
+
+def _wavelength_order(lam) -> int:
+    """Return whether *lam* is ascending, descending or unsorted.
+
+    Reads every value, so it is only used when a cache is built and for
+    in-memory lists.  Arrays with NaNs count as unsorted.
+    """
+    lam = np.asarray(lam)
+    if len(lam) < 2:
+        return _LAM_ASCENDING
+    steps = np.diff(lam)
+    if np.all(steps >= 0):
+        return _LAM_ASCENDING
+    if np.all(steps <= 0):
+        return _LAM_DESCENDING
+    return _LAM_UNSORTED
+
+
+def _rows_in_wavelength_range(data, lam_min: float, lam_max: float, order: int):
+    """Return the rows of *data* with ``lam_min <= lam <= lam_max``, in their original order.
+
+    For wavelength-ordered data the bounds are found by binary search over the
+    ``lam`` field, which touches about log2(n) rows, and only that slice is
+    copied, so a memory-mapped cache is read only where the range lies.
+    Unsorted data falls back to a boolean mask over every row.  The result is
+    always a copy, as the mask's was.
+    """
+    lam = data['lam']
+    if order == _LAM_ASCENDING:
+        lo = bisect_left(lam, lam_min)
+        hi = bisect_right(lam, lam_max)
+    elif order == _LAM_DESCENDING:
+        # Negating the key makes the descending column ascending for bisect.
+        lo = bisect_left(lam, -lam_max, key=lambda x: -x)
+        hi = bisect_right(lam, -lam_min, key=lambda x: -x)
+    else:
+        return data[(lam >= lam_min) & (lam <= lam_max)]
+    return np.array(data[lo:max(lo, hi)])
 
 class LineTuple(NamedTuple):
     """Named tuple for line data"""
@@ -73,7 +122,7 @@ class MoleculeLineList(WavelengthRangeMixin):
                  '_g_up_cache', '_g_low_cache', '_data_loaded', '_filename', '_raw_lines_data',
                  '_pandas_df_cache', '_molar_mass', '_wavelength_range', '_filtered_raw_data',
                  '_lev_up_cache', '_lev_low_cache', '_extra_fields', '_source_format',
-                 '_quantum_cache')
+                 '_quantum_cache', '_lam_order')
     
     # Class-level reader registry — populated lazily to avoid circular imports
     _reader_registry: ClassVar[Dict[str, Any]] = {}
@@ -119,6 +168,8 @@ class MoleculeLineList(WavelengthRangeMixin):
         self._filtered_raw_data = None
         self._extra_fields: Dict[str, list] = extra_fields or {}
         self._source_format: Optional[str] = format
+        # Wavelength order of _raw_lines_data (_LAM_* value); None = not yet known.
+        self._lam_order: Optional[int] = None
         
         # Define namedtuple types for data structure
         self._partition_type = namedtuple('partition', ['t', 'q'])
@@ -291,10 +342,45 @@ class MoleculeLineList(WavelengthRangeMixin):
             return self._filtered_raw_data
 
         lam_min, lam_max = self._wavelength_range
-        lam_values = self._raw_lines_data['lam']
-        mask = (lam_values >= lam_min) & (lam_values <= lam_max)
-        self._filtered_raw_data = self._raw_lines_data[mask]
+        self._filtered_raw_data = _rows_in_wavelength_range(
+            self._raw_lines_data, lam_min, lam_max, self._get_lam_order()
+        )
         return self._filtered_raw_data
+
+    def _get_lam_order(self) -> int:
+        """Wavelength order of ``_raw_lines_data``, worked out on first use.
+
+        Line lists loaded from a cache get it from the cache metadata; for
+        lists built in memory it is computed once here.
+        """
+        if self._lam_order is None:
+            raw = self._raw_lines_data
+            self._lam_order = _LAM_UNSORTED if raw is None else _wavelength_order(raw['lam'])
+        return self._lam_order
+
+    def _sort_by_wavelength(self) -> None:
+        """Put the lines in wavelength order, keeping the order when it already is one.
+
+        Line lists that are already ascending or descending (most HITRAN
+        files are sorted by wavenumber, i.e. descending wavelength) keep
+        their order; unsorted ones are stably sorted ascending, with
+        :attr:`extra_fields` reordered to match.  Called before a cache is
+        written so cached lists can be range-searched.
+        """
+        raw = self._raw_lines_data
+        if raw is None:
+            return
+        order = _wavelength_order(raw['lam'])
+        if order == _LAM_UNSORTED and not np.isnan(raw['lam']).any():
+            perm = np.argsort(raw['lam'], kind='stable')
+            self._raw_lines_data = raw[perm]
+            for col, values in list(self._extra_fields.items()):
+                if len(values) == len(perm):
+                    self._extra_fields[col] = [values[i] for i in perm]
+            order = _LAM_ASCENDING
+            self.lines = None
+            self._invalidate_caches()
+        self._lam_order = order
 
     def without_wavelength_range(self) -> "MoleculeLineList":
         """Return this line list with no *wavelength_range* applied.
@@ -312,6 +398,7 @@ class MoleculeLineList(WavelengthRangeMixin):
                                 extra_fields=dict(self._extra_fields))
         full._filename = self._filename
         full._raw_lines_data = self._raw_lines_data
+        full._lam_order = self._lam_order
         full.partition_function = self.partition_function
         full._molar_mass = self._molar_mass
         full.lines = None  # Created on demand
@@ -342,6 +429,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         else:
             self._raw_lines_data = np.empty(0, dtype=_LINE_DTYPE)
         
+        self._lam_order = None  # Worked out on first range query
         self.lines = None  # Will be created on demand
         self._data_loaded = True
         self._invalidate_caches()
@@ -466,13 +554,31 @@ class MoleculeLineList(WavelengthRangeMixin):
             self.lines = None  # Will be created on demand
             self._data_loaded = True
             self._invalidate_caches()
-            
+            self._lam_order = int(metadata[2])
+
             return True
-            
+
         except Exception as e:
             print(f"Failed to load cache: {e}")
             return False
-    
+
+    @staticmethod
+    def _delete_cache(cache_filepath: str) -> None:
+        """Delete an invalid cache directory (old version, stale or unreadable).
+
+        Leftover files such as an old ``extra_columns.npy`` could otherwise
+        survive the rebuild.  Failures (e.g. a file still open on Windows)
+        are reported and ignored; the rebuild then overwrites what it can.
+        """
+        import shutil
+        if not os.path.isdir(cache_filepath):
+            return
+        try:
+            shutil.rmtree(cache_filepath)
+            print(f"[CACHE] Deleted invalid cache: {os.path.basename(cache_filepath)}")
+        except OSError as e:
+            print(f"Failed to delete invalid cache {cache_filepath}: {e}")
+
     def _save_to_cache(self, cache_filepath: str) -> bool:
         """
         Save molecular data to fast binary cache files.
@@ -498,16 +604,17 @@ class MoleculeLineList(WavelengthRangeMixin):
             partition_t = np.array(self.partition_function.t, dtype=np.float64) if self.partition_function else np.array([], dtype=np.float64)
             partition_q = np.array(self.partition_function.q, dtype=np.float64) if self.partition_function else np.array([], dtype=np.float64)
             
-            # Save metadata (version + molar mass)
-            metadata = np.array([_CACHE_VERSION, self._molar_mass if self._molar_mass else 0.0], dtype=np.float64)
-            np.save(os.path.join(cache_filepath, "metadata.npy"), metadata)
-            
             # Save partition function arrays
             np.save(os.path.join(cache_filepath, "partition_t.npy"), partition_t)
             np.save(os.path.join(cache_filepath, "partition_q.npy"), partition_q)
             
-            # Save lines data - the main payload
-            np.save(os.path.join(cache_filepath, "lines.npy"), self._raw_lines_data)
+            # Save lines data - the main payload.  Written to a temporary file
+            # and swapped in, because an existing lines.npy may be memory-mapped
+            # (truncating a mapped file in place can crash the process).
+            lines_file = os.path.join(cache_filepath, "lines.npy")
+            tmp_file = lines_file + ".tmp.npy"
+            np.save(tmp_file, self._raw_lines_data)
+            os.replace(tmp_file, lines_file)
             
             # v3: Save source format tag
             np.save(
@@ -521,6 +628,15 @@ class MoleculeLineList(WavelengthRangeMixin):
                     os.path.join(cache_filepath, "extra_columns.npy"),
                     np.array(self._extra_fields, dtype=object),
                 )
+
+            # Metadata last (version + molar mass + wavelength order): its
+            # mtime is what _is_cache_valid compares, and a cache missing it
+            # is never used, so a half-written cache is rebuilt.
+            metadata = np.array(
+                [_CACHE_VERSION, self._molar_mass if self._molar_mass else 0.0, self._get_lam_order()],
+                dtype=np.float64,
+            )
+            np.save(os.path.join(cache_filepath, "metadata.npy"), metadata)
 
             return True
             
@@ -579,7 +695,14 @@ class MoleculeLineList(WavelengthRangeMixin):
                 section.end()
                 section.get_breakdown(print_output=True)
                 return
-        
+
+        # An existing cache that was not used is invalid (older than the
+        # source, another cache version, or unreadable): delete it so it is
+        # rebuilt from scratch below.  A cache whose source file is missing
+        # is kept, since it cannot be rebuilt now.
+        if os.path.exists(source_filepath):
+            self._delete_cache(cache_filepath)
+
         # --- Cache miss — read via the appropriate reader ---------------------
         section.mark("read_data")
         print(f"[CACHE MISS] Parsing {self.molecule_id} from source file...")
@@ -639,6 +762,8 @@ class MoleculeLineList(WavelengthRangeMixin):
         self.lines = None  # Will be created on demand
         self._data_loaded = True
         self._invalidate_caches()
+        # Wavelength order lets range queries binary-search the cache.
+        self._sort_by_wavelength()
         
         # Save to cache for next time
         section.mark("save_to_cache")
@@ -687,10 +812,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         self._filtered_raw_data = None  # Force re-filter on next access
         self._quantum_cache.clear()
 
-    # ─────────────────────────────────────────────────────────────────
     # Quantum-state access
-    # ─────────────────────────────────────────────────────────────────
-
     @property
     def quantum_schema(self):
         """Return the :class:`~.QuantumStateSchema.QuantumStateSchema` for this molecule.
@@ -905,6 +1027,7 @@ class MoleculeLineList(WavelengthRangeMixin):
                                extra_fields=dict(self._extra_fields))
         new._filename = self._filename
         new._raw_lines_data = self._raw_lines_data
+        new._lam_order = self._lam_order
         new.partition_function = self.partition_function
         new._molar_mass = self._molar_mass
         new.lines = None  # Created on demand
@@ -1079,13 +1202,13 @@ class MoleculeLineList(WavelengthRangeMixin):
         """
         self._ensure_data_loaded()
         
-        # Use structured array boolean mask for efficient filtering
         active_data = self._get_active_raw_data()
         if active_data is not None and len(active_data) > 0:
-            # Boolean mask indexing is O(n) but very fast with numpy
-            lam_values = active_data['lam']
-            mask = (lam_values >= lam_min) & (lam_values <= lam_max)
-            filtered_raw = active_data[mask]
+            # The active rows are a contiguous slice of (or all of) the raw
+            # data, so they keep its wavelength order.
+            filtered_raw = _rows_in_wavelength_range(
+                active_data, lam_min, lam_max, self._get_lam_order()
+            )
             
             # Create MoleculeLine objects from filtered structured array
             from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
