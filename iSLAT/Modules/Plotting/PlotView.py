@@ -1,6 +1,5 @@
 """
 PlotView - abstract interface for switchable plot views in the iSLAT GUI.
-
 The iSLATPlot controller owns one *active_view* at a time.
 
 Every user-facing action (toggle molecule, toggle summed spectrum, toggle legend, …) is forwarded to the active view's implementation, eliminating scattered ``if is_full_spectrum`` checks throughout the codebase.
@@ -25,7 +24,6 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.Molecule import Molecule
 
-
 # ----------------------------------------------------------------------
 # Messages to the user and the save dialog
 # ----------------------------------------------------------------------
@@ -45,7 +43,6 @@ def notify_user(islat: Any, message: str, **kwargs: Any) -> bool:
         debug_config.warning("plot_view", f"Could not write to the data field: {exc}")
         return False
     return True
-
 
 @dataclass(frozen=True)
 class FigurePanel:
@@ -71,7 +68,6 @@ class FigurePanel:
     axes: Tuple[Any, ...] = ()
     key: Any = None
 
-
 def default_save_name(islat: Any, suffix: str, file_format: str) -> str:
     """``"<loaded spectrum>_<suffix>.<format>"``, or ``"<suffix>.<format>"`` when no spectrum file is known."""
     try:
@@ -81,11 +77,9 @@ def default_save_name(islat: Any, suffix: str, file_format: str) -> str:
     name = f"{stem}_{suffix}" if stem else suffix
     return f"{name}.{file_format}"
 
-
 def _file_type_label(file_format: str) -> str:
     """The save dialog's name for *file_format*: ``"PNG files"`` for ``"png"``."""
     return f"{file_format.upper()} files"
-
 
 def _selected_type_variable(label: str) -> Any:
     """A Tk variable holding the dialog's selected file type, starting at *label*.
@@ -102,7 +96,6 @@ def _selected_type_variable(label: str) -> Any:
     except Exception:
         return None
 
-
 def with_format_extension(path: str, file_format: str) -> str:
     """*path* as is when it ends in an extension matplotlib can write, else with ``.<file_format>`` added."""
     from matplotlib.backend_bases import FigureCanvasBase
@@ -110,7 +103,6 @@ def with_format_extension(path: str, file_format: str) -> str:
     if ext and ext in FigureCanvasBase.get_supported_filetypes():
         return path
     return f"{path}.{file_format}"
-
 
 def ask_save_path(
     title: str,
@@ -176,10 +168,15 @@ DEFAULT_WAVELENGTH_MARKER_LABEL_SIDE = "center"
 #: Matplotlib line-style names accepted for marker lines (single marks and range edges).
 WAVELENGTH_MARKER_LINESTYLES = ("solid", "dashed", "dotted", "dashdot")
 DEFAULT_WAVELENGTH_MARKER_LINESTYLE = "dashed"
+#: Marker opacity (0 = invisible, 1 = fully opaque).  It scales the base alphas
+#: below, so the default of 1.0 reproduces the original look; labels stay opaque.
+DEFAULT_WAVELENGTH_MARKER_OPACITY = 1.0
+_SINGLE_LINE_ALPHA = 1.0
+_RANGE_EDGE_ALPHA = 0.8
+_RANGE_FILL_ALPHA = 0.2
 _LINESTYLE_ALIASES = {"-": "solid", "--": "dashed", ":": "dotted", "-.": "dashdot", "dash-dot": "dashdot"}
 #: Gap (points) between a side-placed label and its marker.
 _LABEL_OFFSET_PTS = 3.0
-
 
 def make_wavelength_marker(
     start: float,
@@ -189,6 +186,7 @@ def make_wavelength_marker(
     label_side: Optional[str] = None,
     linestyle: Optional[str] = None,
     label_color: Optional[str] = None,
+    opacity: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Return a validated marker dict.
 
@@ -196,14 +194,15 @@ def make_wavelength_marker(
     ``label_color`` (defaults to ``color``), ``label_side`` (one of
     :data:`WAVELENGTH_MARKER_LABEL_SIDES`) and ``linestyle`` (one of
     :data:`WAVELENGTH_MARKER_LINESTYLES`; ``"-"``, ``"--"``, ``":"`` and
-    ``"-."`` are accepted too).  A single wavelength has ``start == end``;
+    ``"-."`` are accepted too) and ``opacity`` (0-1, default
+    :data:`DEFAULT_WAVELENGTH_MARKER_OPACITY`).  A single wavelength has ``start == end``;
     reversed ranges are swapped.
 
     Raises
     ------
     ValueError
-        If a bound is not a finite number, or a color, the label side or the
-        line style is not recognised.
+        If a bound is not a finite number, the opacity is outside 0-1, or a
+        color, the label side or the line style is not recognised.
     """
     import numpy as np
     from matplotlib.colors import is_color_like
@@ -227,18 +226,20 @@ def make_wavelength_marker(
     linestyle = _LINESTYLE_ALIASES.get(linestyle, linestyle)
     if linestyle not in WAVELENGTH_MARKER_LINESTYLES:
         raise ValueError(f"Line style must be one of: {', '.join(WAVELENGTH_MARKER_LINESTYLES)}.")
+    opacity = DEFAULT_WAVELENGTH_MARKER_OPACITY if opacity is None else float(opacity)
+    if not (np.isfinite(opacity) and 0.0 <= opacity <= 1.0):
+        raise ValueError("Opacity must be between 0 and 1.")
     return {
         "start": start, "end": end, "label": str(label or "").strip(), "color": color,
         "label_color": label_color, "label_side": label_side, "linestyle": linestyle,
+        "opacity": opacity,
     }
-
 
 def clear_wavelength_markers(ax: Any) -> None:
     """Remove every wavelength-marker artist from *ax*."""
     for artist in list(ax.get_children()):
         if hasattr(artist, WAVELENGTH_MARKER_TAG):
             artist.remove()
-
 
 def draw_wavelength_markers(ax: Any, markers: Any) -> None:
     """Draw *markers* on *ax* as vertical lines (single) or shaded bands (ranges).
@@ -261,21 +262,29 @@ def draw_wavelength_markers(ax: Any, markers: Any) -> None:
         linestyle = _LINESTYLE_ALIASES.get(linestyle, linestyle)
         if linestyle not in WAVELENGTH_MARKER_LINESTYLES:
             linestyle = DEFAULT_WAVELENGTH_MARKER_LINESTYLE
+        try:
+            opacity = min(max(float(marker.get("opacity", DEFAULT_WAVELENGTH_MARKER_OPACITY)), 0.0), 1.0)
+        except (TypeError, ValueError):
+            opacity = DEFAULT_WAVELENGTH_MARKER_OPACITY
+        if opacity != opacity:  # NaN
+            opacity = DEFAULT_WAVELENGTH_MARKER_OPACITY
 
         artists = []
         if end > start:
             artists.append(PolyCollection(
                 [[(start, 0.0), (end, 0.0), (end, 1.0), (start, 1.0)]], transform=trans,
-                facecolors=color, edgecolors="none", alpha=0.2, zorder=0.5,
+                facecolors=color, edgecolors="none", alpha=_RANGE_FILL_ALPHA * opacity, zorder=0.5,
             ))
             artists.append(LineCollection(
                 [[(start, 0.0), (start, 1.0)], [(end, 0.0), (end, 1.0)]], transform=trans,
-                colors=color, linestyles=linestyle, linewidths=1.0, alpha=0.8, zorder=2.5,
+                colors=color, linestyles=linestyle, linewidths=1.0,
+                alpha=_RANGE_EDGE_ALPHA * opacity, zorder=2.5,
             ))
         else:
             artists.append(LineCollection(
                 [[(start, 0.0), (start, 1.0)]], transform=trans,
-                colors=color, linestyles=linestyle, linewidths=1.2, zorder=2.5,
+                colors=color, linestyles=linestyle, linewidths=1.2,
+                alpha=_SINGLE_LINE_ALPHA * opacity, zorder=2.5,
             ))
         for artist in artists:
             setattr(artist, WAVELENGTH_MARKER_TAG, True)
@@ -298,7 +307,6 @@ def draw_wavelength_markers(ax: Any, markers: Any) -> None:
             )
             setattr(text, WAVELENGTH_MARKER_TAG, True)
 
-
 class WavelengthMarkerStoreMixin:
     """Wavelength-marker API for an object holding them in ``self.toggle_state``.
 
@@ -307,7 +315,6 @@ class WavelengthMarkerStoreMixin:
     Used by the main plot controller and the Display Full Spectrum window, and
     by the Mark Wavelengths dialog as its *marker store*.
     """
-
     @property
     def wavelength_markers(self) -> list:
         """The user's wavelength markers (``{"start", "end", "label", "color"}`` dicts)."""
@@ -322,15 +329,18 @@ class WavelengthMarkerStoreMixin:
         label_side: Optional[str] = None,
         linestyle: Optional[str] = None,
         label_color: Optional[str] = None,
+        opacity: Optional[float] = None,
     ) -> dict:
         """Mark a wavelength (*end* omitted / equal) or a range on every wavelength plot.
 
         *label_side* is ``"left"``, ``"center"`` or ``"right"`` of the marker;
         *linestyle* is ``"solid"``, ``"dashed"``, ``"dotted"`` or ``"dashdot"``;
-        *label_color* defaults to *color*.
+        *label_color* defaults to *color*; *opacity* (0-1) scales the line / band alpha.
         Raises ``ValueError`` for non-finite bounds or an invalid option.
         """
-        marker = make_wavelength_marker(start, end, label, color, label_side, linestyle, label_color)
+        marker = make_wavelength_marker(
+            start, end, label, color, label_side, linestyle, label_color, opacity
+        )
         self.wavelength_markers.append(marker)
         self.refresh_wavelength_markers()
         return marker
@@ -349,7 +359,6 @@ class WavelengthMarkerStoreMixin:
 
     def refresh_wavelength_markers(self) -> None:  # pragma: no cover - hosts override
         """Redraw the markers wherever they are shown."""
-
 
 def fit_y_limits_to_data(ax: Any, wave: Any, flux: Any) -> Optional[Tuple[float, float]]:
     """Return ``(ymin, ymax)`` fitting *flux* inside *ax*'s current x-range.
@@ -375,7 +384,6 @@ def fit_y_limits_to_data(ax: Any, wave: Any, flux: Any) -> Optional[Tuple[float,
     if not np.isfinite(top) or not np.isfinite(bottom):
         return None
     return (float(bottom), float(top + top / 8))
-
 
 def fit_y_limits_to_model(ax: Any) -> Optional[Tuple[float, float]]:
     """Return ``(ymin, ymax)`` fitting the *drawn model* inside *ax*'s x-range.

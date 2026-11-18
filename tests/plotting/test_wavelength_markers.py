@@ -34,7 +34,11 @@ class TestMakeMarker:
         m = make_wavelength_marker(12.5)
         assert m == {"start": 12.5, "end": 12.5, "label": "", "color": DEFAULT_WAVELENGTH_MARKER_COLOR,
                      "label_color": DEFAULT_WAVELENGTH_MARKER_COLOR,
-                     "label_side": "center", "linestyle": "dashed"}
+                     "label_side": "center", "linestyle": "dashed", "opacity": 1.0}
+
+    def test_opacity_is_stored(self):
+        assert make_wavelength_marker(1.0, opacity=0.4)["opacity"] == pytest.approx(0.4)
+        assert make_wavelength_marker(1.0, opacity=0)["opacity"] == 0.0
 
     def test_label_color_defaults_to_line_color_and_can_differ(self):
         assert make_wavelength_marker(1.0, color="#123456")["label_color"] == "#123456"
@@ -61,6 +65,9 @@ class TestMakeMarker:
         {"start": 1.0, "label_color": "not-a-color"},
         {"start": 1.0, "label_side": "top"},
         {"start": 1.0, "linestyle": "wavy"},
+        {"start": 1.0, "opacity": 1.5},
+        {"start": 1.0, "opacity": -0.1},
+        {"start": 1.0, "opacity": float("nan")},
     ])
     def test_invalid_input_raises(self, kwargs):
         with pytest.raises(ValueError):
@@ -134,6 +141,26 @@ class TestDrawMarkers:
         (line,) = [a for a in _marker_artists(ax) if isinstance(a, LineCollection)]
         assert tuple(line.get_colors()[0]) == to_rgba("red")
         assert to_rgba(_labels(ax)[0].get_color()) == to_rgba("blue")
+
+    def test_opacity_scales_line_band_and_edges_but_not_label(self):
+        ax = Figure().add_subplot(111)
+        draw_wavelength_markers(ax, [dict(SINGLE, label="x", opacity=0.5), dict(RANGE, opacity=0.5)])
+        single, edges = [a for a in _marker_artists(ax) if isinstance(a, LineCollection)]
+        (fill,) = [a for a in _marker_artists(ax)
+                   if isinstance(a, PolyCollection) and not isinstance(a, LineCollection)]
+        assert single.get_alpha() == pytest.approx(0.5)
+        assert edges.get_alpha() == pytest.approx(0.4)
+        assert fill.get_alpha() == pytest.approx(0.1)
+        assert all(t.get_alpha() is None for t in _labels(ax))
+
+    def test_legacy_marker_without_opacity_keeps_original_alphas(self):
+        ax = Figure().add_subplot(111)
+        draw_wavelength_markers(ax, [SINGLE, RANGE, dict(SINGLE, opacity="bad")])
+        single, edges, bad = [a for a in _marker_artists(ax) if isinstance(a, LineCollection)]
+        (fill,) = [a for a in _marker_artists(ax)
+                   if isinstance(a, PolyCollection) and not isinstance(a, LineCollection)]
+        assert (single.get_alpha(), edges.get_alpha(), fill.get_alpha(), bad.get_alpha()) == \
+            pytest.approx((1.0, 0.8, 0.2, 1.0))
 
     def test_label_color_falls_back_to_line_color(self):
         from matplotlib.colors import to_rgba
@@ -266,13 +293,13 @@ class TestController:
         pm = self._controller()
         pm.add_wavelength_marker(6.0)
         pm.add_wavelength_marker(8.0, 7.0, label="b", color="lime", label_side="left", linestyle="dotted",
-                                 label_color="black")
+                                 label_color="black", opacity=0.6)
         assert pm.wavelength_markers == [
             {"start": 6.0, "end": 6.0, "label": "", "color": DEFAULT_WAVELENGTH_MARKER_COLOR,
              "label_color": DEFAULT_WAVELENGTH_MARKER_COLOR,
-             "label_side": "center", "linestyle": "dashed"},
+             "label_side": "center", "linestyle": "dashed", "opacity": 1.0},
             {"start": 7.0, "end": 8.0, "label": "b", "color": "lime", "label_color": "black",
-             "label_side": "left", "linestyle": "dotted"},
+             "label_side": "left", "linestyle": "dotted", "opacity": 0.6},
         ]
         assert pm.active_view.refresh_wavelength_markers.call_count == 2
         pm.remove_wavelength_marker(0)
@@ -364,6 +391,8 @@ class TestKeybinding:
         )
         assert describe(dict(RANGE, label_color="cyan")).startswith("7.00000 \u2013 7.50000 \u03bcm   [band, center]")
         assert "[band, center, #00ff00]" in describe(dict(RANGE, label_color="#00ff00"))
+        assert describe(dict(SINGLE, opacity=1.0)) == "6.00000 \u03bcm   (red, dashed)"
+        assert describe(dict(SINGLE, opacity=0.5)) == "6.00000 \u03bcm   (red, dashed, 50%)"
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +456,7 @@ class TestDialog:
         _find(win, "TButton", "Add Mark").invoke()
         assert pm.wavelength_markers == [
             {"start": 14.2, "end": 14.4, "label": "", "color": "#ff00ff", "label_color": "#ff00ff",
-             "label_side": "center", "linestyle": "dashed"},
+             "label_side": "center", "linestyle": "dashed", "opacity": 1.0},
         ]
         listbox = _find(win, "Listbox")
         assert listbox.size() == 1
@@ -440,7 +469,13 @@ class TestDialog:
         _find(win, "TButton", "Add Mark").invoke()
         assert pm.wavelength_markers[-1]["label_side"] == "right"
         assert pm.wavelength_markers[-1]["linestyle"] == "dotted"
+        assert pm.wavelength_markers[-1]["opacity"] == 1.0
         assert listbox.size() == 2
+
+        _find(win, "TScale").set(35)
+        _find(win, "TButton", "Add Mark").invoke()
+        assert pm.wavelength_markers[-1]["opacity"] == pytest.approx(0.35)
+        assert listbox.get("end").endswith("(#ff00ff, dotted, 35%)")
 
         _find(win, "TButton", "Clear All").invoke()
         assert pm.wavelength_markers == []

@@ -12,7 +12,10 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from matplotlib.colors import to_hex
 
-from iSLAT.Modules.Plotting.PlotView import DEFAULT_WAVELENGTH_MARKER_COLOR
+from iSLAT.Modules.Plotting.PlotView import (
+    DEFAULT_WAVELENGTH_MARKER_COLOR,
+    DEFAULT_WAVELENGTH_MARKER_OPACITY,
+)
 from .GUIFunctions import ColorButton
 
 #: (value, display name) pairs for the dialog's label-position and line-style choices.
@@ -35,7 +38,11 @@ def describe_wavelength_marker(marker: Dict[str, Any]) -> str:
         if label_color and label_color != color:
             details.append(label_color)
         text = f"{where}   [{', '.join(details)}]"
-    return f"{text}   ({color}, {marker.get('linestyle', 'dashed')})"
+    style = [color, marker.get('linestyle', 'dashed')]
+    opacity = marker.get('opacity', DEFAULT_WAVELENGTH_MARKER_OPACITY)
+    if opacity != DEFAULT_WAVELENGTH_MARKER_OPACITY:
+        style.append(f"{opacity:.0%}")
+    return f"{text}   ({', '.join(style)})"
 
 
 def ask_marker_color(parent: Any, title: str, initial: str) -> Optional[str]:
@@ -57,7 +64,7 @@ def open_wavelength_marker_dialog(
     Adds a vertical line (single wavelength) or a shaded band (range), with
     an optional label, label position (left / center / right of the marker),
     line color, independent label color (color pickers, as for molecule
-    colors) and line style.  Lists existing marks so they can be removed.
+    colors), line style and opacity.  Lists existing marks so they can be removed.
 
     *default_window* is ``(mode, lo, hi)`` with mode ``"single"`` or
     ``"range"``; *get_selection* feeds the "Use Selection" button and
@@ -85,6 +92,7 @@ def open_wavelength_marker_dialog(
     linestyle_names = {value: name for value, name in LINESTYLE_CHOICES}
     linestyle_values = {name: value for value, name in LINESTYLE_CHOICES}
     linestyle_var = tk.StringVar(master=win, value=linestyle_names["dashed"])
+    opacity_var = tk.IntVar(master=win, value=int(round(DEFAULT_WAVELENGTH_MARKER_OPACITY * 100)))
     error_var = tk.StringVar(master=win, value="")
 
     row = 0
@@ -187,6 +195,25 @@ def open_wavelength_marker_dialog(
                  ).grid(row=row, column=1, sticky="w", pady=(0, 6))
 
     row += 1
+    ttk.Label(content, text="Opacity:").grid(
+        row=row, column=0, sticky="w", padx=(0, 6), pady=(0, 6)
+    )
+    opacity_frame = ttk.Frame(content)
+    opacity_frame.grid(row=row, column=1, sticky="w", pady=(0, 6))
+    opacity_text = ttk.Label(opacity_frame, width=5, anchor="e")
+
+    def _on_opacity_slide(value):
+        opacity_var.set(int(round(float(value))))
+        opacity_text.configure(text=f"{opacity_var.get()}%")
+
+    opacity_scale = ttk.Scale(opacity_frame, from_=0, to=100, orient="horizontal", length=140,
+                              command=_on_opacity_slide)
+    opacity_scale.set(opacity_var.get())
+    opacity_scale.pack(side="left")
+    opacity_text.pack(side="left", padx=(6, 0))
+    _on_opacity_slide(opacity_var.get())
+
+    row += 1
     ttk.Label(content, textvariable=error_var, foreground="red").grid(
         row=row, column=0, columnspan=2, sticky="w", pady=(0, 6)
     )
@@ -240,6 +267,7 @@ def open_wavelength_marker_dialog(
                 label_color=label_color_var.get(),
                 label_side=label_side_var.get(),
                 linestyle=linestyle_values.get(linestyle_var.get(), linestyle_var.get()),
+                opacity=opacity_var.get() / 100.0,
             )
         except ValueError as exc:
             error_var.set(str(exc))
