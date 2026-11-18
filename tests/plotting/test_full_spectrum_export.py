@@ -439,6 +439,29 @@ class TestOutputFullSpectrum:
         monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: "")
         assert fsv.output_full_spectrum(self._islat(_toggle_state())) is None
 
+    def test_dialog_offers_png_and_svg(self, recorder, monkeypatch, tmp_path):
+        import tkinter.filedialog
+        asked = {}
+
+        def _ask(**kw):
+            asked.update(kw)
+            return str(tmp_path / "out.pdf")
+
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", _ask)
+        fsv.output_full_spectrum(self._islat(_toggle_state()))
+        assert [pattern for _label, pattern in asked["filetypes"]] == ["*.pdf", "*.png", "*.svg"]
+        assert "defaultextension" not in asked          # the selected type decides the extension
+        assert asked["initialfile"] == "spec_full_output"
+
+    @pytest.mark.parametrize("ext, magic", [("png", b"\x89PNG"), ("svg", b"<?xml")])
+    def test_saves_png_and_svg(self, recorder, monkeypatch, tmp_path, ext, magic):
+        import tkinter.filedialog
+        target = tmp_path / f"out.{ext}"
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: str(target))
+        islat = self._islat(_toggle_state(), {"width": 4.0, "panel_height": 1.0})
+        assert fsv.output_full_spectrum(islat) == str(target)
+        assert target.read_bytes().startswith(magic)
+
     def test_uses_the_views_panel_ranges(self, recorder, save_to):
         # Views menu > Panel Ranges... on the Full Spectrum view: one panel per range.
         ranges = [(9.0, 10.0), (5.5, 6.5)]
@@ -752,6 +775,37 @@ class TestOutputFullSpectrumPages:
         monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", lambda **_k: "")
         assert fsv.output_full_spectrum_pages(TestOutputFullSpectrum._islat(_toggle_state()), self.PAGES, 2) is None
         assert recorder == []
+
+    def test_dialog_offers_png_and_svg(self, recorder, monkeypatch, tmp_path):
+        import tkinter.filedialog
+        asked = {}
+
+        def _ask(**kw):
+            asked.update(kw)
+            return str(tmp_path / "pages.pdf")
+
+        monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", _ask)
+        fsv.output_full_spectrum_pages(TestOutputFullSpectrum._islat(_toggle_state()), self.PAGES[:1], 1)
+        assert [pattern for _label, pattern in asked["filetypes"]] == ["*.pdf", "*.png", "*.svg"]
+
+    @pytest.mark.parametrize("ext, magic", [("png", b"\x89PNG"), ("svg", b"<?xml")])
+    def test_png_and_svg_write_one_file_per_page(self, recorder, parameter_files, tmp_path, ext, magic):
+        islat = TestOutputFullSpectrum._islat(_toggle_state(), {"width": 4.0, "panel_height": 1.0})
+        out = tmp_path / f"pages.{ext}"
+        assert fsv.output_full_spectrum_pages(islat, self.PAGES, 2, save_path=str(out)) == str(out)
+        files = [tmp_path / f"pages_page{n}.{ext}" for n in (1, 2, 3)]
+        assert all(f.read_bytes().startswith(magic) for f in files)
+        assert not out.exists()
+        assert parameter_files == [str(out.with_suffix("")) + "_parameters.csv"]
+        message = islat.GUI.data_field.insert_text.call_args.args[0]
+        assert "(3 pages)" in message and str(files[0]) in message and str(files[-1]) in message
+
+    def test_one_png_page_is_the_file_itself(self, recorder, tmp_path):
+        islat = TestOutputFullSpectrum._islat(_toggle_state(), {"width": 4.0, "panel_height": 1.0})
+        out = tmp_path / "page.png"
+        fsv.output_full_spectrum_pages(islat, self.PAGES[:1], 2, save_path=str(out))
+        assert out.read_bytes().startswith(b"\x89PNG")
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["page.png"]
 
     @pytest.mark.parametrize("pages, rows", [([], 2), ([(7.0, 5.0)], 2), (PAGES, "2, 3")])
     def test_invalid_input_raises_before_the_dialog(self, recorder, monkeypatch, pages, rows):

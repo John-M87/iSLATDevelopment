@@ -12,9 +12,10 @@ from abc import ABC, abstractmethod
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_molecule_lines, iter_tagged, set_tagged_visible
+from .FigureClipboard import ClipboardError, copy_figure_to_clipboard
 from .FigureExport import isolated_axes, save_figure_file
 from .PlotDebug import debug_config
 
@@ -81,6 +82,36 @@ def default_save_name(islat: Any, suffix: str, file_format: str) -> str:
     return f"{name}.{file_format}"
 
 
+def _file_type_label(file_format: str) -> str:
+    """The save dialog's name for *file_format*: ``"PNG files"`` for ``"png"``."""
+    return f"{file_format.upper()} files"
+
+
+def _selected_type_variable(label: str) -> Any:
+    """A Tk variable holding the dialog's selected file type, starting at *label*.
+
+    ``None`` when no Tk root exists yet; creating the variable would
+    otherwise open an empty root window.
+    """
+    import tkinter as tk
+    root = getattr(tk, "_default_root", None)
+    if root is None:
+        return None
+    try:
+        return tk.StringVar(master=root, value=label)
+    except Exception:
+        return None
+
+
+def with_format_extension(path: str, file_format: str) -> str:
+    """*path* as is when it ends in an extension matplotlib can write, else with ``.<file_format>`` added."""
+    from matplotlib.backend_bases import FigureCanvasBase
+    ext = Path(path).suffix.lstrip(".").lower()
+    if ext and ext in FigureCanvasBase.get_supported_filetypes():
+        return path
+    return f"{path}.{file_format}"
+
+
 def ask_save_path(
     title: str,
     file_format: str,
@@ -88,27 +119,51 @@ def ask_save_path(
     initialfile: Optional[str] = None,
     initialdir: Optional[str] = None,
     any_file_type: bool = False,
+    formats: Sequence[str] = (),
 ) -> str:
     """Ask for the file to save to with Tk's save dialog; an empty string when cancelled.
 
-    The dialog offers *file_format* (and "All files" with *any_file_type*),
-    suggests *initialfile* and opens in *initialdir* when they are given.
+    The dialog offers *file_format*, then the other *formats* (and "All
+    files" with *any_file_type*), suggests *initialfile* and opens in
+    *initialdir* when they are given.
+
+    With more than one format the "Save as type" choice decides the format:
+    the suggested name has no extension, and a name the user leaves without
+    one gets the extension of the type selected in the dialog.  A name typed
+    with an extension matplotlib can write keeps it.
     """
     from tkinter import filedialog
 
-    filetypes = [(f"{file_format.upper()} files", f"*.{file_format}")]
+    offered = [file_format] + [f for f in formats if f != file_format]
+    filetypes = [(_file_type_label(f), f"*.{f}") for f in offered]
     if any_file_type:
         filetypes.append(("All files", "*.*"))
-    options: Dict[str, Any] = {
-        "title": title,
-        "defaultextension": f".{file_format}",
-        "filetypes": filetypes,
-    }
+    options: Dict[str, Any] = {"title": title, "filetypes": filetypes}
+    selected = None
+    if len(offered) == 1:
+        options["defaultextension"] = f".{file_format}"
+    else:
+        # No default extension: Tk on Windows would add it whatever type is selected.
+        selected = _selected_type_variable(filetypes[0][0])
+        if selected is not None:
+            options["typevariable"] = selected
+        if initialfile and Path(initialfile).suffix.lstrip(".").lower() in offered:
+            initialfile = Path(initialfile).stem
     if initialfile:
         options["initialfile"] = initialfile
     if initialdir:
         options["initialdir"] = initialdir
-    return filedialog.asksaveasfilename(**options)
+    path = filedialog.asksaveasfilename(**options)
+    if not path or len(offered) == 1:
+        return path
+    chosen = file_format
+    if selected is not None:
+        labels = {label: f for f, (label, _pattern) in zip(offered, filetypes)}
+        try:
+            chosen = labels.get(selected.get(), file_format)
+        except Exception:
+            pass
+    return with_format_extension(str(path), chosen)
 
 # ----------------------------------------------------------------------
 # User wavelength markers (Shift+M)
@@ -949,7 +1004,9 @@ class PlotView(ABC):
     SAVE_FILE_SUFFIX: Optional[str] = None
     #: Folder the save dialog opens in (``None``: the dialog's default).
     SAVE_INITIAL_DIR: Optional[str] = None
-    #: Also offer "All files" in the save dialog, besides the requested format.
+    #: Formats the save dialog offers after the requested one; the selected type decides the format.
+    SAVE_FORMATS: Tuple[str, ...] = ("pdf", "png", "svg")
+    #: Also offer "All files" in the save dialog, besides the formats.
     SAVE_ANY_FILE_TYPE: bool = False
     #: Data-field message after a successful save (``{path}`` is replaced), or ``None`` for none.
     SAVE_MESSAGE: Optional[str] = None
@@ -1055,6 +1112,50 @@ class PlotView(ABC):
             self._notify_user(self.SAVE_MESSAGE.format(path=saved))
         return saved
 
+    #: Data-field message after the figure was copied to the clipboard.
+    COPY_MESSAGE: str = "Figure copied to the clipboard."
+
+    def copy_figure_to_clipboard(self, dpi: int | None = None) -> bool:
+        """Copy the view's figure to the clipboard as a PNG image.
+
+        The image is the one :meth:`save_figure` would write
+        (:meth:`_build_export_figure`, export resolution unless *dpi* is
+        given).  The outcome is shown in the data field.  Returns ``True``
+        when the image was copied.
+        """
+        if not self._can_save_figure():
+            return False
+        return self._copy_export(self._build_export_figure, dpi)
+
+    def copy_panel_to_clipboard(self, panel: FigurePanel, dpi: int | None = None) -> bool:
+        """Copy one *panel* of the view (from :meth:`panel_at`) to the clipboard as a PNG image.
+
+        As :meth:`copy_figure_to_clipboard`, with the figure from
+        :meth:`_build_panel_export_figure`.  Returns ``True`` when copied.
+        """
+        return self._copy_export(lambda: self._build_panel_export_figure(panel), dpi)
+
+    def _copy_export(
+        self,
+        build: Callable[[], Tuple[Optional["Figure"], Optional[Callable[[], None]]]],
+        dpi: int | None,
+    ) -> bool:
+        """Copy the figure *build* returns to the clipboard, release it, and report the outcome."""
+        fig, release = build()
+        try:
+            if fig is None:
+                return False
+            copy_figure_to_clipboard(fig, dpi=dpi)
+        except ClipboardError as exc:
+            debug_config.warning("plot_view", f"Copy to clipboard failed: {exc}")
+            self._notify_user(f"Could not copy the figure to the clipboard: {exc}")
+            return False
+        finally:
+            if release is not None:
+                release()
+        self._notify_user(self.COPY_MESSAGE)
+        return True
+
     def panel_at(self, event: Any) -> Optional[FigurePanel]:
         """The panel under the right-click *event* that can be saved on its own, or ``None``.
 
@@ -1117,6 +1218,7 @@ class PlotView(ABC):
             initialfile=initialfile,
             initialdir=self.SAVE_INITIAL_DIR,
             any_file_type=self.SAVE_ANY_FILE_TYPE,
+            formats=self.SAVE_FORMATS,
         )
 
     # ------------------------------------------------------------------
@@ -1143,8 +1245,9 @@ class PlotView(ABC):
     def build_context_menu(self, event: Any, canvas_widget: Any) -> Optional[Any]:
         """Build and return a ``tk.Menu`` for a right-click at *event*.
 
-        The default creates a minimal menu containing only "Save Figure"
-        (and "Save <panel>" when :meth:`panel_at` finds one).  Views that
+        The default creates a minimal menu containing only "Save Figure" and
+        "Copy Figure to Clipboard" (and the same for the panel when
+        :meth:`panel_at` finds one).  Views that
         provide additional items should create their own menu, append items,
         and call :meth:`_append_save_figure_item` with the *event* before
         returning.
@@ -1166,11 +1269,15 @@ class PlotView(ABC):
         return menu
 
     def _append_save_figure_item(self, menu: Any, event: Any = None) -> None:
-        """Append a ``Save Figure…`` command to *menu*, and ``Save <panel>…`` for the panel under *event*.
+        """Append the save and copy commands to *menu*, for the figure and the panel under *event*.
 
-        Both open a file dialog so the user can choose the destination and
-        format: :meth:`save_figure` saves the whole figure, :meth:`save_panel`
-        the panel :meth:`panel_at` finds under the right-click *event*.
+        ``Save Figure…`` / ``Save <panel>…`` open a file dialog so the user
+        can choose the destination and format (:meth:`save_figure`,
+        :meth:`save_panel`); ``Copy Figure to Clipboard`` / ``Copy <panel>
+        to Clipboard`` put the same image on the clipboard as a PNG
+        (:meth:`copy_figure_to_clipboard`, :meth:`copy_panel_to_clipboard`).
+        The panel items appear when :meth:`panel_at` finds one under the
+        right-click *event*.
         """
         if menu.index("end") is not None:  # nothing to separate from in an empty menu
             menu.add_separator()
@@ -1178,6 +1285,10 @@ class PlotView(ABC):
         panel = self.panel_at(event) if event is not None else None
         if panel is not None:
             menu.add_command(label=f"Save {panel.label}…", command=lambda: self.save_panel(panel))
+        menu.add_command(label="Copy Figure to Clipboard", command=self.copy_figure_to_clipboard)
+        if panel is not None:
+            menu.add_command(label=f"Copy {panel.label} to Clipboard",
+                             command=lambda: self.copy_panel_to_clipboard(panel))
 
     def _register_control_fields(self) -> None:
         """Register this view's :class:`ControlField` objects on the :class:`ControlBus`.

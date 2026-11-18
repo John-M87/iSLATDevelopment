@@ -145,6 +145,48 @@ class TestWindow:
         assert win.save_figure(str(path)) == str(path)
         assert path.read_bytes()[:4] == b"\x89PNG"
 
+    def test_context_menu_copies_figure(self, open_window, monkeypatch):
+        import tkinter as tk
+        import iSLAT.Modules.Plotting.FigureClipboard as fc
+        menus = []
+
+        class _Menu:
+            def __init__(self, *a, **k):
+                self.items = []
+                menus.append(self)
+
+            def add_command(self, label=None, command=None, **k):
+                self.items.append((label, command))
+
+            def tk_popup(self, *a):
+                pass
+
+            def grab_release(self):
+                pass
+
+        copied = []
+        monkeypatch.setattr(tk, "Menu", _Menu)
+        monkeypatch.setattr(fc, "copy_figure_to_clipboard", lambda fig, **k: copied.append(fig))
+        data_field = MagicMock()
+        win = open_window(_molecule(), data_field=data_field)
+        win._on_canvas_button_press(SimpleNamespace(button=3))
+        items = dict(menus[-1].items)
+        assert list(items) == ["Save Figure\u2026", "Copy Figure to Clipboard"]
+        assert items["Copy Figure to Clipboard"]() is True
+        assert copied == [win._fig]
+        data_field.insert_text.assert_called_once_with("Figure copied to the clipboard.")
+
+    def test_copy_failure_is_shown(self, open_window, monkeypatch, auto_yes):
+        import iSLAT.Modules.Plotting.FigureClipboard as fc
+
+        def _fail(fig, **k):
+            raise fc.ClipboardError("nope")
+
+        monkeypatch.setattr(fc, "copy_figure_to_clipboard", _fail)
+        win = open_window(_molecule())
+        assert win.copy_figure_to_clipboard() is False
+        auto_yes.messagebox.showerror.assert_called_once()
+
     def test_log_toggles_redraw(self, open_window):
         win = open_window(_molecule())
         win._log_t_var.set(True)

@@ -33,7 +33,8 @@ from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     ConditionError,
     MaskContext,
     _field_valid,
-    vib_band_label,
+    vib_band_label,  # noqa: F401  (re-exported for callers of this module)
+    vib_band_labels,
 )
 from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import (
     _DERIVED_KEYS,
@@ -269,8 +270,8 @@ class LineListColumnSource:
             for col in ("lev_up", "lev_low"):
                 if col not in df.columns:
                     raise ConditionError(f"This line list has no {col!r} column.")
-            return [vib_band_label(up, low)
-                    for up, low in zip(df["lev_up"], df["lev_low"])]
+            return vib_band_labels(df["lev_up"], df["lev_low"],
+                                   row_ctx.species).tolist()
 
         raise ConditionError(f"{spec.label!r} cannot be shown as a column.")
 

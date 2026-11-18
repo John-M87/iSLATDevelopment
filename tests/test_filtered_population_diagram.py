@@ -62,13 +62,13 @@ class _FakePDP:
             self.regenerated += 1
 
     def color_by(self, prop, *, cmap="viridis", vmin=None, vmax=None,
-                 pmin=None, pmax=None, log_scale=False, regenerate=True):
+                 pmin=None, pmax=None, log_scale=False, all_lines=False, regenerate=True):
         # Mirrors PopulationDiagramPlot.color_by exactly; see
         # test_fake_matches_real_color_by_signature.
         self._color_mapping = {'prop': prop, 'cmap': cmap,
                                'vmin': vmin, 'vmax': vmax,
                                'pmin': pmin, 'pmax': pmax,
-                               'log_scale': log_scale}
+                               'log_scale': log_scale, 'all_lines': all_lines}
 
     def clear_color_mapping(self, *, regenerate=True):
         self._color_mapping = None
@@ -182,6 +182,16 @@ class TestStyleTransfer:
         assert dst._color_mapping['pmin'] == 5.0
         assert dst._color_mapping['pmax'] == 95.0
         assert dst._color_mapping['log_scale'] is True
+
+    def test_color_mapping_carries_all_lines(self):
+        """The filtered diagram colors the same lines as the main one."""
+        src = _FakePDP()
+        src.color_by('eu', all_lines=True)
+        dst = _FakePDP()
+        apply_pdp_style(dst, capture_pdp_style(src))
+        assert dst._color_mapping['all_lines'] is True
+        apply_pdp_style(dst, {'_color_mapping': {'prop': 'eu'}})
+        assert dst._color_mapping['all_lines'] is False
 
     def test_absent_cmap_does_not_override_the_default(self):
         dst = _FakePDP()

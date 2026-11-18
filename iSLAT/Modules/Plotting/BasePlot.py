@@ -663,6 +663,13 @@ class BasePlot(ABC):
     ) -> None:
         """Draw atomic line markers on *ax*.
 
+        The labels are left out of the figure layout (``in_layout=False``):
+        they hang from the top of the axes, and without *xr* there is one for
+        every line of the table, most of them far outside the shown x range.
+        Constrained layout would otherwise try to make room for those
+        (failing with "axes sizes collapsed to zero"), and showing or hiding
+        the labels would re-run the layout each time.
+
         Parameters
         ----------
         tag : str, optional
@@ -687,6 +694,7 @@ class BasePlot(ABC):
                 va="top",
                 ha="left",
                 color="tomato",
+                in_layout=False,
             )
             if tag is not None:
                 setattr(line_artist, tag, True)

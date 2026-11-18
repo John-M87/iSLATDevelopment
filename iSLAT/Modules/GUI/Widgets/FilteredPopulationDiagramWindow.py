@@ -165,7 +165,8 @@ def apply_pdp_style(pdp: Any, style: Optional[Dict[str, Any]], *,
         # when set, so None cannot override color_by's own default.
         kwargs = {"vmin": color.get("vmin"), "vmax": color.get("vmax"),
                   "pmin": color.get("pmin"), "pmax": color.get("pmax"),
-                  "log_scale": bool(color.get("log_scale", False))}
+                  "log_scale": bool(color.get("log_scale", False)),
+                  "all_lines": bool(color.get("all_lines", False))}
         if color.get("cmap"):
             kwargs["cmap"] = color["cmap"]
         try:
@@ -450,6 +451,8 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
                          command=self._sync_from_main)
         menu.add_separator()
         menu.add_command(label="Save Figure\u2026", command=self.save_figure)
+        menu.add_command(label="Copy Figure to Clipboard",
+                         command=self.copy_figure_to_clipboard)
         return menu
 
     # ------------------------------------------------------------------
@@ -497,6 +500,30 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
             except Exception:
                 pass
         return str(save_path)
+
+    def copy_figure_to_clipboard(self) -> bool:
+        """Copy the diagram as shown to the clipboard as a PNG image.
+
+        Returns ``True`` when copied; the outcome is shown in the status bar
+        (and the main window's data field on success).
+        """
+        if self._fig is None:
+            return False
+        from iSLAT.Modules.Plotting.FigureClipboard import ClipboardError, copy_figure_to_clipboard
+        try:
+            copy_figure_to_clipboard(self._fig)
+        except ClipboardError as exc:
+            self._status_var.set(f"Could not copy figure: {exc}")
+            return False
+        message = "Figure copied to the clipboard."
+        self._status_var.set(message)
+        data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
+        if data_field is not None:
+            try:
+                data_field.insert_text(message)
+            except Exception:
+                pass
+        return True
 
     def _clear_color_mapping(self) -> None:
         if self._pdp is not None:

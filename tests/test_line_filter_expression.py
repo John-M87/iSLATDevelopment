@@ -30,8 +30,8 @@ from iSLAT.Modules.DataProcessing.LineFilterExpression import (
     validate,
     velocity_separation_kms,
     _parse_vib_band,
-    _vib_perms,
-    _vib_perms_up_to,
+    vib_band_label,
+    vib_band_mask,
 )
 
 
@@ -166,9 +166,17 @@ class TestConditionMasks:
         with pytest.raises(ConditionError, match="not a valid value"):
             condition_mask(df, c, ctx)
 
-    def test_vib_band_mask(self, df, ctx):
-        c = Condition('vib_band', op='band', value='v0', n_modes=1)
-        assert len(df.loc[condition_mask(df, c, ctx)]) == 5
+    def test_vib_band_mask(self, df):
+        # The fixture's single-mode labels ('0|10') are CO-shaped.
+        c = Condition('vib_band', op='band', value='v0')
+        assert len(df.loc[condition_mask(df, c, MaskContext(species='CO'))]) == 5
+
+    def test_vib_band_labels_need_the_schema_modes(self, df, ctx):
+        # Under H2O's three-mode schema '0|10' has no v2/v3: no band at all,
+        # and "not band" does not sweep the unassigned lines in either.
+        for negate in (False, True):
+            c = Condition('vib_band', op='band', value='v0', negate=negate)
+            assert not condition_mask(df, c, ctx).any()
 
     def test_vib_band_bad_spec_raises(self, df, ctx):
         with pytest.raises(ConditionError, match="Cannot parse vibrational band"):
@@ -694,7 +702,7 @@ class TestSerialization:
             Condition('quantum_label', op='contains', value='0|', regex=True),
             Condition('quantum_field', field='J', op='eq', value=5,
                       state='lower'),
-            Condition('vib_band', op='band', value='v1-0', n_modes=4),
+            Condition('vib_band', op='band', value='v1-0'),
             Condition('species', op='in', value=('H2O', 'CO'), enabled=False),
         ), join='OR', label='mixed'),), join='OR')
         assert FilterExpression.from_dict(e.to_dict()) == e
@@ -723,8 +731,13 @@ class TestSerialization:
         e = FilterExpression.from_dict({'groups': [{'conditions': [
             {'kind': 'range', 'field': 'lam', 'op': 'ge', 'min_val': 1.0}]}]})
         c = e.groups[0].conditions[0]
-        assert (c.state, c.n_modes, c.regex, c.negate, c.enabled) == \
-            ('upper', 3, False, False, True)
+        assert (c.state, c.regex, c.negate, c.enabled) == \
+            ('upper', False, False, True)
+
+    def test_from_dict_ignores_legacy_n_modes(self):
+        e = FilterExpression.from_dict({'groups': [{'conditions': [
+            {'kind': 'vib_band', 'value': 'v1', 'n_modes': 4}]}]})
+        assert e.groups[0].conditions[0] == Condition('vib_band', value='v1')
 
     def test_from_dict_unknown_kind_raises(self):
         with pytest.raises(ConditionError, match="Unknown condition kind"):
@@ -860,10 +873,55 @@ class TestVibHelpersRelocated:
             _parse_vib_band as from_maker)
         assert from_maker is _parse_vib_band
 
-    def test_vib_perms_unchanged(self):
-        assert _vib_perms(1, 1) == {'1'}
-        assert _vib_perms_up_to(1, 1) == {'0', '1'}
-        assert _parse_vib_band('v1-0', 1) == ({'1'}, {'0'})
+    def test_parse_vib_band(self):
+        assert _parse_vib_band('v1-0') == (1, 0)
+        assert _parse_vib_band('2-1') == (2, 1)
+        assert _parse_vib_band('V1') == (1, None)
+        for bad in ('', 'v', 'v1-0-0', 'wat'):
+            with pytest.raises(ValueError):
+                _parse_vib_band(bad)
+
+
+class TestVibBandSchemaModes:
+    """Levels come from each species' quantum schema, not raw label tokens."""
+
+    @pytest.mark.parametrize('species, up, low, band', [
+        # C2H2: packed v1v2v3, then v4 v5, l4/l5 with a +/- tag, u/g parity.
+        ('C2H2', '000_1_1_1-1+_u|', '000_2_0_2_0_g|P_39e', 'v1-2'),
+        ('C2H2', '000_0_1_0_1_u|', '000_1_0_1_0_g|P_45e', 'v1-1'),
+        ('C2H2', '200_0_1_0_1_u|', '000_2_0_0_0+_g|Q_17e', 'v2-2'),
+        # HCN: l2 is an angular momentum, not a mode.
+        ('HCN', '0_1_1_0|', '0_0_0_0|R_3e', 'v1-0'),
+        # CO2: the merged v3/ranking token "03" means v3=0, r=3.
+        ('CO2', '2_1_1_03|', '0_1_1_11|P_29f', 'v2-1'),
+        # CH4: the n/C symmetry tokens are not modes.
+        ('CH4', '0_0_0_1_1F2|11F2_2', '0_0_0_0_1A1|10F1_7', 'v1-0'),
+        ('CO', '4|', '3|R_2', 'v4-3'),
+        ('H2O', '0_2_0|3_1_2', '1_0_0|2_0_2', 'v2-1'),
+        ('H2O', '-2-2-2|1_0_1', '0_0_0|0_0_0', ''),   # unassigned upper level
+        (None, '0_1_0|5', '0_0_0|4', 'v1-0'),         # generic fallback
+        (None, '000_1_1_1-1+_u|', '000_2_0_2_0_g|P', ''),
+    ])
+    def test_band_label(self, species, up, low, band):
+        assert vib_band_label(up, low, species) == band
+
+    def test_c2h2_band_filter_matches_its_labels(self):
+        df = pd.DataFrame({
+            'lev_up': ['000_1_1_1-1+_u|', '000_0_1_0_1_u|', '000_0_1_0_1_u|',
+                       '200_0_1_0_1_u|'],
+            'lev_low': ['000_2_0_2_0_g|P_39e', '000_1_0_1_0_g|P_45e',
+                        '000_0_0_0_0+_g|R_3e', '000_2_0_0_0+_g|Q_17e'],
+        })
+        ctx = MaskContext(species='C2H2')
+        def band(spec):
+            return condition_mask(
+                df, Condition('vib_band', value=spec), ctx).tolist()
+        assert band('v1') == [False, True, True, False]
+        assert band('v1-0') == [False, False, True, False]
+        assert band('v1-2') == [True, False, False, False]
+        assert band('v2-2') == [False, False, False, True]
+        assert vib_band_mask(df['lev_up'], df['lev_low'], 'v1',
+                             'C2H2').tolist() == band('v1')
 
 
 # ============================================================================

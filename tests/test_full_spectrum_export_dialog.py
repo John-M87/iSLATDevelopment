@@ -114,7 +114,7 @@ class TestMultiPageSection:
     def test_export_parses_pages_and_rows(self, open_dialog, exports):
         dialog, pm = open_dialog()
         _enter(dialog, "DATASTART 7\n7 - 9\n9 to DATAEND", "3, 4, 5")
-        _button(dialog, "Export Multi-page PDF...").invoke()
+        _button(dialog, "Export Pages...").invoke()
         assert not dialog.winfo_exists()
         ((_islat, pages, rows),) = exports
         assert pages == [(5.0, 7.0), (7.0, 9.0), (9.0, 11.0)]
@@ -130,9 +130,9 @@ class TestMultiPageSection:
     def test_invalid_entries_are_reported_and_nothing_exported(self, open_dialog, exports, pages, rows):
         dialog, _pm = open_dialog()
         _enter(dialog, pages, rows)
-        _button(dialog, "Export Multi-page PDF...").invoke()
+        _button(dialog, "Export Pages...").invoke()
         assert dialog.winfo_exists()
-        assert _status(dialog).startswith("Multi-page PDF:")
+        assert _status(dialog).startswith("Multi-page export:")
         assert exports == []
 
     def test_entries_are_remembered_for_the_next_opening(self, open_dialog):

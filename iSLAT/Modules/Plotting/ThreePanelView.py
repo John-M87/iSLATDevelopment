@@ -38,6 +38,24 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataProcessing.LineIdentity import LineRef
 
 import iSLAT.Constants as c
+
+
+def _rest_frame_wave_data(islat: Any, mol_dict: "MoleculeDict", wave_data_obs: Any) -> Any:
+    """The rest-frame wavelengths for the display, reusing ``islat.wave_data`` when its values are unchanged.
+
+    ``apply_stellar_rv`` returns a new array on every call when the stellar
+    RV is non-zero.  The other views compare ``islat.wave_data`` by identity
+    to decide whether their last frame is still current, so a new but equal
+    array would make every one of them redraw when it is shown again.
+    """
+    wave_data = mol_dict.apply_stellar_rv(wave_data_obs)
+    current = getattr(islat, "wave_data", None)
+    if (current is not None and current is not wave_data
+            and isinstance(current, np.ndarray) and isinstance(wave_data, np.ndarray)
+            and current.dtype == wave_data.dtype
+            and np.array_equal(current, wave_data)):
+        return current
+    return wave_data
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 #from iSLAT.Modules.DataProcessing.LineAnalyzer import LineAnalyzer
 from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral, opacity_integral
@@ -277,7 +295,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
 
         mol_dict = islat.molecules_dict
         wave_data_obs = islat.wave_data_original
-        wave_data = mol_dict.apply_stellar_rv(wave_data_obs)
+        wave_data = _rest_frame_wave_data(islat, mol_dict, wave_data_obs)
         islat.wave_data = wave_data
 
         grid = self._ensure_grid()
@@ -328,7 +346,7 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
         wave_data_obs = islat.wave_data_original
 
         # RV-corrected (rest-frame) wavelengths for the display x-axis.
-        wave_data = mol_dict.apply_stellar_rv(wave_data_obs)
+        wave_data = _rest_frame_wave_data(islat, mol_dict, wave_data_obs)
         islat.wave_data = wave_data
 
         # Push data into the grid and re-render all three panels.

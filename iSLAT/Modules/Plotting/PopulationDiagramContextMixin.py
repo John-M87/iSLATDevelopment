@@ -685,6 +685,8 @@ def parse_plot_settings(values: Mapping[str, Any],
             "pmin": None if pmin is None else max(0.0, min(100.0, pmin)),
             "pmax": None if pmax is None else max(0.0, min(100.0, pmax)),
             "log_scale": bool(values.get("color_log", False)),
+            # The form has no field for this (yet): the GUI colors the valid lines only.
+            "all_lines": bool(values.get("color_all_lines", False)),
         }
 
     shape_prop = _prop("shape_prop", "Marker shape", True)
@@ -722,6 +724,7 @@ def apply_plot_settings(pdp: Any, settings: Mapping[str, Any], *,
             vmin=color.get("vmin"), vmax=color.get("vmax"),
             pmin=color.get("pmin"), pmax=color.get("pmax"),
             log_scale=bool(color.get("log_scale", False)),
+            all_lines=bool(color.get("all_lines", False)),
             regenerate=False,
         )
     else:

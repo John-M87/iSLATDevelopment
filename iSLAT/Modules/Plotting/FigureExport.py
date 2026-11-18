@@ -5,7 +5,8 @@ Every save path in the plotting package (the views' *Save Figure*, the
 full-spectrum PDF export and :meth:`BasePlot.save`) goes through
 :func:`save_figure_file`, so they share one rule for the resolution, the
 file format and rasterizing.  :func:`save_figures_to_pdf` writes several
-figures as the pages of one PDF with the same rules.
+figures as the pages of one PDF with the same rules, and
+:func:`save_figure_pages` as one PDF or one PNG / SVG / ... file per page.
 :func:`isolated_axes` shows only some axes of a figure for a save, so one
 panel of a composite figure can be written on its own.
 """
@@ -126,6 +127,69 @@ def save_figures_to_pdf(
         if close is not None:
             close()
     return pages
+
+
+def page_file_path(path: Union[str, Path], page: int, page_count: int) -> str:
+    """Where page *page* (1-based) of *page_count* goes when each page is its own file.
+
+    ``"out.png"`` gives ``"out_page1.png"``, ...; the numbers are padded to
+    the same width (``out_page01.png`` ... ``out_page12.png``) so the files
+    sort in page order.  A single page keeps *path* as it is.
+    """
+    if page_count <= 1:
+        return str(path)
+    p = Path(str(path))
+    width = len(str(max(int(page_count), 1)))
+    return str(p.with_name(f"{p.stem}_page{page:0{width}d}{p.suffix}"))
+
+
+def save_figure_pages(
+    figures: Iterable["Figure"],
+    path: Union[str, Path],
+    page_count: int,
+    *,
+    file_format: str = "pdf",
+    dpi: Optional[int] = None,
+    rasterized: bool = False,
+    bbox_inches: Any = "tight",
+    **savefig_kwargs: Any,
+) -> List[str]:
+    """Write *page_count* *figures* as pages: one PDF, or one file per page in other formats.
+
+    The format is *path*'s extension when matplotlib can write it, else
+    *file_format* (see :func:`export_format`).  A PDF holds every page
+    (:func:`save_figures_to_pdf`); PNG, SVG, ... cannot, so page *n* goes to
+    :func:`page_file_path` (``<name>_page<n>.<ext>``; one page goes to *path*).  *figures* may be a
+    generator, as for :func:`save_figures_to_pdf`.  If a page fails, the
+    files written so far are removed and the error raised.
+
+    Returns the files written: ``[path]`` for a PDF, else one per page.
+    """
+    fmt = export_format(path, file_format) or "pdf"
+    if fmt == "pdf":
+        save_figures_to_pdf(figures, path, dpi=dpi, rasterized=rasterized,
+                            bbox_inches=bbox_inches, **savefig_kwargs)
+        return [str(path)]
+    written: List[str] = []
+    iterator = iter(figures)
+    try:
+        for number, fig in enumerate(iterator, start=1):
+            target = page_file_path(path, number, page_count)
+            written.append(target)   # before the save, so a partly written file is removed too
+            save_figure_file(fig, target, dpi=dpi, rasterized=rasterized,
+                             bbox_inches=bbox_inches, format=fmt, **savefig_kwargs)
+    except BaseException:
+        for target in written:
+            try:
+                Path(target).unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            close()
+    return written
 
 
 @contextmanager

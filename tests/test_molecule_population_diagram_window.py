@@ -210,7 +210,7 @@ class TestSaveFigure:
         monkeypatch.setattr(tkinter.filedialog, "asksaveasfilename", _ask)
         data_field = MagicMock()
         win = open_window(_co(), islat=SimpleNamespace(GUI=SimpleNamespace(data_field=data_field)))
-        assert self._labels(win)[-1] == "Save Figure\u2026"
+        assert self._labels(win)[-2:] == ["Save Figure\u2026", "Copy Figure to Clipboard"]
         assert win.save_figure() == str(target)
         assert target.read_bytes().startswith(magic)
         assert seen["initialfile"] == "CO_population_diagram.pdf"
@@ -237,5 +237,29 @@ class TestSaveFigure:
             assert win._default_figure_name() == "H2O_population_diagram_filtered"
             out = tmp_path / "f.png"
             assert win.save_figure(str(out)) == str(out) and out.exists()
+        finally:
+            win.close()
+
+    def test_filtered_window_copies_to_clipboard(self, tk_root, monkeypatch):
+        import iSLAT.Modules.Plotting.FigureClipboard as fc
+        from iSLAT.Modules.GUI.Widgets.FilteredPopulationDiagramWindow import (
+            FilteredPopulationDiagramWindow,
+        )
+        copied = []
+        monkeypatch.setattr(fc, "copy_figure_to_clipboard", lambda fig, **k: copied.append(fig))
+        win = FilteredPopulationDiagramWindow(tk_root, SimpleNamespace(name="H2O"))
+        win.withdraw()
+        try:
+            assert "Copy Figure to Clipboard" in self._labels(win)
+            assert win.copy_figure_to_clipboard() is True
+            assert copied == [win._fig]
+            assert win._status_var.get() == "Figure copied to the clipboard."
+
+            def _fail(fig, **k):
+                raise fc.ClipboardError("nope")
+
+            monkeypatch.setattr(fc, "copy_figure_to_clipboard", _fail)
+            assert win.copy_figure_to_clipboard() is False
+            assert win._status_var.get() == "Could not copy figure: nope"
         finally:
             win.close()

@@ -131,8 +131,8 @@ def test_vib_band_column_matches_band_filter():
     for row, band in enumerate(values['vib_band']):
         if not band:
             continue
-        mask = condition_mask(df, Condition('vib_band', op='band', value=band,
-                                            n_modes=3), ctx)
+        mask = condition_mask(df, Condition('vib_band', op='band', value=band),
+                              ctx)
         assert bool(mask.iloc[row])
 
 

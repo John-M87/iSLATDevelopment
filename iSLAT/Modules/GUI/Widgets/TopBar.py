@@ -1748,7 +1748,8 @@ class TopBar(ResizableFrame):
 
         Sets the exported figure width and per-panel height (inches), the
         font sizes (points) of the tick labels, axis labels, legend and
-        annotations, and exports multi-page PDFs: one page per wavelength
+        annotations, and exports multi-page figures (one PDF, or one PNG / SVG
+        per page): one page per wavelength
         range (one ``start end`` per line, as in the Display Full Spectrum
         window's *Ranges* dialog), each split into the given number of rows.
         Blank size and font fields use the defaults.  The values are
@@ -1816,22 +1817,23 @@ class TopBar(ResizableFrame):
         tk.Label(
             win,
             text=("Figure height = panel height \u00d7 number of panels.\n"
-                  "Used by Output Full Spectrum, the multi-page PDF below and\n"
+                  "Used by Output Full Spectrum, the multi-page export below and\n"
                   "the Full Spectrum view's Save Figure; remembered for this session.\n"
                   "The figures show what the Full Spectrum view shows: its residual\n"
                   "panels or stacked sample spectra, and its display options."),
             justify="left", fg="gray",
         ).grid(row=3, column=0, columnspan=3, sticky="w", **pad)
 
-        # --- Multi-page PDF: one page per wavelength range ---------------
-        pages_frame = ttk.LabelFrame(win, text="Multi-page PDF")
+        # --- Multi-page export: one page per wavelength range ------------
+        pages_frame = ttk.LabelFrame(win, text="Multi-page Export")
         pages_frame.grid(row=4, column=0, columnspan=3, sticky="ew", **pad)
         tk.Label(
             pages_frame,
             text=("One page per line: start end (um), as in the Display Full\n"
                   "Spectrum window's Ranges dialog. "
                   f"{DATA_START_KEYWORD} / {DATA_END_KEYWORD} = first /\n"
-                  "last observed data point. Each page is split into rows."),
+                  "last observed data point. Each page is split into rows.\n"
+                  "PDF: one file; PNG / SVG: one file per page (name_page1.png, ...)."),
             justify="left", fg="gray",
         ).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
         pages_text = tk.Text(pages_frame, width=34, height=6, undo=True)
@@ -1881,7 +1883,7 @@ class TopBar(ResizableFrame):
                     parse_panel_ranges(_pages_entry(), *observed_wavelength_bounds(self.islat)))
                 rows = rows_per_page_list(rows_var.get(), len(pages))
             except ValueError as exc:
-                status.config(text=f"Multi-page PDF: {exc}")
+                status.config(text=f"Multi-page export: {exc}")
                 return
             win.destroy()
             output_full_spectrum_pages(self.islat, pages, rows)
@@ -1896,7 +1898,7 @@ class TopBar(ResizableFrame):
             rows_var.set(default_rows)
             status.config(text="")
 
-        ttk.Button(pages_frame, text="Export Multi-page PDF...", command=_export_pages).grid(
+        ttk.Button(pages_frame, text="Export Pages...", command=_export_pages).grid(
             row=3, column=0, columnspan=3, sticky="w", **pad)
 
         btns = tk.Frame(win)
