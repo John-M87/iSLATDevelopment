@@ -713,7 +713,7 @@ class TestFullRangeCache(_IntensityTestBase):
         np.testing.assert_array_equal(inten.build_table(full_range=True)["intens"].to_numpy(), expected)
 
     def test_level_labels_converted_once_per_line_array(self):
-        """The U64 level labels become pandas strings once; tables stay equal and independent."""
+        """The byte-string level labels become pandas strings once; tables stay equal and independent."""
         import pandas as pd
         inten = self._intensity()
         first = inten.build_table()
@@ -723,11 +723,11 @@ class TestFullRangeCache(_IntensityTestBase):
         assert inten._table_strings["active"] is cached
         pd.testing.assert_series_equal(first["lev_up"], second["lev_up"])
         raw = inten.molecule._get_active_raw_data()
-        assert list(second["lev_up"]) == [str(v) for v in raw["lev_up"]]
-        assert list(second["lev_low"]) == [str(v) for v in raw["lev_low"]]
+        assert list(second["lev_up"]) == [v.decode() for v in raw["lev_up"]]
+        assert list(second["lev_low"]) == [v.decode() for v in raw["lev_low"]]
         # editing a returned table does not reach the cache
         second.loc[0, "lev_up"] = "edited"
-        assert inten.build_table()["lev_up"].iloc[0] == str(raw["lev_up"][0])
+        assert inten.build_table()["lev_up"].iloc[0] == raw["lev_up"][0].decode()
 
     def test_level_labels_follow_a_new_line_array(self):
         inten = self._intensity()

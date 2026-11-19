@@ -94,7 +94,7 @@ class TestMoleculeLineList:
         """Lines carry Python int / str / float values, as the per-field conversion gave them."""
         raw = molecule_line_list._get_active_raw_data()
         expected = [
-            dict(nr=int(r['nr']), lev_up=str(r['lev_up']), lev_low=str(r['lev_low']),
+            dict(nr=int(r['nr']), lev_up=r['lev_up'].decode(), lev_low=r['lev_low'].decode(),
                  lam=float(r['lam']), freq=float(r['freq']), a_stein=float(r['a_stein']),
                  e_up=float(r['e_up']), e_low=float(r['e_low']),
                  g_up=int(r['g_up']), g_low=int(r['g_low']))

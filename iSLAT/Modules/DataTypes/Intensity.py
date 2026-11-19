@@ -1186,8 +1186,8 @@ class Intensity(WavelengthRangeMixin):
     def _level_strings(self, pd, raw, kind: str) -> tuple:
         """``raw['lev_up']`` and ``raw['lev_low']`` as pandas string arrays, converted once per line array.
 
-        Converting the two fixed-width (U64) label columns was most of the
-        cost of each table build, and they do not depend on the parameters.
+        Converting the two fixed-width label columns (byte strings, decoded
+        here) was most of the cost of each table build, and they do not depend on the parameters.
         One entry is kept per *kind* (``"full"`` / ``"active"``), so a
         replaced line array (e.g. a new wavelength range) is not kept alive.
         ``pd.DataFrame`` copies dict inputs, so tables never share the cached
@@ -1196,7 +1196,9 @@ class Intensity(WavelengthRangeMixin):
         entry = self._table_strings.get(kind)
         if entry is not None and entry[0] is raw:
             return entry[1], entry[2]
-        labels = pd.DataFrame({'lev_up': raw['lev_up'], 'lev_low': raw['lev_low']})
+        from .MoleculeLineList import _decode_labels
+        labels = pd.DataFrame({'lev_up': _decode_labels(raw['lev_up']),
+                               'lev_low': _decode_labels(raw['lev_low'])})
         lev_up, lev_low = labels['lev_up'].array, labels['lev_low'].array
         self._table_strings[kind] = (raw, lev_up, lev_low)
         return lev_up, lev_low

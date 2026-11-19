@@ -26,7 +26,9 @@ from ._pandas_import import get_pandas as _get_pandas
 #     order is recorded in metadata[2], so wavelength ranges are found by
 #     binary search instead of reading every line.  Caches of any other
 #     version are deleted and rebuilt from the source file.
-_CACHE_VERSION = 4
+# v5: Level labels stored as byte strings (S30) instead of U64: rows shrink
+#     from 564 to 112 bytes.
+_CACHE_VERSION = 5
 
 #: Values of a line list's wavelength order (``_lam_order``).
 _LAM_ASCENDING = 1
@@ -96,19 +98,117 @@ class LineTuple(NamedTuple):
     '''Lower state degeneracy'''
 
 # Structured array dtype for efficient line data storage
-# Note: lev_up and lev_low are quantum state labels (strings like '0_0_0|10_2_9')
-_LINE_DTYPE = np.dtype([
-    ('nr', np.int32),
-    ('lev_up', 'U64'),  # Unicode string up to 64 chars for quantum state labels
-    ('lev_low', 'U64'), # Unicode string up to 64 chars for quantum state labels
-    ('lam', np.float64),
-    ('freq', np.float64),
-    ('a_stein', np.float64),
-    ('e_up', np.float64),
-    ('e_low', np.float64),
-    ('g_up', np.int32),
-    ('g_low', np.int32)
-])
+# Note: lev_up and lev_low are quantum state labels (strings like '0_0_0|10_2_9').
+# They are stored as byte strings: UTF-8 text, 1 byte per ASCII character,
+# where NumPy's Unicode strings take 4.  The .par format allows 30 characters;
+# a list whose labels are longer (e.g. from a CSV) gets wider label fields
+# (see _line_dtype), so nothing is truncated.  Labels are decoded back to str
+# wherever they leave MoleculeLineList (see _decode_labels).
+_LABEL_FIELDS = ('lev_up', 'lev_low')
+_LABEL_WIDTH = 30
+
+
+def _line_dtype(label_width: int = _LABEL_WIDTH) -> np.dtype:
+    """Structured dtype of the line array, with *label_width*-byte level labels."""
+    return np.dtype([
+        ('nr', np.int32),
+        ('lev_up', f'S{label_width}'),
+        ('lev_low', f'S{label_width}'),
+        ('lam', np.float64),
+        ('freq', np.float64),
+        ('a_stein', np.float64),
+        ('e_up', np.float64),
+        ('e_low', np.float64),
+        ('g_up', np.int32),
+        ('g_low', np.int32)
+    ])
+
+
+_LINE_DTYPE = _line_dtype()
+
+#: Numeric fields of the line array and the default for a missing value.
+_NUMERIC_DEFAULTS = (('nr', 0), ('lam', 0.0), ('freq', 0.0), ('a_stein', 0.0),
+                     ('e_up', 0.0), ('e_low', 0.0), ('g_up', 0), ('g_low', 0))
+
+
+def _encode_labels(labels: List[str]) -> np.ndarray:
+    """Encode label strings as a byte-string array at least ``_LABEL_WIDTH`` wide.
+
+    ASCII labels (all HITRAN / ExoMol .par labels) are converted in one
+    vectorised step; anything else is UTF-8 encoded.  The width grows to the
+    longest label, so no label is truncated.
+    """
+    text = np.array(labels, dtype=str)
+    width = max(_LABEL_WIDTH, text.dtype.itemsize // 4)
+    try:
+        return text.astype(f'S{width}')
+    except UnicodeEncodeError:
+        encoded = np.char.encode(text, 'utf-8')
+        return encoded.astype(f'S{max(_LABEL_WIDTH, encoded.dtype.itemsize)}')
+
+
+def _decode_labels(labels) -> np.ndarray:
+    """Return a label column as a ``str`` array, sized to its longest label.
+
+    Byte-string columns are decoded (ASCII in one vectorised step, UTF-8
+    otherwise); ``str`` / object arrays are returned unchanged.
+    """
+    labels = np.asarray(labels)
+    if labels.dtype.kind != 'S':
+        return labels
+    width = int(np.strings.str_len(labels).max()) if labels.size else 0
+    try:
+        return labels.astype(f'U{max(width, 1)}')
+    except UnicodeDecodeError:
+        return np.char.decode(labels, 'utf-8')
+
+
+def _label_str(value) -> str:
+    """One label (bytes from the line array, or str) as ``str``."""
+    return value.decode('utf-8') if isinstance(value, bytes) else str(value)
+
+
+def _with_str_labels(data: np.ndarray) -> np.ndarray:
+    """Copy of the structured line array *data* with ``str`` level labels.
+
+    Used where whole rows leave the class (``tolist()``, DataFrames), so
+    callers see ``str`` labels as before.
+    """
+    if not any(data.dtype[name].kind == 'S' for name in _LABEL_FIELDS if name in data.dtype.names):
+        return data
+    decoded = {name: _decode_labels(data[name]) for name in _LABEL_FIELDS if name in data.dtype.names}
+    out = np.empty(len(data), dtype=[(name, decoded[name].dtype if name in decoded else data.dtype[name])
+                                     for name in data.dtype.names])
+    for name in data.dtype.names:
+        out[name] = decoded.get(name, data[name])
+    return out
+
+
+def _build_line_array(lines_data: List[dict]) -> np.ndarray:
+    """Structured line array from a list of line dicts (missing keys get defaults)."""
+    if not lines_data:
+        return np.empty(0, dtype=_LINE_DTYPE)
+    lev_up = _encode_labels([str(d.get('lev_up', '')) for d in lines_data])
+    lev_low = _encode_labels([str(d.get('lev_low', '')) for d in lines_data])
+    width = max(lev_up.dtype.itemsize, lev_low.dtype.itemsize)
+    data = np.empty(len(lines_data), dtype=_line_dtype(width))
+    data['lev_up'] = lev_up
+    data['lev_low'] = lev_low
+    for name, default in _NUMERIC_DEFAULTS:
+        data[name] = [d.get(name, default) for d in lines_data]
+    return data
+
+
+def _make_line_objects(molecule_id, data: np.ndarray) -> list:
+    """``MoleculeLine`` objects for the rows of the structured line array *data*.
+
+    ``tolist()`` turns each record into a tuple of Python int / str / float
+    in C (labels decoded first), ~3x faster than converting field by field.
+    """
+    from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
+    names = data.dtype.names
+    return [MoleculeLine(molecule_id, dict(zip(names, row)))
+            for row in _with_str_labels(data).tolist()]
 
 from ._mixins import WavelengthRangeMixin
 
@@ -408,26 +508,7 @@ class MoleculeLineList(WavelengthRangeMixin):
     def _load_from_data(self, lines_data: List[dict]):
         """Load from provided line data with optimized batch processing."""
         # Convert list of dicts to structured numpy array for fast column access
-        if lines_data:
-            n_lines = len(lines_data)
-            self._raw_lines_data = np.empty(n_lines, dtype=_LINE_DTYPE)
-            
-            # Fill structured array from list of dicts
-            for i, d in enumerate(lines_data):
-                self._raw_lines_data[i] = (
-                    d.get('nr', 0),
-                    str(d.get('lev_up', '')),
-                    str(d.get('lev_low', '')),
-                    d.get('lam', 0.0),
-                    d.get('freq', 0.0),
-                    d.get('a_stein', 0.0),
-                    d.get('e_up', 0.0),
-                    d.get('e_low', 0.0),
-                    d.get('g_up', 0),
-                    d.get('g_low', 0)
-                )
-        else:
-            self._raw_lines_data = np.empty(0, dtype=_LINE_DTYPE)
+        self._raw_lines_data = _build_line_array(lines_data)
         
         self._lam_order = None  # Worked out on first range query
         self.lines = None  # Will be created on demand
@@ -738,26 +819,7 @@ class MoleculeLineList(WavelengthRangeMixin):
 
         # Convert list of dicts to structured numpy array for fast column access
         section.mark("convert_to_structured_array")
-        if lines_data:
-            n_lines = len(lines_data)
-            self._raw_lines_data = np.empty(n_lines, dtype=_LINE_DTYPE)
-            
-            # Fill structured array from list of dicts
-            for i, d in enumerate(lines_data):
-                self._raw_lines_data[i] = (
-                    d.get('nr', 0),
-                    str(d.get('lev_up', '')),
-                    str(d.get('lev_low', '')),
-                    d.get('lam', 0.0),
-                    d.get('freq', 0.0),
-                    d.get('a_stein', 0.0),
-                    d.get('e_up', 0.0),
-                    d.get('e_low', 0.0),
-                    d.get('g_up', 0),
-                    d.get('g_low', 0)
-                )
-        else:
-            self._raw_lines_data = np.empty(0, dtype=_LINE_DTYPE)
+        self._raw_lines_data = _build_line_array(lines_data)
         
         self.lines = None  # Will be created on demand
         self._data_loaded = True
@@ -777,23 +839,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         """Ensure MoleculeLine objects are created from (filtered) raw data."""
         active_data = self._get_active_raw_data()
         if self.lines is None and active_data is not None and len(active_data) > 0:
-            from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
-            # Create MoleculeLine objects from structured array
-            self.lines = [
-                MoleculeLine(self.molecule_id, {
-                    'nr': int(row['nr']),
-                    'lev_up': str(row['lev_up']),
-                    'lev_low': str(row['lev_low']),
-                    'lam': float(row['lam']),
-                    'freq': float(row['freq']),
-                    'a_stein': float(row['a_stein']),
-                    'e_up': float(row['e_up']),
-                    'e_low': float(row['e_low']),
-                    'g_up': int(row['g_up']),
-                    'g_low': int(row['g_low'])
-                })
-                for row in active_data
-            ]
+            self.lines = _make_line_objects(self.molecule_id, active_data)
 
     def _invalidate_caches(self):
         """Invalidate all cached data."""
@@ -856,7 +902,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         self._ensure_data_loaded()
         col = 'lev_up' if state == 'upper' else 'lev_low'
         if self._raw_lines_data is not None:
-            labels = self._raw_lines_data[col]
+            labels = _decode_labels(self._raw_lines_data[col])
         else:
             labels = np.array([getattr(l, col) for l in self.lines], dtype='U64')
 
@@ -893,7 +939,8 @@ class MoleculeLineList(WavelengthRangeMixin):
 
         active_data = self._get_active_raw_data()
         if active_data is not None and len(active_data) > 0:
-            result = active_data[column_name].copy()
+            column = active_data[column_name]
+            result = _decode_labels(column) if column.dtype.kind == 'S' else column.copy()
         else:
             self._ensure_lines_created()
             if not self.lines:
@@ -944,7 +991,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         # Create DataFrame directly from structured numpy array if available
         active_data = self._get_active_raw_data()
         if active_data is not None and len(active_data) > 0:
-            df = pd.DataFrame(active_data)
+            df = pd.DataFrame(_with_str_labels(active_data))
 
             if include_extras and self._extra_fields:
                 n_active = len(active_data)
@@ -1066,8 +1113,8 @@ class MoleculeLineList(WavelengthRangeMixin):
             # Direct column access from structured array - no list comprehension needed
             self._lines_cache = self._lines_type(
                 active_data['nr'],
-                active_data['lev_up'],
-                active_data['lev_low'],
+                _decode_labels(active_data['lev_up']),
+                _decode_labels(active_data['lev_low']),
                 active_data['lam'],
                 active_data['freq'],
                 active_data['a_stein'],
@@ -1211,19 +1258,14 @@ class MoleculeLineList(WavelengthRangeMixin):
             )
             
             # Create MoleculeLine objects from filtered structured array
+            if filtered_raw.dtype.names == _LINE_DTYPE.names:
+                return _make_line_objects(self.molecule_id, filtered_raw)
             from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
-            if filtered_raw.dtype == _LINE_DTYPE:
-                # tolist() turns each record into a tuple of Python int / str /
-                # float in C: the same values and types as the int(row['nr']),
-                # str(row['lev_up']), float(row['lam']), ... below, ~3x faster.
-                names = _LINE_DTYPE.names
-                return [MoleculeLine(self.molecule_id, dict(zip(names, row)))
-                        for row in filtered_raw.tolist()]
             return [
                 MoleculeLine(self.molecule_id, {
                     'nr': int(row['nr']),
-                    'lev_up': str(row['lev_up']),
-                    'lev_low': str(row['lev_low']),
+                    'lev_up': _label_str(row['lev_up']),
+                    'lev_low': _label_str(row['lev_low']),
                     'lam': float(row['lam']),
                     'freq': float(row['freq']),
                     'a_stein': float(row['a_stein']),
@@ -1263,7 +1305,8 @@ class MoleculeLineList(WavelengthRangeMixin):
         active_data = self._get_active_raw_data()
         if active_data is not None and len(active_data) > 0:
             if attribute_name in active_data.dtype.names:
-                return active_data[attribute_name].copy()
+                column = active_data[attribute_name]
+                return _decode_labels(column) if column.dtype.kind == 'S' else column.copy()
         
         # Fallback to line objects
         self._ensure_lines_created()
@@ -1340,7 +1383,7 @@ class MoleculeLineList(WavelengthRangeMixin):
             return None
         
         # Create DataFrame directly from structured numpy array - very efficient
-        self._pandas_df_cache = pd.DataFrame(active_data)
+        self._pandas_df_cache = pd.DataFrame(_with_str_labels(active_data))
         
         return self._pandas_df_cache
     
@@ -1419,8 +1462,8 @@ class MoleculeLineList(WavelengthRangeMixin):
                 fh.write(
                     "{:6d}{:>30s}{:>30s}{:11.5f}{:15.8f}{:13.4e}{:15.5f}{:15.5f}{:7.1f}{:7.1f}\n".format(
                         int(row['nr']),
-                        str(row['lev_up']),
-                        str(row['lev_low']),
+                        _label_str(row['lev_up']),
+                        _label_str(row['lev_low']),
                         float(row['lam']),
                         freq_ghz,
                         float(row['a_stein']),
