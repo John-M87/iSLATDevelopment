@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iSLAT"
-version = "5.03.05"
+# Read from iSLAT/__init__.py
+dynamic = ["version"]
 description = "interactive Spectral-Line Analysis Tool for molecular emission spectra"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Johnny McCaskill"},
     {name = "Andrea Banzatti"},
@@ -23,25 +24,27 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Astronomy",
     "Topic :: Scientific/Engineering :: Physics",
 ]
+
 dependencies = [
-    "numpy>=2.3.5",
-    "scipy>=1.16.3",
-    "astropy>=7.2.0",
-    "pandas>=2.3.3",
+    "numpy>=2.0",
+    "scipy>=1.13",        # first releases built for NumPy 2 (scipy, astropy, pandas)
+    "astropy>=6.1",
+    "pandas>=2.2.2",
+    "matplotlib>=3.10.7",
+    "pillow",
     "lmfit",
     "astroquery",
-    "matplotlib>=3.10.7",
 ]
 
 [project.optional-dependencies]
-gui = ["tk"]
+notebooks = ["ipython", "ipywidgets"]
+macos = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'"]
 dev = ["pytest", "pytest-cov"]
 
 [project.urls]
@@ -50,6 +53,9 @@ Repository = "https://github.com/spexod/iSLAT"
 
 [project.scripts]
 islat = "iSLAT.startup:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "iSLAT.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["iSLAT*"]
