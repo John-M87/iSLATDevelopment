@@ -8,11 +8,22 @@ data, legend and the Y-axis policy - plus its own wavelength marks.  Those
 settings live in a window-local copy of the GUI's toggle state, so changing
 them here never affects the main window.  All controls sit on one compact
 bar above the plot.
+
+Two checkboxes on the bar keep the window in step with the main window:
+
+* **Sync Models** - the window's view is attached to the main plot
+  (``iSLATPlot.attach_view``), so molecule parameter, visibility and
+  deletion changes and model / data updates redraw it as they happen.
+* **Sync Main Settings** - the window follows the main window's Full
+  Spectrum settings: panel count, wavelength range, Y margin, panel ranges,
+  display toggles, Y-axis policy, saved-line labels and wavelength marks.
+  Each setting is taken over when it changes in the main window; settings
+  changed here stay until the main window changes the same setting.
 """
 import copy
 import tkinter as tk
 from tkinter import ttk
-from typing import Any, Dict, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
@@ -22,7 +33,7 @@ from iSLAT.Modules.Plotting.PlotView import WavelengthMarkerStoreMixin, normaliz
 from .PanelRanges import (  # noqa: F401 - parse_panel_ranges & co. are re-exported
     DATA_END_KEYWORD, DATA_START_KEYWORD, format_panel_ranges, parse_panel_ranges,
 )
-from .Tooltips import MenuToolTip
+from .Tooltips import MenuToolTip, ToolTip
 from .YAxisDataSync import (
     Y_DATA_SYNC_MENU_LABEL, Y_DATA_SYNC_MENU_TIP,
     add_y_data_range_controls, add_y_data_sync_menu, y_data_sync_var_value,
@@ -49,6 +60,34 @@ DEFAULT_WINDOW_TOGGLE_STATE: Dict[str, Any] = {
     "wavelength_markers": [],
     "saved_line_labels": True,
 }
+
+#: Display toggles taken over from the main window by *Sync Main Settings*,
+#: with the window method that applies each.
+_SYNCED_TOGGLES: Tuple[Tuple[str, str], ...] = (
+    ("data_density", "set_data_density"),
+    ("skip_gaps", "set_skip_gaps"),
+    ("show_residuals", "set_residuals"),
+    ("atomic_lines", "set_atomic_lines"),
+    ("saved_lines", "set_saved_lines"),
+    ("saved_line_labels", "set_saved_line_labels"),
+    ("summed", "set_summed"),
+    ("observed", "set_observed"),
+    ("legend", "set_legend"),
+)
+
+#: Y-axis policy keys of the toggle state, taken over together.
+_Y_AXIS_KEYS: Tuple[str, ...] = ("y_autoscale", "y_autoscale_source", "y_data_sync", "y_limits")
+
+SYNC_MODELS_TIP = (
+    "Redraw this window when molecule parameters, visibility\n"
+    "or the loaded data change in the main window."
+)
+SYNC_SETTINGS_TIP = (
+    "Follow the main window's Full Spectrum settings: panels,\n"
+    "wavelength range, Y margin, panel ranges, display toggles,\n"
+    "Y axis and wavelength marks.  A setting changed here stays\n"
+    "until the main window changes the same setting."
+)
 
 
 def _apply_layout(
@@ -77,10 +116,17 @@ class _WindowPlotController(WavelengthMarkerStoreMixin):
         self.theme = theme if isinstance(theme, dict) else {}
         self.control_bus = None
         self.view: Optional[FullSpectrumView] = None
+        #: Called when the view replaces its canvas (the window re-attaches its toolbar).
+        self.on_canvas_changed: Optional[Callable[[], None]] = None
 
     def refresh_wavelength_markers(self) -> None:
         if self.view is not None:
             self.view.refresh_wavelength_markers()
+
+    def on_view_canvas_changed(self, view: Any) -> None:
+        """The view swapped its canvas (e.g. a model update from the main window rebuilt it)."""
+        if self.on_canvas_changed is not None:
+            self.on_canvas_changed()
 
     @property
     def legend_toggle(self) -> bool:
@@ -154,12 +200,26 @@ class FullSpectrumWindow(tk.Toplevel):
     Starts from the main GUI's current toggle state, wavelength marks and
     Full Spectrum layout (panel count, wavelength range, Y margin);
     afterwards every option - including the marks - is independent of the
-    main window.  *kwargs* may override the initial ``n_panels``,
-    ``xlim_range`` and ``ymax_factor``.
+    main window unless *Sync Main Settings* is on.  *kwargs* may override the
+    initial ``n_panels``, ``xlim_range`` and ``ymax_factor``, and
+    ``sync_models`` / ``sync_settings`` the initial state of the two sync
+    checkboxes (defaults :attr:`SYNC_MODELS_DEFAULT` and
+    :attr:`SYNC_SETTINGS_DEFAULT`).
     """
+    #: Whether a new window follows model changes / the main window's settings.
+    SYNC_MODELS_DEFAULT: bool = True
+    SYNC_SETTINGS_DEFAULT: bool = False
+    #: How often *Sync Main Settings* checks the main window's settings (ms).
+    #: They change through many controls (control panel, Views menu, key
+    #: bindings, dialogs), so they are compared with what was last taken
+    #: over rather than hooked one by one; the check only reads a few values.
+    SETTINGS_POLL_MS: int = 400
+
     def __init__(self, parent, islat_ref: "iSLAT", **kwargs):
         super().__init__(parent)
         self.islat_ref = islat_ref
+        sync_models = bool(kwargs.pop("sync_models", self.SYNC_MODELS_DEFAULT))
+        sync_settings = bool(kwargs.pop("sync_settings", self.SYNC_SETTINGS_DEFAULT))
         self.kwargs = kwargs
 
         self.title("Full Spectrum Output")
@@ -197,11 +257,23 @@ class FullSpectrumWindow(tk.Toplevel):
 
         self.view.activate(self.canvas_frame)
         self._sync_nav_toolbar()
+        self.controller.on_canvas_changed = self._sync_nav_toolbar
+
+        # Sync state: the main window's settings as last taken over, and the
+        # pending settings check.
+        self._main_settings_seen: Optional[Dict[str, Any]] = None
+        self._settings_poll_id: Optional[str] = None
+        # False until the initial Sync Models state is set: the freshly built
+        # plot needs no catch-up redraw then.
+        self._models_sync_started = False
 
         self._create_toolbar()
         self._refresh_controls()
         self.bind("<KeyPress-M>", self._on_shift_m)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.set_sync_models(sync_models)
+        self.set_sync_settings(sync_settings)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -209,6 +281,193 @@ class FullSpectrumWindow(tk.Toplevel):
     def _gui_plot(self) -> Any:
         gui = getattr(self.islat_ref, "GUI", None)
         return getattr(gui, "plot", None)
+
+    def _main_plot(self) -> Any:
+        """The main window's plot manager if it can pass model changes to this window's view."""
+        gui_plot = self._gui_plot()
+        return gui_plot if callable(getattr(gui_plot, "attach_view", None)) else None
+
+    # ------------------------------------------------------------------
+    # Sync with the main window
+    # ------------------------------------------------------------------
+    def set_sync_models(self, enabled: bool) -> None:
+        """Redraw this window on model changes in the main window (or stop).
+
+        Turning it on redraws the window at once, so changes made while it
+        was off are picked up.
+        """
+        main = self._main_plot()
+        enabled = bool(enabled) and main is not None
+        was_synced = main is not None and self.view in main.attached_views
+        if main is not None:
+            if enabled:
+                main.attach_view(self.view)
+            else:
+                main.detach_view(self.view)
+        self.sync_models_var.set(enabled)
+        if enabled and not was_synced and getattr(self, "_models_sync_started", False):
+            self.view.update_model_plot()
+            self._after_change()
+        self._models_sync_started = True
+
+    @property
+    def sync_models(self) -> bool:
+        """Whether the window follows model changes in the main window."""
+        return bool(self.sync_models_var.get())
+
+    def set_sync_settings(self, enabled: bool) -> None:
+        """Follow the main window's Full Spectrum settings (or stop).
+
+        Turning it on takes every setting over at once; afterwards each
+        setting is taken over when it changes in the main window.
+        """
+        enabled = bool(enabled) and self._gui_plot() is not None
+        self.sync_settings_var.set(enabled)
+        self._cancel_settings_poll()
+        self._main_settings_seen = None
+        if enabled:
+            self.sync_main_settings_now()
+            self._schedule_settings_poll()
+
+    @property
+    def sync_settings(self) -> bool:
+        """Whether the window follows the main window's Full Spectrum settings."""
+        return bool(self.sync_settings_var.get())
+
+    @staticmethod
+    def _layout_of(view: Any) -> Tuple[Optional[Tuple[int, float, float, float]], Optional[Tuple]]:
+        """``((n_panels, start, end, ymax_factor), panel_ranges)`` of a Full Spectrum view (None where unknown)."""
+        plot = getattr(view, "_plot", None)
+        layout = None
+        if plot is not None:
+            try:
+                layout = (int(plot.n_panels), float(plot._xlim_start), float(plot._xlim_end),
+                          float(plot.ymax_factor))
+            except (AttributeError, TypeError, ValueError):
+                layout = None
+        ranges = getattr(view, "panel_ranges", None)
+        ranges = tuple((float(lo), float(hi)) for lo, hi in ranges) if ranges else None
+        return layout, ranges
+
+    def _main_settings(self) -> Dict[str, Any]:
+        """The main window's Full Spectrum settings that *Sync Main Settings* takes over."""
+        from iSLAT.Modules.Plotting.SavedLineLabels import labels_visible
+        gui_plot = self._gui_plot()
+        state = getattr(gui_plot, "toggle_state", None)
+        state = state if isinstance(state, dict) else {}
+        layout, ranges = self._layout_of(getattr(gui_plot, "_full_spectrum_view", None))
+        settings: Dict[str, Any] = {"panel_ranges": ranges}
+        if layout is not None:
+            settings["layout"] = layout
+        for key, _method in _SYNCED_TOGGLES:
+            if key == "saved_line_labels":
+                settings[key] = bool(labels_visible("Full Spectrum"))
+            elif key in state:
+                settings[key] = bool(state[key])
+        y_axis = []
+        for key in _Y_AXIS_KEYS:
+            value = state.get(key, DEFAULT_WINDOW_TOGGLE_STATE[key])
+            if key == "y_data_sync":
+                value = normalize_y_data_sync(value)
+            elif key == "y_limits" and value is not None:
+                value = (float(value[0]), float(value[1]))
+            y_axis.append(value)
+        settings["y_axis"] = tuple(y_axis)
+        settings["wavelength_markers"] = copy.deepcopy(state.get("wavelength_markers", []))
+        return settings
+
+    @staticmethod
+    def _differs(a: Any, b: Any) -> bool:
+        try:
+            return bool(a != b)
+        except Exception:  # e.g. arrays: count as changed
+            return True
+
+    def sync_main_settings_now(self) -> set:
+        """Take over the main window's settings that changed since the last check.
+
+        Everything is taken over on the first check after *Sync Main
+        Settings* is turned on.  Returns the names of the settings checked
+        as changed.
+        """
+        current = self._main_settings()
+        seen = self._main_settings_seen
+        if seen is None:
+            changed = set(current)
+        else:
+            changed = {k for k, v in current.items() if k not in seen or self._differs(seen[k], v)}
+            changed |= set(seen) - set(current)
+        self._main_settings_seen = current
+        if changed:
+            self._apply_main_settings(current, changed)
+        return changed
+
+    def _apply_main_settings(self, settings: Dict[str, Any], keys: set) -> None:
+        """Apply the main window's *settings* named in *keys* to this window (unchanged ones are skipped)."""
+        ts = self.toggle_state
+        # X scaling and gap mode first: the panel layout depends on them.
+        for key, method in _SYNCED_TOGGLES:
+            if key in keys and key in settings:
+                if bool(ts.get(key, DEFAULT_WINDOW_TOGGLE_STATE[key])) != settings[key]:
+                    getattr(self, method)(settings[key])
+
+        if "layout" in keys or "panel_ranges" in keys:
+            layout, ranges = settings.get("layout"), settings.get("panel_ranges")
+            own_layout, own_ranges = self._layout_of(self.view)
+            if ranges:
+                if ranges != own_ranges or (layout and own_layout and layout[3] != own_layout[3]):
+                    if layout is not None and self.view._plot is not None:
+                        self.view._plot.ymax_factor = layout[3]
+                    try:
+                        self.set_panel_ranges(list(ranges))
+                    except ValueError as exc:
+                        self.status_var.set(f"Main window panel ranges not applied: {exc}")
+            elif layout is not None and (layout != own_layout or own_ranges):
+                n_panels, start, end, ymax_factor = layout
+                self.view.apply_layout(n_panels=n_panels, xlim_range=(start, end),
+                                       ymax_factor=ymax_factor)
+                self._after_change()
+
+        if "y_axis" in keys:
+            values = dict(zip(_Y_AXIS_KEYS, settings["y_axis"]))
+            if any(self._differs(ts.get(k), v) for k, v in values.items()):
+                ts.update(values)
+                if not ts["y_autoscale"] and ts.get("y_limits") is None:
+                    ts["y_limits"] = self.view.get_y_limits()
+                self.view.apply_y_limits(ts, autoscale_now=True)
+                self.view.draw()
+                self._after_change()
+
+        if "wavelength_markers" in keys:
+            markers = settings["wavelength_markers"]
+            if self._differs(ts.get("wavelength_markers", []), markers):
+                ts["wavelength_markers"] = copy.deepcopy(markers)
+                self.controller.refresh_wavelength_markers()
+
+    def _schedule_settings_poll(self) -> None:
+        try:
+            self._settings_poll_id = self.after(self.SETTINGS_POLL_MS, self._poll_main_settings)
+        except tk.TclError:  # window already destroyed
+            self._settings_poll_id = None
+
+    def _cancel_settings_poll(self) -> None:
+        poll_id, self._settings_poll_id = self._settings_poll_id, None
+        if poll_id is not None:
+            try:
+                self.after_cancel(poll_id)
+            except tk.TclError:
+                pass
+
+    def _poll_main_settings(self) -> None:
+        """Periodic check while *Sync Main Settings* is on."""
+        self._settings_poll_id = None
+        if not self.sync_settings:
+            return
+        try:
+            self.sync_main_settings_now()
+        except Exception as exc:  # keep polling; report once per failure
+            self.status_var.set(f"Settings sync failed: {exc}")
+        self._schedule_settings_poll()
 
     @staticmethod
     def _initial_layout(gui_plot: Any, overrides: Dict[str, Any]) -> Dict[str, Any]:
@@ -383,6 +642,25 @@ class FullSpectrumWindow(tk.Toplevel):
 
         self.marks_btn = ttk.Button(bar, text="Marks\u2026", command=self.open_marker_dialog, width=7)
         self.marks_btn.pack(side=tk.LEFT, padx=(0, 3))
+        self._separator()
+
+        # Keep in step with the main window.
+        self.sync_models_var = tk.BooleanVar(master=self, value=False)
+        self.sync_models_check = ttk.Checkbutton(
+            bar, text="Sync Models", variable=self.sync_models_var,
+            command=lambda: self.set_sync_models(self.sync_models_var.get()))
+        self.sync_models_check.pack(side=tk.LEFT, padx=(0, 3))
+        ToolTip(self.sync_models_check, SYNC_MODELS_TIP)
+        self.sync_settings_var = tk.BooleanVar(master=self, value=False)
+        self.sync_settings_check = ttk.Checkbutton(
+            bar, text="Sync Main Settings", variable=self.sync_settings_var,
+            command=lambda: self.set_sync_settings(self.sync_settings_var.get()))
+        self.sync_settings_check.pack(side=tk.LEFT, padx=(0, 3))
+        ToolTip(self.sync_settings_check, SYNC_SETTINGS_TIP)
+        if self._main_plot() is None:
+            self.sync_models_check.state(["disabled"])
+        if self._gui_plot() is None:
+            self.sync_settings_check.state(["disabled"])
 
         self.status_var = tk.StringVar(master=self, value="")
         ttk.Label(bar, textvariable=self.status_var, foreground="red").pack(side=tk.LEFT, padx=(6, 0))
@@ -669,6 +947,10 @@ class FullSpectrumWindow(tk.Toplevel):
             self._message(f"Error refreshing plot: {str(e)}")
 
     def on_closing(self):
+        self._cancel_settings_poll()
+        main = self._main_plot()
+        if main is not None:
+            main.detach_view(self.view)
         for dialog in (self._marker_dialog, self._ranges_dialog, self._y_limits_dialog):
             try:
                 if dialog is not None and dialog.winfo_exists():

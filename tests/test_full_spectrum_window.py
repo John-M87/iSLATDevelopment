@@ -5,7 +5,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -621,3 +621,183 @@ class TestWindowSavedLineLabels:
             assert win.option_vars["saved_line_labels"].get() is False
         finally:
             sll.reset_saved_line_label_settings()
+
+
+# ---------------------------------------------------------------------------
+# Sync with the main window
+# ---------------------------------------------------------------------------
+
+def _main_plot(toggle_state=None, layout=(4, 6.0, 10.0, 0.3), panel_ranges=None):
+    """An iSLATPlot (without its Tk constructor) that windows can attach to."""
+    from iSLAT.Modules.Plotting.MainPlot import iSLATPlot
+    pm = iSLATPlot.__new__(iSLATPlot)
+    pm.toggle_state = toggle_state or _gui_state()
+    pm.theme = {}
+    pm.active_view = MagicMock()
+    pm._views = {}
+    n, start, end, ymax = layout
+    pm._full_spectrum_view = SimpleNamespace(
+        _plot=SimpleNamespace(n_panels=n, _xlim_start=start, _xlim_end=end, ymax_factor=ymax),
+        panel_ranges=panel_ranges,
+    )
+    return pm
+
+
+@pytest.fixture
+def synced(make_window, tmp_path):
+    """Yield ``make(**window_kwargs) -> (window, main_plot)`` with an attachable main plot."""
+    def _make(main=None, **kwargs):
+        islat = _islat(tmp_path)
+        main = main or _main_plot()
+        main.islat = islat
+        islat.GUI.plot = main
+        win, _ = make_window(islat, **kwargs)
+        return win, main
+    return _make
+
+
+class TestSyncModels:
+    def test_on_by_default_and_attached(self, synced):
+        win, main = synced()
+        assert win.sync_models is True
+        assert win.view in main.attached_views
+
+    def test_main_model_update_redraws_the_window(self, synced):
+        win, main = synced()
+        with patch.object(win.view, "update_model_plot", wraps=win.view.update_model_plot) as spy:
+            main.update_model_plot()
+        assert spy.call_count == 1
+
+    def test_parameter_change_reaches_the_window(self, synced):
+        win, main = synced()
+        with patch.object(win.view, "on_molecule_parameter_changed") as spy:
+            main.on_molecule_parameter_changed("H2O", "temp", 500.0, 600.0)
+        spy.assert_called_once_with(molecule_name="H2O", parameter_name="temp",
+                                    current_selection=None)
+
+    def test_off_stops_updates_and_on_catches_up(self, synced):
+        win, main = synced()
+        win.set_sync_models(False)
+        assert win.view not in main.attached_views
+        with patch.object(win.view, "update_model_plot", wraps=win.view.update_model_plot) as spy:
+            main.update_model_plot()
+            assert spy.call_count == 0
+            win.set_sync_models(True)          # picks up what it missed
+            assert spy.call_count == 1
+        assert win.sync_models_var.get() is True
+
+    def test_can_start_off(self, synced):
+        win, main = synced(sync_models=False)
+        assert win.sync_models is False
+        assert main.attached_views == []
+
+    def test_closing_detaches(self, synced):
+        win, main = synced()
+        win.on_closing()
+        assert main.attached_views == []
+
+    def test_disabled_without_an_attachable_main_plot(self, make_window):
+        win, _ = make_window()  # the plain stub has no attach_view
+        assert win.sync_models is False
+        assert win.sync_models_check.instate(["disabled"])
+
+
+class TestSyncMainSettings:
+    def test_off_by_default(self, synced):
+        win, main = synced(n_panels=2)
+        main.toggle_state["show_residuals"] = True
+        assert win.sync_settings is False
+        assert win._settings_poll_id is None
+        assert win.view._plot.n_panels == 2
+        assert win.toggle_state["show_residuals"] is False
+
+    def test_turning_on_takes_every_setting_over(self, synced):
+        win, main = synced(n_panels=2, xlim_range=(7.0, 9.0))
+        main.toggle_state["legend"] = False
+        win.set_sync_settings(True)
+        plot = win.view._plot
+        assert (plot.n_panels, plot._xlim_start, plot._xlim_end) == (4, 6.0, 10.0)
+        assert win.n_panels_var.get() == "4"
+        assert win.toggle_state["legend"] is False
+        assert win.option_vars["legend"].get() is False
+        assert win._settings_poll_id is not None
+
+    def test_follows_later_changes(self, synced):
+        win, main = synced()
+        win.set_sync_settings(True)
+        main.toggle_state["show_residuals"] = True
+        main.toggle_state["atomic_lines"] = True
+        main._full_spectrum_view._plot.n_panels = 3
+        changed = win.sync_main_settings_now()
+        assert {"show_residuals", "atomic_lines", "layout"} <= changed
+        assert win.toggle_state["show_residuals"] is True
+        assert win.toggle_state["atomic_lines"] is True
+        assert win.view._plot.n_panels == 3
+
+    def test_window_change_stays_until_main_changes_the_same_setting(self, synced):
+        win, main = synced()
+        win.set_sync_settings(True)
+        win.set_legend(False)                         # changed here only
+        main._full_spectrum_view._plot.n_panels = 2   # something else changes in main
+        win.sync_main_settings_now()
+        assert win.toggle_state["legend"] is False
+        main.toggle_state["legend"] = False
+        win.sync_main_settings_now()
+        main.toggle_state["legend"] = True            # now main changes the legend
+        win.sync_main_settings_now()
+        assert win.toggle_state["legend"] is True
+
+    def test_unchanged_main_settings_do_nothing(self, synced):
+        win, main = synced()
+        win.set_sync_settings(True)
+        with patch.object(win.view, "_regenerate_layout") as regen:
+            assert win.sync_main_settings_now() == set()
+        regen.assert_not_called()
+
+    def test_panel_ranges(self, synced):
+        win, main = synced()
+        win.set_sync_settings(True)
+        main._full_spectrum_view.panel_ranges = [(6.0, 7.0), (9.0, 10.0)]
+        win.sync_main_settings_now()
+        assert win.view.panel_ranges == [(6.0, 7.0), (9.0, 10.0)]
+        main._full_spectrum_view.panel_ranges = None
+        main._full_spectrum_view._plot.n_panels = 5
+        win.sync_main_settings_now()
+        assert not win.view.panel_ranges
+        assert win.view._plot.n_panels == 5
+
+    def test_y_axis_policy(self, synced):
+        win, main = synced()
+        win.set_sync_settings(True)
+        main.toggle_state["y_autoscale"] = False
+        main.toggle_state["y_limits"] = (0.5, 2.5)
+        win.sync_main_settings_now()
+        assert win.toggle_state["y_autoscale"] is False
+        assert win.toggle_state["y_limits"] == (0.5, 2.5)
+        for ax in _spectrum_axes(win):
+            assert ax.get_ylim() == pytest.approx((0.5, 2.5))
+        assert win.y_autoscale_var.get() is False
+
+    def test_wavelength_marks_are_copied(self, synced):
+        win, main = synced()
+        win.set_sync_settings(True)
+        main.add_wavelength_marker(7.5, label="here")
+        win.sync_main_settings_now()
+        assert [m["label"] for m in win.controller.wavelength_markers] == ["here"]
+        win.controller.add_wavelength_marker(8.0, label="window only")
+        assert len(main.wavelength_markers) == 1  # the window's copy is its own
+
+    def test_turning_off_stops_following(self, synced):
+        win, main = synced()
+        win.set_sync_settings(True)
+        win.set_sync_settings(False)
+        assert win._settings_poll_id is None
+        main.toggle_state["show_residuals"] = True
+        win._poll_main_settings()
+        assert win.toggle_state["show_residuals"] is False
+
+    def test_closing_cancels_the_check(self, synced):
+        win, main = synced(sync_settings=True)
+        assert win._settings_poll_id is not None
+        win.on_closing()
+        assert win._settings_poll_id is None
