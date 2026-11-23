@@ -200,6 +200,8 @@ class PopulationDiagramPlot(BasePlot):
         self._axis_categories: Dict[str, List[str]] = {}
         self._axis_category_index: Dict[str, Dict[str, int]] = {}
         self._encoded_axis_cache: Dict[Tuple[int, str], np.ndarray] = {}
+        # What the last successful generate_plot drew from (see refresh)
+        self._drawn_key: Optional[Tuple] = None
 
     # ------------------------------------------------------------------
     # Public properties
@@ -415,6 +417,76 @@ class PopulationDiagramPlot(BasePlot):
     # ------------------------------------------------------------------
     def generate_plot(self, **kwargs) -> None:
         """Generate the population diagram."""
+        key = self._render_key()
+        self._drawn_key = None  # a draw that raises is retried by refresh()
+        self._draw(**kwargs)
+        self._drawn_key = key
+
+    def refresh(self, force: bool = False) -> bool:
+        """Redraw the diagram unless nothing it depends on changed since the last draw.
+
+        Tracks what can change without this plot being told: the parameters
+        and line data of the plotted molecules (see
+        :meth:`Molecule.line_flux_inputs`), their names and colors, which
+        molecules are plotted, the theme and the target axes.  Display
+        settings (axes, color / size / shape mappings) are changed through
+        this plot's own methods, which redraw it themselves.
+
+        Parameters
+        ----------
+        force : bool
+            Redraw even when nothing changed.
+
+        Returns
+        -------
+        bool
+            Whether the diagram was redrawn.
+        """
+        if not force and self._drawn_key is not None:
+            try:
+                unchanged = bool(self._drawn_key == self._render_key())
+            except (TypeError, ValueError):
+                unchanged = False  # values that cannot be compared count as changed
+            if unchanged:
+                return False
+        self.generate_plot()
+        return True
+
+    def _render_key(self) -> Tuple:
+        """What the diagram drawn now would depend on, for :meth:`refresh`.
+
+        Molecules are compared by identity.  A molecule without
+        ``line_flux_inputs`` gets a fresh object, so it always redraws.
+        """
+        molecules = self._input_molecules()
+        if molecules:
+            sources = tuple(
+                (
+                    mol,
+                    BasePlot.get_molecule_display_name(mol),
+                    BasePlot.get_molecule_color(mol),
+                    mol.line_flux_inputs() if hasattr(mol, "line_flux_inputs") else object(),
+                )
+                for mol in molecules
+            )
+        elif self._intensity_obj is not None:
+            inten = self._intensity_obj
+            sources = ((
+                inten,
+                getattr(inten, "t_kin", None),
+                getattr(inten, "n_mol", None),
+                getattr(inten, "dv", None),
+                getattr(inten, "_method", None),
+                self._intensity_radius,
+                self._intensity_distance,
+            ),)
+        else:
+            sources = ()
+        theme = dict(self.theme) if isinstance(self.theme, dict) else self.theme
+        return (sources, self._external_ax, theme)
+
+    def _draw(self, **kwargs) -> None:
+        """Draw the population diagram (the body of :meth:`generate_plot`)."""
         # Remove any existing colorbar before (re-)drawing so stale
         # colorbar axes don't accumulate on the figure.
         if self._colorbar is not None:
@@ -2064,14 +2136,16 @@ class PopulationDiagramPlot(BasePlot):
         self.molecule = None
         self._molecules_input = molecules
         self._intensity_obj = None
-        self.generate_plot()
 
-        # If we were handed a MoleculeDict, enter persistent all-molecules mode
+        # If we were handed a MoleculeDict, enter persistent all-molecules
+        # mode.  This is done before drawing, so the first draw already shows
+        # the mode's molecules (the active set) and its color mapping.
         if hasattr(molecules, 'add_active_molecule_change_callback'):
             self._enter_all_molecules_mode(molecules)
         else:
             # Plain list - not persistent, clear any prior mode
             self._exit_all_molecules_mode()
+        self.generate_plot()
 
     # ------------------------------------------------------------------
     # All-molecules mode helpers

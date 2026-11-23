@@ -427,3 +427,50 @@ class TestMoleculeWavelengthRangeExtension:
         assert lam_after[-1] >= 30.0, (
             f"After extension to 35 µm, grid should reach 30+ µm, got {lam_after[-1]:.2f}"
         )
+
+
+class TestLineFluxInputs:
+    """Molecule.line_flux_inputs changes whenever the per-line fluxes can."""
+
+    def _make_molecule(self, **kwargs):
+        return TestMolecule()._make_molecule(**kwargs)
+
+    def test_parameter_lists(self):
+        from iSLAT.Modules.DataTypes.Molecule import Molecule
+        assert Molecule.LINE_FLUX_SCALE_PARAMS == ('radius', 'distance')
+        assert set(Molecule.LINE_FLUX_SCALE_PARAMS) <= Molecule.FLUX_AFFECTING_PARAMS
+
+    def test_unchanged_molecule_gives_equal_inputs(self):
+        mol = self._make_molecule()
+        assert mol.line_flux_inputs() == mol.line_flux_inputs()
+
+    @pytest.mark.parametrize("param, value", [
+        ("temp", 700.0), ("n_mol", 3e18), ("broad", 2.0),
+        ("intensity_calculation_method", "curve_growth_no_overlap"),
+        ("radius", 2.0), ("distance", 120.0),
+    ])
+    def test_parameter_change_changes_inputs(self, param, value):
+        mol = self._make_molecule()
+        before = mol.line_flux_inputs()
+        setattr(mol, param, value)
+        assert mol.line_flux_inputs() != before
+
+    def test_replaced_line_data_changes_inputs(self):
+        mol = self._make_molecule()
+        before = mol.line_flux_inputs()
+        mol._line_data_replaced()
+        assert mol.line_flux_inputs() != before
+
+    def test_values_whose_hashes_collide_are_told_apart(self):
+        """hash(-1.0) == hash(-2.0), so the inputs must not be hashed."""
+        assert hash(-1.0) == hash(-2.0)
+        mol = self._make_molecule(rv_shift=-1.0)
+        before = mol.line_flux_inputs()
+        mol.rv_shift = -2.0
+        assert mol.line_flux_inputs() != before
+
+    def test_display_only_change_keeps_inputs(self):
+        mol = self._make_molecule()
+        before = mol.line_flux_inputs()
+        mol.is_bold = True
+        assert mol.line_flux_inputs() == before

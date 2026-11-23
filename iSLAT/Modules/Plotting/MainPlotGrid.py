@@ -1063,49 +1063,28 @@ class MainPlotGrid(CompositePlot):
     ) -> None:
         """Render the base population diagram on ``ax_popdiagram``.
 
-        Includes a simple cache so repeated calls with the same molecule
-        and unchanged parameters are skipped.
+        The panel redraws only when something it depends on changed (see
+        :meth:`PopulationDiagramPlot.refresh`), so repeated calls with the
+        same molecule and unchanged parameters are cheap.  A panel in
+        all-molecules mode (set from its context menu) stays in that mode
+        and redraws when any of its molecules changed.
 
         Parameters
         ----------
         molecule : Molecule
             The molecule to visualise.
         force_redraw : bool
-            When *True* the cache is bypassed.
+            When *True* the panel redraws even if nothing changed.
         """
         ax = self.ax_popdiagram
         if ax is None:
             return
 
-        # Cache check - skip re-render if molecule and parameters unchanged,
-        # unless the panel now shows a different single molecule (its own
-        # set_molecule, e.g. from the context menu, or a full refresh can swap
-        # it behind this cache).  All-molecules mode (no single molecule) keeps
-        # the skip.
-        current_hash = None
-        if molecule is not None and hasattr(molecule, '_compute_intensity_hash'):
-            current_hash = (molecule.name, molecule._compute_intensity_hash())
-
-        if not hasattr(self, '_pdp_molecule'):
-            self._pdp_molecule = None
-            self._pdp_cache_key = None
-
-        panel = self.pop_diagram_panel
-        if (not force_redraw
-                and self._pdp_molecule is molecule
-                and panel is not None
-                and (panel.molecule is None or panel.molecule is molecule)
-                and current_hash is not None
-                and self._pdp_cache_key == current_hash):
-            return
-
-        self._pdp_molecule = molecule
-        self._pdp_cache_key = current_hash
-
         try:
-            if self.pop_diagram_panel is None or self._pdp_mode != "molecule":
+            panel = self.pop_diagram_panel
+            if panel is None or self._pdp_mode != "molecule":
                 self._close_pop_diagram_panel()
-                self.pop_diagram_panel = PopulationDiagramPlot(
+                panel = self.pop_diagram_panel = PopulationDiagramPlot(
                     molecule=molecule,
                     ax=ax,
                     fig=self.fig,
@@ -1113,9 +1092,10 @@ class MainPlotGrid(CompositePlot):
                 )
                 self._pdp_mode = "molecule"
             else:
-                self.pop_diagram_panel.molecule = molecule
-                self.pop_diagram_panel.theme = self.theme
-            self.pop_diagram_panel.generate_plot()
+                if not getattr(panel, "_all_molecules_mode", False):
+                    panel.molecule = molecule
+                panel.theme = self.theme
+            panel.refresh(force=force_redraw)
         except Exception as e:
             ax.clear()
             mol_label = (

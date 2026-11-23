@@ -1100,3 +1100,134 @@ class TestMultiMoleculePickSwitchesPopulationDiagram:
         self._pick_marker(view, comparison.name)
 
         self._assert_diagram_shows(view, comparison)
+
+
+# ===========================================================================
+# Population-diagram redraw skip follows everything the diagram depends on
+# ===========================================================================
+
+class TestPopulationDiagramRedrawSkip:
+    """render_population_diagram_for_molecule skips a redraw only when nothing changed.
+
+    The y-axis is scaled by the emitting area over distance squared, so a
+    radius or distance change must redraw it, as must a replaced line list
+    (which changes no parameter).  The skip key used to hold only the
+    intensity hash, so those changes left the old diagram on screen.
+    """
+
+    def _render_count(self, view, mol, change):
+        grid = view._ensure_grid()
+        grid.render_population_diagram_for_molecule(mol)
+        panel = grid.pop_diagram_panel
+        with patch.object(panel, "generate_plot", wraps=panel.generate_plot) as spy:
+            change(mol)
+            grid.render_population_diagram_for_molecule(mol)
+            return spy.call_count
+
+    def test_unchanged_molecule_is_skipped(self, tpv_fixture):
+        view, mol, pm = tpv_fixture
+        assert self._render_count(view, mol, lambda m: None) == 0
+
+    @pytest.mark.parametrize("param, value", [("radius", 2.5), ("distance", 120.0)])
+    def test_radius_or_distance_change_redraws(self, tpv_fixture, param, value):
+        view, mol, pm = tpv_fixture
+        assert self._render_count(view, mol, lambda m: setattr(m, param, value)) == 1
+
+    def test_replaced_line_list_redraws(self, tpv_fixture):
+        view, mol, pm = tpv_fixture
+        assert self._render_count(view, mol, lambda m: m._line_data_replaced()) == 1
+
+    def test_redrawn_diagram_follows_new_radius(self, tpv_fixture):
+        """The base scatter's y values move by log10 of the area ratio."""
+        view, mol, pm = tpv_fixture
+        grid = view._ensure_grid()
+        grid.render_population_diagram_for_molecule(mol)
+        before = np.concatenate([coll.get_offsets()[:, 1] for coll in pm.ax3.collections])
+        mol.radius = 2.0
+        grid.render_population_diagram_for_molecule(mol)
+        after = np.concatenate([coll.get_offsets()[:, 1] for coll in pm.ax3.collections])
+        assert before.shape == after.shape and before.size > 0
+        assert not np.allclose(before, after)
+
+
+class TestPopulationDiagramRefresh:
+    """PopulationDiagramPlot.refresh redraws only when its inputs changed."""
+
+    @pytest.fixture
+    def panel(self):
+        from iSLAT.Modules.Plotting.PopulationDiagramPlot import PopulationDiagramPlot
+        fig, ax = plt.subplots()
+        mol = _make_molecule()
+        pdp = PopulationDiagramPlot(molecule=mol, ax=ax)
+        pdp.generate_plot()
+        yield pdp, mol
+        plt.close(fig)
+
+    def _redraws(self, pdp, change):
+        with patch.object(pdp, "generate_plot", wraps=pdp.generate_plot) as spy:
+            change()
+            returned = pdp.refresh()
+        assert returned == bool(spy.call_count)
+        return spy.call_count
+
+    def test_unchanged_is_skipped(self, panel):
+        pdp, mol = panel
+        assert self._redraws(pdp, lambda: None) == 0
+
+    def test_force_redraws(self, panel):
+        pdp, mol = panel
+        with patch.object(pdp, "generate_plot", wraps=pdp.generate_plot) as spy:
+            assert pdp.refresh(force=True) is True
+        assert spy.call_count == 1
+
+    @pytest.mark.parametrize("param, value", [
+        ("temp", 900.0), ("radius", 3.0), ("distance", 100.0),
+        ("color", "#00FF00"), ("displaylabel", "Other"),
+    ])
+    def test_molecule_change_redraws(self, panel, param, value):
+        pdp, mol = panel
+        assert self._redraws(pdp, lambda: setattr(mol, param, value)) == 1
+
+    def test_other_molecule_redraws(self, panel):
+        pdp, mol = panel
+        other = _make_molecule(name="CO", lam_start=12.7)
+        assert self._redraws(pdp, lambda: setattr(pdp, "molecule", other)) == 1
+
+    def test_theme_change_in_place_redraws(self, panel):
+        pdp, mol = panel
+        assert self._redraws(pdp, lambda: pdp.theme.update(foreground="#123456")) == 1
+
+    def test_failed_draw_is_retried(self, panel):
+        pdp, mol = panel
+        with patch.object(type(pdp), "_draw", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                pdp.generate_plot()
+        assert self._redraws(pdp, lambda: None) == 1
+
+    def test_display_setting_methods_keep_refresh_in_sync(self, panel):
+        """set_axes redraws itself, so a following refresh has nothing to do."""
+        pdp, mol = panel
+        pdp.set_axes(x_prop="wavelength")
+        assert self._redraws(pdp, lambda: None) == 0
+
+
+class TestGridKeepsAllMoleculesMode:
+    """The grid's per-molecule render must not collapse the all-molecules diagram."""
+
+    def test_parameter_change_redraws_all_molecules(self, tpv_two_molecules):
+        view, primary, comparison, pm = tpv_two_molecules
+        grid = view._ensure_grid()
+        grid.render_population_diagram_for_molecule(primary)
+        panel = grid.pop_diagram_panel
+        panel.set_molecules(view._islat.molecules_dict)
+        assert panel._all_molecules_mode
+
+        with patch.object(panel, "generate_plot", wraps=panel.generate_plot) as spy:
+            grid.render_population_diagram_for_molecule(primary)       # nothing changed
+            assert spy.call_count == 0
+            comparison.temp = 1200.0                                   # a non-active molecule
+            grid.render_population_diagram_for_molecule(primary)
+            assert spy.call_count == 1
+
+        assert grid.pop_diagram_panel is panel
+        assert panel._all_molecules_mode and panel.molecule is None

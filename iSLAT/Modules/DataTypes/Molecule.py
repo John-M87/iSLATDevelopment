@@ -83,6 +83,10 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
     # model_pixel_res is spectrum-affecting because Spectrum is built with dlambda=model_pixel_res
     SPECTRUM_AFFECTING_PARAMS = {'radius', 'distance', 'fwhm', 'keplerian_fwhm', 'instrumental_profile_key', 'rv_shift', 'wavelength_range', 'model_pixel_res'}
     FLUX_AFFECTING_PARAMS = INTENSITY_AFFECTING_PARAMS | SPECTRUM_AFFECTING_PARAMS | {'model_pixel_res'}
+    # Parameters that scale every line's observed flux by the same factor, the
+    # emitting area over distance squared, without changing the per-line
+    # intensities or optical depths.
+    LINE_FLUX_SCALE_PARAMS = ('radius', 'distance')
     # Purely cosmetic parameters: changing them must never invalidate any computed cache.
     DISPLAY_ONLY_PARAMS = {'is_bold'}
 
@@ -275,6 +279,22 @@ class Molecule(CacheStatsMixin, WavelengthRangeMixin, ClassObservableMixin):
             wavelength_tuple,
             self._compute_intensity_hash()  # Include intensity hash for dependencies
         ))
+
+    def line_flux_inputs(self) -> Tuple:
+        """Current values of everything the per-line fluxes depend on.
+
+        Covers :attr:`INTENSITY_AFFECTING_PARAMS` (per-line intensity and
+        optical depth), :attr:`LINE_FLUX_SCALE_PARAMS` (emitting area over
+        distance squared) and the line data itself, through the count of
+        line-list and partition-function replacements.  Views that show
+        per-line quantities (e.g. the population diagram) compare it with the
+        value they last drew with to decide whether to redraw.
+        """
+        return (
+            tuple(getattr(self, p) for p in sorted(self.INTENSITY_AFFECTING_PARAMS)),
+            tuple(getattr(self, p) for p in self.LINE_FLUX_SCALE_PARAMS),
+            getattr(self, '_line_list_version', 0),
+        )
 
     def _compute_full_parameter_hash(self):
         return hash((self._compute_spectrum_hash(), self._model_pixel_res,
