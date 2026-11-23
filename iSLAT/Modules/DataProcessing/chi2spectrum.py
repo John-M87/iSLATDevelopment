@@ -170,6 +170,15 @@ class Chi2Spectrum:
         return self._chi2_total
 
     @property
+    def n_contributing(self):
+        """int: Number of measurements that contribute to the chi2 value.
+
+        Measurements with a zero flux error are given a chi2 of 0 (see
+        :meth:`evaluate_spectrum`), so they are not data points of the fit.
+        """
+        return sum(1 for d in self._measurements if d.flux_error != 0)
+
+    @property
     def get_table(self):
         """pd.Dataframe: Pandas dataframe"""
         if pd is None:

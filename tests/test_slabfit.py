@@ -872,3 +872,63 @@ class TestSlabFitAlias:
             input_file=str(tmp_path / 'x.csv'),
         )
         assert isinstance(slab, SlabModel)
+
+
+# ===========================================================================
+# Reduced chi-squared
+# ===========================================================================
+
+class TestReducedChi2:
+
+    @staticmethod
+    def _result(chi2=12.0, n_data=10, n_free=3):
+        return FitResult(parameters={}, chi2_final=chi2, iterations=1, function_calls=1,
+                         convergence_flag=0, n_data=n_data, n_free_params=n_free)
+
+    def test_value(self):
+        r = self._result()
+        assert r.degrees_of_freedom == 7
+        assert r.reduced_chi2 == pytest.approx(12.0 / 7)
+
+    @pytest.mark.parametrize("n_data, n_free", [(3, 3), (2, 3), (0, 0)])
+    def test_undefined_without_degrees_of_freedom(self, n_data, n_free):
+        r = self._result(n_data=n_data, n_free=n_free)
+        assert math.isnan(r.reduced_chi2)
+        assert "reduced χ² undefined" in r.chi2_summary()
+
+    def test_summary(self):
+        assert self._result().chi2_summary() == (
+            "χ² = 1.200e+01, reduced χ² = 1.71 (ν = 10 - 3 = 7)"
+        )
+
+    def test_fit_prints_both_to_the_data_field(self, tmp_path, mock_molecule):
+        data_field = MagicMock()
+        slab = SlabModel(output_folder=str(tmp_path), source=mock_molecule,
+                         input_file=str(tmp_path / 'x.csv'), data_field=data_field)
+        slab.chi2_evaluator = MagicMock()
+        slab.chi2_evaluator.chi2_total = 12.0
+        slab.chi2_evaluator.n_contributing = 10
+        with patch.object(slab._pipeline, 'evaluate', return_value=MagicMock()):
+            result = slab.fit()
+        n_free = len(slab._fit_params)
+        assert (result.n_data, result.n_free_params) == (10, n_free)
+        final = data_field.insert_text.call_args_list[-1].args[0]
+        assert final.startswith("Fitting complete. χ² = 1.200e+01")
+        assert f"reduced χ² = {12.0 / (10 - n_free):.3g}" in final
+        assert f"(ν = 10 - {n_free} = {10 - n_free})" in final
+
+    def test_saved_results_include_it(self, make_slab):
+        slab = make_slab()
+        r = self._result()
+        data = json.loads(Path(slab.save_results(r, filename='r.json', format='json')).read_text())
+        stats = data['fitting_statistics']
+        assert stats['reduced_chi2'] == pytest.approx(12.0 / 7)
+        assert (stats['n_data'], stats['n_free_params'], stats['degrees_of_freedom']) == (10, 3, 7)
+        text = Path(slab.save_results(r, filename='r.txt', format='txt')).read_text()
+        assert "Reduced chi2: 1.714286e+00 (dof = 10 - 3 = 7)" in text
+
+    def test_saved_json_undefined_is_null(self, make_slab):
+        slab = make_slab()
+        r = self._result(n_data=2, n_free=3)
+        data = json.loads(Path(slab.save_results(r, filename='u.json', format='json')).read_text())
+        assert data['fitting_statistics']['reduced_chi2'] is None

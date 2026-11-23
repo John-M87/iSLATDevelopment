@@ -130,6 +130,11 @@ class FitResult:
         ``0`` = converged, ``1`` = max iterations reached.
     message : str
         Optimizer status message.
+    n_data : int
+        Number of flux measurements that contribute to chi-squared (those
+        with a non-zero error).  ``0`` when unknown.
+    n_free_params : int
+        Number of fitted parameters.
     """
     parameters: Dict[str, float]
     chi2_final: float
@@ -137,6 +142,33 @@ class FitResult:
     function_calls: int
     convergence_flag: int
     message: str = ""
+    n_data: int = 0
+    n_free_params: int = 0
+
+    @property
+    def degrees_of_freedom(self) -> int:
+        """``n_data - n_free_params`` (may be zero or negative for too few measurements)."""
+        return self.n_data - self.n_free_params
+
+    @property
+    def reduced_chi2(self) -> float:
+        """Chi-squared per degree of freedom, or NaN when there are no degrees of freedom."""
+        dof = self.degrees_of_freedom
+        if dof <= 0:
+            return float("nan")
+        return self.chi2_final / dof
+
+    def chi2_summary(self) -> str:
+        """``"χ² = …, reduced χ² = … (ν = N - p = …)"`` for messages."""
+        text = f"χ² = {self.chi2_final:.3e}"
+        dof = self.degrees_of_freedom
+        if dof > 0:
+            text += (f", reduced χ² = {self.reduced_chi2:.3g}"
+                     f" (ν = {self.n_data} - {self.n_free_params} = {dof})")
+        else:
+            text += (f", reduced χ² undefined ({self.n_data} measurements"
+                     f" for {self.n_free_params} free parameters)")
+        return text
 
 # ---------------------------------------------------------------------------
 # Default fit-parameter set
@@ -677,16 +709,18 @@ class SlabModel:
             function_calls=int(getattr(opt, 'nfev', 0)),
             convergence_flag=0 if opt.success else 1,
             message=getattr(opt, 'message', ''),
+            n_data=int(self.chi2_evaluator.n_contributing),
+            n_free_params=len(self._fit_params),
         )
 
         print("\nSlab fit complete:")
         for name, val in result.parameters.items():
             print(f"  {name} = {val:.4g}")
-        print(f"  χ² = {result.chi2_final:.3e}  ({result.function_calls} evals)")
+        print(f"  {result.chi2_summary()}  ({result.function_calls} evals)")
 
         if self.data_field is not None:
             self.data_field.insert_text(
-                f"Fitting complete. χ² = {result.chi2_final:.3e}", clear_after=False
+                f"Fitting complete. {result.chi2_summary()}", clear_after=False
             )
         return result
 
@@ -852,6 +886,11 @@ class SlabModel:
             "fitted_parameters": result.parameters,
             "fitting_statistics": {
                 "chi2_final":       result.chi2_final,
+                "reduced_chi2":     (result.reduced_chi2
+                                     if result.degrees_of_freedom > 0 else None),
+                "n_data":           result.n_data,
+                "n_free_params":    result.n_free_params,
+                "degrees_of_freedom": result.degrees_of_freedom,
                 "iterations":       result.iterations,
                 "function_calls":   result.function_calls,
                 "convergence_flag": result.convergence_flag,
@@ -874,6 +913,13 @@ class SlabModel:
                 f.write(f"  {name}: {val:.6g}\n")
             f.write("\nFitting Statistics:\n")
             f.write(f"  Final chi2: {result.chi2_final:.6e}\n")
+            if result.degrees_of_freedom > 0:
+                f.write(f"  Reduced chi2: {result.reduced_chi2:.6e}"
+                        f" (dof = {result.n_data} - {result.n_free_params}"
+                        f" = {result.degrees_of_freedom})\n")
+            else:
+                f.write(f"  Reduced chi2: undefined ({result.n_data} measurements,"
+                        f" {result.n_free_params} free parameters)\n")
             f.write(f"  Iterations: {result.iterations}\n")
             f.write(f"  Function calls: {result.function_calls}\n")
             f.write(f"  Convergence flag: {result.convergence_flag}\n")

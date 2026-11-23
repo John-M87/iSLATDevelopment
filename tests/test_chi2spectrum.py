@@ -251,3 +251,17 @@ class TestChi2SpectrumTable:
         table = chi2.get_table
         assert isinstance(table, pd.DataFrame)
         assert len(table) == 0
+
+
+class TestContributingMeasurements:
+    """n_contributing counts the measurements that enter chi2 (non-zero error)."""
+
+    def test_zero_error_measurements_are_not_counted(self):
+        c2 = Chi2Spectrum()
+        c2.add_measurement(FluxMeasurement(4.6, 4.7, 2e-16, 1e-17))
+        c2.add_measurement(FluxMeasurement(4.7, 4.8, 2e-16, 0.0))
+        c2.add_measurement(FluxMeasurement(4.8, 4.9, 3e-16, 2e-17))
+        assert c2.n_contributing == 2
+
+    def test_empty(self):
+        assert Chi2Spectrum().n_contributing == 0
