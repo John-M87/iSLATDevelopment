@@ -1531,8 +1531,12 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         new_molecule: Optional["Molecule"] = None,
         current_selection: Optional[Tuple[float, float]] = None,
     ) -> None:
-        """Mark stale - FSV doesn't have per-molecule panels to update."""
-        self._needs_refresh = True
+        """Nothing to do: the full spectrum draws nothing that depends on the active molecule.
+
+        (When this view is inactive, ``iSLATPlot`` marks it stale anyway.)
+        Not marking it stale here keeps a live copy of this view in another
+        window (see ``iSLATPlot.attach_view``) from rebuilding for nothing.
+        """
 
     def on_molecule_parameter_changed(
         self,

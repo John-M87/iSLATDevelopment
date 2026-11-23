@@ -4,7 +4,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 import matplotlib.pyplot as plt
 import numpy as np
 
-from typing import Optional, List, Tuple, Any, TYPE_CHECKING
+import weakref
+from typing import Optional, List, Tuple, Any, Callable, TYPE_CHECKING
 
 import iSLAT.Constants as c
 from .CachedLayout import CachedConstrainedLayoutEngine
@@ -143,6 +144,12 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
 
         # View-change callbacks - notified when active_view switches
         self._view_change_callbacks: list = []
+
+        # Views shown in other windows (e.g. the Display Full Spectrum
+        # window) that follow model changes like the active view does.  Held
+        # by weak reference so a window that closes without detaching cannot
+        # keep its view alive.  See attach_view.
+        self._attached_views: List[weakref.ref] = []
 
         # --- ControlBus: central registry for surface-agnostic UI controls ---
         # Surfaces (ControlPanelSurface, TopBarSurface, ViewsMenuSurface) are registered by GUI.create_window()
@@ -709,27 +716,92 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         """Creates a SpanSelector for the main plot to select a region for line inspection."""
         self.span = self.interaction_handler.create_span_selector(self.ax1, self.theme["selection_color"])
 
+    # ------------------------------------------------------------------
+    # Attached views (live views in other windows)
+    # ------------------------------------------------------------------
+    def attach_view(self, view: PlotView) -> None:
+        """Keep *view*, shown in another window, up to date with model changes.
+
+        Model and data changes (:meth:`update_model_plot`, molecule
+        parameter, visibility, deletion and active-molecule changes) are
+        passed to every attached view as well as to the active view, each
+        with its own plot manager's selection.  Display settings (atomic
+        lines, legend, Y axis, ...) belong to the main window's
+        ``toggle_state`` and stay with the active view; an attached view has
+        its own.  An attached view is always on screen, so whenever a change
+        leaves it stale it is rebuilt at once instead of on its next
+        ``activate()``.
+
+        The view is held by weak reference; call :meth:`detach_view` when
+        its window closes.  Attaching a view twice has no effect.
+        """
+        if view is None or view in self.attached_views:
+            return
+        self._attached_views.append(weakref.ref(view))
+
+    def detach_view(self, view: PlotView) -> None:
+        """Stop passing model changes to *view* (missing views are ignored)."""
+        self._attached_views = [
+            ref for ref in getattr(self, '_attached_views', [])
+            if ref() is not None and ref() is not view
+        ]
+
+    @property
+    def attached_views(self) -> List[PlotView]:
+        """The attached views that still exist, in the order they were attached."""
+        refs = getattr(self, '_attached_views', None)
+        if refs is None:  # built without __init__ (lightweight tests)
+            refs = self._attached_views = []
+        views = [ref() for ref in refs]
+        if any(v is None for v in views):
+            self._attached_views = [ref for ref in refs if ref() is not None]
+        return [v for v in views if v is not None]
+
+    def _dispatch_model_event(self, call: Callable[[PlotView, Optional[Tuple[float, float]]], None]) -> None:
+        """Run ``call(view, selection)`` for the active view, then every attached view.
+
+        *selection* is the selection of the view's own plot manager (the
+        main window's for the active view).  Errors in an attached view are
+        logged and do not stop the others; errors in the active view
+        propagate as before.  Attached views left stale are rebuilt.
+        """
+        call(self.active_view, getattr(self, 'current_selection', None))
+        for view in self.attached_views:
+            if view is self.active_view:
+                continue
+            try:
+                pm = getattr(view, '_pm', None)
+                call(view, getattr(pm, 'current_selection', None))
+                if getattr(view, '_initialised', False) and getattr(view, '_needs_refresh', False):
+                    view.update_model_plot()
+            except Exception as exc:
+                debug_config.warning(
+                    "main_plot",
+                    f"Attached view {view!r} failed to update: {exc}",
+                )
+
     def update_all_plots(self):
         """
         Updates all plots in the GUI.
-        Delegates to the active view for rendering.
+        Delegates to the active view (and the attached views) for rendering.
         """
         self.update_model_plot()
-        current_selection = getattr(self, 'current_selection', None)
-        self.active_view.on_active_molecule_changed(
-            new_molecule=getattr(self.islat, 'active_molecule', None),
-            current_selection=current_selection,
+        active_molecule = getattr(self.islat, 'active_molecule', None)
+        self._dispatch_model_event(
+            lambda view, selection: view.on_active_molecule_changed(
+                new_molecule=active_molecule, current_selection=selection,
+            )
         )
 
     def update_model_plot(self):
         """
         Updates the main spectrum plot with observed data, model spectra, and summed flux.
 
-        Delegates to the active view so the correct panel layout is refreshed.
-        The inactive view is marked stale so it re-renders on the next activate().
+        Delegates to the active view (and the attached views) so the correct
+        panel layout is refreshed.  The inactive views are marked stale so
+        they re-render on the next activate().
         """
-        # Always update the active view
-        self.active_view.update_model_plot()
+        self._dispatch_model_event(lambda view, _selection: view.update_model_plot())
         # Mark every inactive view stale so it re-renders on next activate().
         self._mark_inactive_views_stale()
 
@@ -963,40 +1035,49 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         self.interaction_handler.handle_click_event(event)
     
     def on_active_molecule_changed(self):
-        """Called when the active molecule changes - delegates to the active view."""
-        self.active_view.on_active_molecule_changed(
-            new_molecule=getattr(self.islat, 'active_molecule', None),
-            current_selection=getattr(self, 'current_selection', None),
+        """Called when the active molecule changes - delegates to the active and attached views."""
+        active_molecule = getattr(self.islat, 'active_molecule', None)
+        self._dispatch_model_event(
+            lambda view, selection: view.on_active_molecule_changed(
+                new_molecule=active_molecule, current_selection=selection,
+            )
         )
         self._mark_inactive_views_stale()
 
     def on_molecule_parameter_changed(self, molecule_name, parameter_name, old_value, new_value):
-        """Called when any molecule parameter changes - delegates to the active view."""
+        """Called when any molecule parameter changes - delegates to the active and attached views."""
         if parameter_name == 'is_visible':
             return
-        self.active_view.on_molecule_parameter_changed(
-            molecule_name=molecule_name,
-            parameter_name=parameter_name,
-            current_selection=getattr(self, 'current_selection', None),
+        self._dispatch_model_event(
+            lambda view, selection: view.on_molecule_parameter_changed(
+                molecule_name=molecule_name,
+                parameter_name=parameter_name,
+                current_selection=selection,
+            )
         )
         self._mark_inactive_views_stale()
 
     def on_molecule_deleted(self, molecule_name):
-        """Called when a molecule is deleted - delegates to the active view."""
-        self.active_view.on_molecule_deleted(molecule_name)
+        """Called when a molecule is deleted - delegates to the active and attached views."""
+        self._dispatch_model_event(lambda view, _selection: view.on_molecule_deleted(molecule_name))
         self._mark_inactive_views_stale()
-    
+
     def on_molecule_visibility_changed(self, molecule_name, is_visible):
-        """Called when a molecule's visibility changes - delegates to the active view."""
+        """Called when a molecule's visibility changes - delegates to the active and attached views."""
         if not hasattr(self.islat, 'molecules_dict'):
             return
-        self.active_view.on_molecule_visibility_changed(
-            molecule_name=molecule_name,
-            is_visible=is_visible,
-            molecules_dict=self.islat.molecules_dict,
-            wave_data=self.islat.wave_data,
-            active_molecule=getattr(self.islat, 'active_molecule', None),
-            current_selection=getattr(self, 'current_selection', None),
+        molecules_dict = self.islat.molecules_dict
+        wave_data = self.islat.wave_data
+        active_molecule = getattr(self.islat, 'active_molecule', None)
+        self._dispatch_model_event(
+            lambda view, selection: view.on_molecule_visibility_changed(
+                molecule_name=molecule_name,
+                is_visible=is_visible,
+                molecules_dict=molecules_dict,
+                wave_data=wave_data,
+                active_molecule=active_molecule,
+                current_selection=selection,
+            )
         )
         self._mark_inactive_views_stale()
     
