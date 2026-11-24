@@ -11,6 +11,7 @@ from iSLAT.Modules.GUI.ControlSurface import ControlSurface
 from ..GUIFunctions import create_wrapper_frame, create_scrollable_frame, ColorButton
 #from .RegularFrame import RegularFrame
 from ..Tooltips import CreateToolTip
+from ..KeyBindings import shortcut_text
 
 # Platform-specific layout constants — Windows uses larger font metrics than macOS
 _IS_WINDOWS = platform.system() == "Windows"
@@ -371,7 +372,8 @@ class ControlPanel(ttk.Frame):
     def _create_display_controls(self, parent, start_row, start_col):
         """Create plot start and range controls for display view"""
         plot_start_tip = "Start wavelength\nfor the upper plot\nunits: μm"
-        plot_range_tip = "Wavelength range\nfor the upper plot\nunits: μm"
+        plot_range_tip = ("Wavelength range\nfor the upper plot\nunits: μm\n"
+                          f"Halve: {shortcut_text('halve_plot_range')}  Double: {shortcut_text('double_plot_range')}")
 
         # Plot start
         initial_start = getattr(self.islat, 'display_range', [4.5, 5.5])[0]
@@ -434,8 +436,8 @@ class ControlPanel(ttk.Frame):
             if field_key == 'model_pixel_res':
                 self._match_sampling_btn = ttk.Button(
                     parent, 
-                    text="  Match Pix. Sampling", 
-                    width=22,
+                    text=self._match_sampling_text(False),
+                    width=26,
                     command=self._toggle_match_spectral_sampling
                 )
                 self._match_sampling_btn.grid(row=row, column=start_col + 2, columnspan=2, padx=_MATCH_BTN_PADX, sticky="w")
@@ -754,6 +756,11 @@ class ControlPanel(ttk.Frame):
         
         return self._create_simple_entry(parent, label_text, current_value, row, col, update_global_parameter, width, param_name=property_name, tip_text=tip_text)
 
+    @staticmethod
+    def _match_sampling_text(on: bool) -> str:
+        """Label of the matched-sampling button, with its check mark and keyboard shortcut."""
+        return f"{'✓' if on else ' '} Match Pix. Sampling ({shortcut_text('toggle_match_pixel_sampling')})"
+
     def _toggle_match_spectral_sampling(self):
         """Toggle matched spectral sampling mode.
         
@@ -779,10 +786,7 @@ class ControlPanel(ttk.Frame):
         
         # Update button appearance to indicate state
         if hasattr(self, '_match_sampling_btn'):
-            if new_state:
-                self._match_sampling_btn.configure(text="✓ Match Pix. Sampling")
-            else:
-                self._match_sampling_btn.configure(text="  Match Pix. Sampling")
+            self._match_sampling_btn.configure(text=self._match_sampling_text(new_state))
         
     def _create_molecule_specific_controls(self, parent, start_row, start_col):
         """Create controls for molecule-specific parameters that update with active molecule"""
@@ -1364,6 +1368,27 @@ class ControlPanel(ttk.Frame):
         except (ValueError, AttributeError):
             pass
 
+    def scale_plot_range(self, factor: float):
+        """Multiply the plot range by *factor* (0.5 halves, 2 doubles), keeping the plot centred."""
+        try:
+            # The exact range shown (the fields are rounded), else the fields.
+            binding = getattr(self, "_current_display_range_binding", None)
+            try:
+                start, end = binding["getter"]() if binding is not None else self.islat.display_range
+                start, end = float(start), float(end)
+            except (TypeError, ValueError, AttributeError, KeyError):
+                start = float(self.plot_start_var.get())
+                end = start + float(self.plot_range_var.get())
+            plot_range = end - start
+            centre = (start + end) / 2
+            # The range field rounds; centre the start on the range as shown.
+            self._set_var(self.plot_range_var, self._format_value(plot_range * factor, "display_range_range"))
+            new_range = float(self.plot_range_var.get())
+            self._set_var(self.plot_start_var, self._format_value(centre - new_range / 2, "display_range_start"))
+            self._update_display_range()
+        except (ValueError, AttributeError):
+            pass
+
     def _update_wavelength_range(self, value_str=None):
         """Update wavelength range for model calculations (not display)"""
         if self._molecules_dict() is None:
@@ -1935,10 +1960,7 @@ class ControlPanel(ttk.Frame):
         if hasattr(self, '_match_sampling_btn'):
             try:
                 is_matched = self.islat.molecules_dict.match_spectral_sampling
-                if is_matched:
-                    self._match_sampling_btn.configure(text="✓ Match Pix. Sampling")
-                else:
-                    self._match_sampling_btn.configure(text="  Match Pix. Sampling")
+                self._match_sampling_btn.configure(text=self._match_sampling_text(is_matched))
             except (AttributeError, TypeError):
                 pass
 

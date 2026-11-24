@@ -569,6 +569,18 @@ class InteractionHandler:
         "retreat_plot_start_half": "_retreat_plot_start_half",
         "advance_plot_start": "_advance_plot_start",
         "advance_plot_start_half": "_advance_plot_start_half",
+        "load_line_list": "_load_line_list",
+        "set_output_file": "_set_output_file",
+        "toggle_match_pixel_sampling": "_toggle_match_pixel_sampling",
+        "add_molecule": "_add_molecule",
+        "filter_active_line_list": "_filter_active_line_list",
+        "save_line": "_save_line",
+        "fit_line": "_fit_line",
+        "single_slab_fit": "_single_slab_fit",
+        "halve_plot_range": "_halve_plot_range",
+        "double_plot_range": "_double_plot_range",
+        "load_spectrum": "_load_spectrum",
+        "open_sample_manager": "_open_sample_manager",
         "open_command_palette": "_open_command_palette",
     }
 
@@ -622,6 +634,83 @@ class InteractionHandler:
         if registry.dispatch(chord):
             return 'break'
         return None
+
+    def _gui_part(self, name: str):
+        """The GUI component *name* (e.g. ``"control_panel"``), or ``None`` before the GUI exists."""
+        return getattr(getattr(self.islat, "GUI", None), name, None)
+
+    def _load_line_list(self):
+        """Choose the input line list file (Ctrl/Cmd+O), as the file pane's button does."""
+        pane = self._gui_part("file_interaction_pane")
+        if pane is not None:
+            pane._load_input_line_list()
+
+    def _set_output_file(self):
+        """Choose the output line measurements file (Ctrl/Cmd+Shift+O)."""
+        pane = self._gui_part("file_interaction_pane")
+        if pane is not None:
+            pane._load_output_line_measurements()
+
+    def _toggle_match_pixel_sampling(self):
+        """Toggle matched pixel sampling (P), as the control panel's button does."""
+        control_panel = self._gui_part("control_panel")
+        if control_panel is not None:
+            control_panel._toggle_match_spectral_sampling()
+
+    def _add_molecule(self):
+        """Add a molecule from HITRAN (Ctrl/Cmd+N), as the top bar's button does."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.add_molecule()
+
+    def _filter_active_line_list(self):
+        """Open the line list filter for the active molecule (Shift+F)."""
+        control_panel = self._gui_part("control_panel")
+        molecule = getattr(self.islat, "active_molecule", None)
+        if control_panel is not None and molecule is not None:
+            control_panel._filter_line_list_action(getattr(molecule, "name", str(molecule)))
+
+    def _save_line(self):
+        """Save the selected line (Shift+S), as Spectral Functions > Save Line does."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.save_line()
+
+    def _fit_line(self):
+        """Fit the selected line (G), as Spectral Functions > Fit Line does."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.fit_selected_line()
+
+    def _single_slab_fit(self):
+        """Run a single slab fit (Shift+G), as Spectral Functions > Single Slab Fit does."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.single_slab_fit()
+
+    def _halve_plot_range(self):
+        """Halve the plot range, keeping it centred (Z)."""
+        control_panel = self._gui_part("control_panel")
+        if control_panel is not None:
+            control_panel.scale_plot_range(0.5)
+
+    def _double_plot_range(self):
+        """Double the plot range, keeping it centred (Shift+Z)."""
+        control_panel = self._gui_part("control_panel")
+        if control_panel is not None:
+            control_panel.scale_plot_range(2)
+
+    def _load_spectrum(self):
+        """Choose spectrum file(s) to load (Ctrl/Cmd+D), as a plain click on Load Spectrum does."""
+        pane = self._gui_part("file_interaction_pane")
+        if pane is not None:
+            pane.load_spectra()
+
+    def _open_sample_manager(self):
+        """Open the sample manager (Ctrl/Cmd+Shift+D), as Spectral Functions > Manage Sample does."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.manage_sample()
 
     def _open_command_palette(self):
         """Open the command palette (Ctrl/Cmd+K), or bring it back to the front."""

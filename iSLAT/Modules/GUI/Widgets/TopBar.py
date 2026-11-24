@@ -239,7 +239,8 @@ class TopBar(ResizableFrame):
         )
         molecule_menu.add_command(label="HITRAN Query", command=self.hitran_query)
         molecule_menu.add_command(label="Default Molecules", command=self.default_molecules)
-        molecule_menu.add_command(label="Add Molecules", command=self.add_molecule)
+        add_molecule_label = f"Add Molecules ({shortcut_text('add_molecule')})"
+        molecule_menu.add_command(label=add_molecule_label, command=self.add_molecule)
         molecule_menu.add_command(label="Sort Molecules", command=self.sort_molecules)
         molecule_menu.add_command(label="Bulk Apply Properties", command=self.bulk_apply_properties)
         molecule_menu.add_command(label="Intensity Settings", command=self.intensity_settings)
@@ -258,7 +259,7 @@ class TopBar(ResizableFrame):
         MenuToolTip(molecule_menu, {
             "HITRAN Query":                        "Open the HITRAN molecule selector\nto query and add molecules by species.",
             "Default Molecules":                   "Load the default set of molecules\nfor the current spectrum.",
-            "Add Molecules":                       "Add a molecule from the available\nHITRAN files.",
+            add_molecule_label:                    "Add a molecule from the available\nHITRAN files.",
             "Sort Molecules":                      "Sort the molecules in the control panel\nby a chosen property (temperature, radius,\ncolumn density, …), ascending or descending.",
             "Bulk Apply Properties":               "Set one or more properties on many molecules\nat once, optionally only the visible ones.",
             "Intensity Settings":                  "Choose how line intensities are calculated\nfrom the optical depth: curve of growth\n(with or without line overlap) or RADEX.\nApplies to all molecules and is saved\nas the default.",
@@ -277,13 +278,16 @@ class TopBar(ResizableFrame):
             activebackground=btn_theme.get("active_background", "gray"),
             activeforeground=self.theme.get("foreground", "#F0F0F0"),
         )
-        spec_functions_menu.add_command(label="Save Line", command=self.save_line)
-        spec_functions_menu.add_command(label="Fit Line", command=self.fit_selected_line)
+        save_line_label = f"Save Line ({shortcut_text('save_line')})"
+        fit_line_label = f"Fit Line ({shortcut_text('fit_line')})"
+        slab_fit_label = f"Single Slab Fit ({shortcut_text('single_slab_fit')})"
+        spec_functions_menu.add_command(label=save_line_label, command=self.save_line)
+        spec_functions_menu.add_command(label=fit_line_label, command=self.fit_selected_line)
         spec_functions_menu.add_command(label="Fit Saved Lines", command=self.fit_saved_lines)
         spec_functions_menu.add_command(label="Fit Saved Lines To Sample", command=self.fit_saved_lines_to_sample)
         #spec_functions_menu.add_command(label="Fit from Batch Config", command=self.fit_from_batch_config)
         #spec_functions_menu.add_command(label="Find Single Lines", command=self.find_single_lines)
-        spec_functions_menu.add_command(label="Single Slab Fit", command=self.single_slab_fit)
+        spec_functions_menu.add_command(label=slab_fit_label, command=self.single_slab_fit)
         spec_functions_menu.add_command(label="Line de-Blender", command=lambda: self.fit_selected_line(deblend=True))
         spec_functions_menu.add_separator()
         spec_functions_menu.add_command(label="Subtract Models from Data", command=self.subtract_models_from_data)
@@ -300,21 +304,22 @@ class TopBar(ResizableFrame):
         spec_functions_menu.add_command(label=mark_wavelengths_label, command=self.open_wavelength_marker_dialog)
         spec_functions_menu.add_command(label="Find Lines in Range\u2026", command=self.find_lines_in_range)
         spec_functions_menu.add_separator()
-        spec_functions_menu.add_command(label="Manage Sample\u2026", command=self.manage_sample)
+        manage_sample_label = f"Manage Sample\u2026 ({shortcut_text('open_sample_manager')})"
+        spec_functions_menu.add_command(label=manage_sample_label, command=self.manage_sample)
         
         spec_functions_drpwn.config(menu=spec_functions_menu)
         MenuToolTip(spec_functions_menu, {
-            "Save Line":                        "Save the currently selected line\nto the output line measurements file.",
-            "Fit Line":                         "Fit a Gaussian to the currently\nselected spectral line.",
+            save_line_label:                    "Save the currently selected line\nto the output line measurements file.",
+            fit_line_label:                     "Fit a Gaussian to the currently\nselected spectral line.",
             "Fit Saved Lines":                  "Fit Gaussians to all lines\nin the saved line list.",
             "Fit Saved Lines To Sample":        "Fit saved lines across a sample\nof spectrum files.",
-            "Single Slab Fit":                  "Run a single-slab LTE model fit\nusing the saved line measurements.",
+            slab_fit_label:                     "Run a single-slab LTE model fit\nusing the saved line measurements.",
             "Line de-Blender":                  "Fit and de-blend overlapping\nspectral lines in the selection.",
             "Subtract Models from Data":        "Subtract all visible molecule models\nfrom the observed spectrum.",
             output_fs_label: "Save the full combined model spectrum\nto a file, matching the current overlay,\nobserved-data and Y-axis settings.",
             "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth, per-panel height and font sizes,\nand export a multi-page PDF (one page\nper range). Remembered for this session.",
             display_fs_label:                   "Open the full combined model spectrum\nin a separate window.",
-            "Manage Sample\u2026":              "Open the sample manager to add,\nremove, and switch between spectra.",
+            manage_sample_label:                "Open the sample manager to add,\nremove, and switch between spectra.",
             center_view_label:                  "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: " + shortcut_text("open_center_view_dialog"),
             mark_wavelengths_label:             "Mark a wavelength (line) or a range\n(shaded band) on the spectrum plots,\nwith an optional label (left / center /\nright of the mark), line and label\ncolors (color pickers) and line style.\nMarks are included in full-spectrum output.\nKeybind: " + shortcut_text("open_wavelength_marker_dialog"),
             "Find Lines in Range\u2026":       "List every line in a wavelength range\n(typed in or selected on the plot)\nfrom a chosen set of .par files and\nCSV line lists, in a sortable table\nthat can be exported to CSV.",
@@ -408,11 +413,11 @@ class TopBar(ResizableFrame):
             f"\n\nOpen in new window: {shortcut_text('open_full_spectrum_window')}"
         )
         toggle_summed_tip = f"Toggle summed model flux on/off\n(gray fill in plot)\nKeybind: {shortcut_text('toggle_summed_spectrum')}"
-        create_button(self.button_frame, self.theme, "Saved Lines", self.toggle_saved_lines, 0, 3, tip_text=saved_lines_tip)
-        create_button(self.button_frame, self.theme, "Atomic Lines", self.toggle_atomic_lines, 0, 4, tip_text=atomic_lines_tip)
-        create_button(self.button_frame, self.theme, "Full Spectrum", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
-        create_button(self.button_frame, self.theme, "Total Model", self.toggle_summed_spectrum, 0, 6, tip_text=toggle_summed_tip)
-        create_button(self.button_frame, self.theme, "Legend", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
+        create_button(self.button_frame, self.theme, f"Saved Lines ({shortcut_text('toggle_saved_lines')})", self.toggle_saved_lines, 0, 3, tip_text=saved_lines_tip)
+        create_button(self.button_frame, self.theme, f"Atomic Lines ({shortcut_text('toggle_atomic_lines')})", self.toggle_atomic_lines, 0, 4, tip_text=atomic_lines_tip)
+        create_button(self.button_frame, self.theme, f"Full Spectrum ({shortcut_text('toggle_full_spectrum')})", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
+        create_button(self.button_frame, self.theme, f"Total Model ({shortcut_text('toggle_summed_spectrum')})", self.toggle_summed_spectrum, 0, 6, tip_text=toggle_summed_tip)
+        create_button(self.button_frame, self.theme, f"Legend ({shortcut_text('toggle_legend')})", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
         
         # Navigate buttons - compact with minimal padding
         retreat_tip = f"Retreat the plot start\nby the current range value\nShortcut: {shortcut_text('retreat_plot_start')}"

@@ -170,25 +170,28 @@ class FileInteractionPane(ttk.Frame):
             # Ctrl/Command click - load spectrum with saved parameters
             self.islat_class.load_spectrum(load_parameters=True, force_dialog=True)
         else:
-            # Normal click - allow multiple file selection for sample loading
-            from iSLAT.Modules.GUI import GUI as GUIModule
-            from iSLAT.Modules.FileHandling.iSLATFileHandling import example_data_folder_path
-            file_paths = GUIModule.file_selector(
-                title='Choose Spectrum Data File(s)',
-                initialdir=example_data_folder_path,
-                allow_multiple=True
-            )
-            if not file_paths:
-                return
-            if isinstance(file_paths, str):
-                file_paths = [file_paths]
-            else:
-                file_paths = list(file_paths)
-            # Load the first file as the primary spectrum
-            self.islat_class.load_spectrum(file_path=file_paths[0], force_dialog=False)
-            # Add remaining files to the sample
-            if len(file_paths) > 1:
-                self.islat_class.add_sample_spectra(file_paths[1:])
+            self.load_spectra()
+
+    def load_spectra(self):
+        """Choose spectrum file(s): the first is loaded, the rest are added to the sample."""
+        from iSLAT.Modules.GUI import GUI as GUIModule
+        from iSLAT.Modules.FileHandling.iSLATFileHandling import example_data_folder_path
+        file_paths = GUIModule.file_selector(
+            title='Choose Spectrum Data File(s)',
+            initialdir=example_data_folder_path,
+            allow_multiple=True
+        )
+        if not file_paths:
+            return
+        if isinstance(file_paths, str):
+            file_paths = [file_paths]
+        else:
+            file_paths = list(file_paths)
+        # Load the first file as the primary spectrum
+        self.islat_class.load_spectrum(file_path=file_paths[0], force_dialog=False)
+        # Add remaining files to the sample
+        if len(file_paths) > 1:
+            self.islat_class.add_sample_spectra(file_paths[1:])
     
     def update_label(self, widget, text = None):
         widget.configure(text=text)

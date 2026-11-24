@@ -94,6 +94,18 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "retreat_plot_start_half": ("Shift+,",),
     "advance_plot_start": (".",),
     "advance_plot_start_half": ("Shift+.",),
+    "load_line_list": ("Ctrl+O",),
+    "set_output_file": ("Ctrl+Shift+O",),
+    "toggle_match_pixel_sampling": ("P",),
+    "add_molecule": ("Ctrl+N",),
+    "filter_active_line_list": ("Shift+F",),
+    "save_line": ("Shift+S",),
+    "fit_line": ("G",),
+    "single_slab_fit": ("Shift+G",),
+    "halve_plot_range": ("Z",),
+    "double_plot_range": ("Shift+Z",),
+    "load_spectrum": ("Ctrl+D",),
+    "open_sample_manager": ("Ctrl+Shift+D",),  # not Cmd+Shift+M: macOS's "Open man Page in Terminal"
     "open_command_palette": ("Ctrl+K",),
 }
 

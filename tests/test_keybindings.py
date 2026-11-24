@@ -171,6 +171,18 @@ _PREVIOUS_BINDINGS = [
     (("comma", 0), "_retreat_plot_start"),
     (("period", 0), "_advance_plot_start"),
     (("k", CTRL), "_open_command_palette"),
+    (("o", CTRL), "_load_line_list"),
+    (("O", CTRL | SHIFT), "_set_output_file"),
+    (("p", 0), "_toggle_match_pixel_sampling"),
+    (("n", CTRL), "_add_molecule"),
+    (("F", SHIFT), "_filter_active_line_list"),
+    (("S", SHIFT), "_save_line"),
+    (("g", 0), "_fit_line"),
+    (("G", SHIFT), "_single_slab_fit"),
+    (("z", 0), "_halve_plot_range"),
+    (("Z", SHIFT), "_double_plot_range"),
+    (("d", CTRL), "_load_spectrum"),
+    (("D", CTRL | SHIFT), "_open_sample_manager"),
 ]
 
 
@@ -352,3 +364,152 @@ def test_palette_escape_closes_without_running(palette):
     root.update_idletasks()
     for action in registry.actions():
         action.callback.assert_not_called()
+
+
+class TestGuiActions:
+    """The new shortcuts call the same GUI handlers as their buttons / menu items."""
+
+    def _real_handler(self):
+        from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+        h = InteractionHandler.__new__(InteractionHandler)
+        gui = SimpleNamespace(file_interaction_pane=MagicMock(), control_panel=MagicMock(), top_bar=MagicMock())
+        h.islat = SimpleNamespace(GUI=gui, active_molecule=SimpleNamespace(name="CO2"))
+        return h, gui
+
+    def test_each_calls_its_gui_handler(self):
+        h, gui = self._real_handler()
+        h._load_line_list()
+        gui.file_interaction_pane._load_input_line_list.assert_called_once_with()
+        h._set_output_file()
+        gui.file_interaction_pane._load_output_line_measurements.assert_called_once_with()
+        h._toggle_match_pixel_sampling()
+        gui.control_panel._toggle_match_spectral_sampling.assert_called_once_with()
+        h._add_molecule()
+        gui.top_bar.add_molecule.assert_called_once_with()
+        h._filter_active_line_list()
+        gui.control_panel._filter_line_list_action.assert_called_once_with("CO2")
+        h._save_line()
+        gui.top_bar.save_line.assert_called_once_with()
+        h._fit_line()
+        gui.top_bar.fit_selected_line.assert_called_once_with()
+        h._single_slab_fit()
+        gui.top_bar.single_slab_fit.assert_called_once_with()
+        h._halve_plot_range()
+        gui.control_panel.scale_plot_range.assert_called_once_with(0.5)
+        h._double_plot_range()
+        gui.control_panel.scale_plot_range.assert_called_with(2)
+        h._load_spectrum()
+        gui.file_interaction_pane.load_spectra.assert_called_once_with()
+        h._open_sample_manager()
+        gui.top_bar.manage_sample.assert_called_once_with()
+
+    def test_before_the_gui_exists_they_do_nothing(self):
+        from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+        h = InteractionHandler.__new__(InteractionHandler)
+        h.islat = SimpleNamespace(active_molecule=None)
+        for method in ("_load_line_list", "_set_output_file", "_toggle_match_pixel_sampling",
+                       "_add_molecule", "_filter_active_line_list", "_save_line", "_fit_line",
+                       "_single_slab_fit", "_halve_plot_range", "_double_plot_range",
+                       "_load_spectrum", "_open_sample_manager"):
+            getattr(h, method)()  # no error
+
+    def test_gui_handlers_exist(self):
+        from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanel
+        from iSLAT.Modules.GUI.Widgets.FileInteractionPane import FileInteractionPane
+        from iSLAT.Modules.GUI.Widgets.TopBar import TopBar
+        for cls, name in ((FileInteractionPane, "_load_input_line_list"),
+                          (FileInteractionPane, "_load_output_line_measurements"),
+                          (ControlPanel, "_toggle_match_spectral_sampling"),
+                          (ControlPanel, "_filter_line_list_action"),
+                          (ControlPanel, "scale_plot_range"),
+                          (TopBar, "add_molecule"),
+                          (TopBar, "save_line"),
+                          (TopBar, "fit_selected_line"),
+                          (TopBar, "single_slab_fit"),
+                          (TopBar, "manage_sample"),
+                          (FileInteractionPane, "load_spectra")):
+            assert callable(getattr(cls, name)), f"{cls.__name__}.{name}"
+
+
+@pytest.mark.parametrize("start, plot_range, new_start, new_range, fmt", [
+    (17.0, 0.4, 17.1, 0.2, "{:.6g}"),
+    (16.8075, 2.3815, 17.403, 1.19075, "{:.6g}"),
+    (16.8075, 2.3815, 17.40324, 1.19, "{:.2f}"),  # a range field that rounds
+])
+def test_halve_plot_range_keeps_centre(start, plot_range, new_start, new_range, fmt):
+    from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanel
+
+    class Var:
+        def __init__(self, value): self.value = str(value)
+        def get(self): return self.value
+        def set(self, value): self.value = value
+
+    applied = []
+    panel = SimpleNamespace(
+        plot_start_var=Var(start), plot_range_var=Var(plot_range),
+        _set_var=lambda var, value: var.set(value),
+        _format_value=lambda value, name: (fmt if name == "display_range_range" else "{:.6g}").format(value),
+        _update_display_range=lambda: applied.append(True),
+        islat=SimpleNamespace(display_range=None),  # no exact range known: use the fields
+    )
+    ControlPanel.scale_plot_range(panel, 0.5)
+    got_start, got_range = float(panel.plot_start_var.get()), float(panel.plot_range_var.get())
+    assert (got_start, got_range) == pytest.approx((new_start, new_range), abs=1e-4)
+    assert got_start + got_range / 2 == pytest.approx(start + plot_range / 2, abs=1e-4)
+    assert applied == [True]
+
+
+def test_halve_plot_range_uses_the_exact_range_not_the_rounded_fields():
+    from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanel
+
+    class Var:
+        def __init__(self, value): self.value = str(value)
+        def get(self): return self.value
+        def set(self, value): self.value = value
+
+    panel = SimpleNamespace(
+        plot_start_var=Var("16.8075"), plot_range_var=Var("2.38"),  # field rounded from 2.3815
+        _set_var=lambda var, value: var.set(value),
+        _format_value=lambda value, name: ("{:.2f}" if name == "display_range_range" else "{:.6g}").format(value),
+        _update_display_range=lambda: None,
+        islat=SimpleNamespace(display_range=(16.8075, 19.189)),
+    )
+    ControlPanel.scale_plot_range(panel, 0.5)
+    start, plot_range = float(panel.plot_start_var.get()), float(panel.plot_range_var.get())
+    assert start + plot_range / 2 == pytest.approx((16.8075 + 19.189) / 2, abs=1e-4)
+
+
+def test_double_plot_range_keeps_centre():
+    from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanel
+
+    class Var:
+        def __init__(self, value): self.value = str(value)
+        def get(self): return self.value
+        def set(self, value): self.value = value
+
+    panel = SimpleNamespace(
+        plot_start_var=Var("17.0"), plot_range_var=Var("0.4"),
+        _set_var=lambda var, value: var.set(value),
+        _format_value=lambda value, name: f"{value:.6g}",
+        _update_display_range=lambda: None,
+        islat=SimpleNamespace(display_range=(17.0, 17.4)),
+    )
+    ControlPanel.scale_plot_range(panel, 2)
+    assert (float(panel.plot_start_var.get()), float(panel.plot_range_var.get())) == pytest.approx((16.8, 0.8))
+
+
+def test_match_sampling_button_shows_its_shortcut():
+    from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanel
+    assert ControlPanel._match_sampling_text(True) == f"✓ Match Pix. Sampling ({shortcut_text('toggle_match_pixel_sampling')})"
+    assert ControlPanel._match_sampling_text(False).startswith("  Match Pix. Sampling (")
+
+
+def test_load_spectrum_click_and_shortcut_share_one_method():
+    """A plain click on Load Spectrum runs load_spectra (the keybind's method); Cmd/Ctrl-click loads parameters."""
+    from iSLAT.Modules.GUI.Widgets.FileInteractionPane import FileInteractionPane
+    pane = SimpleNamespace(load_spectra=MagicMock(), islat_class=MagicMock())
+    FileInteractionPane._handle_load_spectrum_click(pane, SimpleNamespace(state=0))
+    pane.load_spectra.assert_called_once_with()
+    pane.islat_class.load_spectrum.assert_not_called()
+    FileInteractionPane._handle_load_spectrum_click(pane, SimpleNamespace(state=CTRL | CMD))
+    pane.islat_class.load_spectrum.assert_called_once_with(load_parameters=True, force_dialog=True)
