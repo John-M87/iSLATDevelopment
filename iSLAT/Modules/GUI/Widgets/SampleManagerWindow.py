@@ -19,6 +19,7 @@ Usage
 from __future__ import annotations
 
 import os
+import platform
 import tkinter as tk
 import tkinter.ttk as ttk
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
@@ -134,7 +135,9 @@ class SampleManagerWindow:
             value=int(getattr(islat, "sample_spectra_index", 0))
         )
 
-        self._row_widgets: List[tk.Frame] = []
+        # Per row: (outer frame, top row, name label, radio button, their normal bg).
+        self._row_widgets: List[Tuple[tk.Frame, tk.Frame, tk.Label, tk.Radiobutton, str]] = []
+        self._sized = False  # the window is sized to its rows once, then left to the user
         self._expanded: Set[str] = set()  # spectrum paths with open override editor
         self._ovr_buttons: Dict[str, ttk.Button] = {}
         self._fields: Dict[str, Dict[str, Any]] = load_global_override_fields()
@@ -208,7 +211,8 @@ class SampleManagerWindow:
     # Row management
     # ------------------------------------------------------------------
     def _rebuild_rows(self) -> None:
-        """Destroy and recreate all spectrum rows."""
+        """Destroy and recreate all spectrum rows, keeping the scroll position."""
+        scroll_top = self._canvas.yview()[0]
         for w in self._rows_frame.winfo_children():
             w.destroy()
         self._row_widgets.clear()
@@ -222,9 +226,6 @@ class SampleManagerWindow:
         self._ovr_buttons.clear()
         # Drop stale expansion state for removed spectra
         self._expanded &= set(sample)
-
-        is_dark = "dark" in str(self._theme).lower()
-        hl_bg = "#2a5a8a" if is_dark else "#cce0f5"
 
         for idx, path in enumerate(sample):
             name = os.path.basename(path)
@@ -259,11 +260,7 @@ class SampleManagerWindow:
                 command=lambda i=idx: self._remove(i),
             ).pack(side="right", padx=(0, 2))
 
-            if idx == cur_idx:
-                for w in (outer, top_row):
-                    w.configure(bg=hl_bg)
-                lbl.configure(bg=hl_bg, font=("TkDefaultFont", 9, "bold"))
-                rb.configure(bg=hl_bg, activebackground=hl_bg)
+            self._row_widgets.append((outer, top_row, lbl, rb, outer.cget("bg")))
 
             # bottom row: param file indicator + Browse + Clear
             param_row = tk.Frame(outer)
@@ -347,17 +344,32 @@ class SampleManagerWindow:
                 fill="x", padx=4, pady=1
             )
 
-            self._row_widgets.append(outer)
-
+        self._highlight_active(cur_idx)
         self._bind_scroll(self._rows_frame)
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        # Back to where the list was (once the new rows have their size).
+        self._canvas.after_idle(lambda: self._canvas.yview_moveto(scroll_top))
 
-        # Resize window to fit content (clamped at 600 px)
-        n = max(len(sample), 1)
-        extra = sum(
-            len(self._fields) * 26 + 8 for p in sample if p in self._expanded
-        )
-        self._win.geometry(f"680x{min(120 + n * 75 + extra, 600)}")
+        # Size the window to its content once (clamped at 600 px); after that
+        # it keeps whatever size the user gives it.
+        if not self._sized:
+            self._sized = True
+            n = max(len(sample), 1)
+            extra = sum(
+                len(self._fields) * 26 + 8 for p in sample if p in self._expanded
+            )
+            self._win.geometry(f"680x{min(120 + n * 75 + extra, 600)}")
+
+    def _highlight_active(self, active_idx: int) -> None:
+        """Highlight the row of the active spectrum (and only that row)."""
+        is_dark = "dark" in str(self._theme).lower()
+        hl_bg = "#2a5a8a" if is_dark else "#cce0f5"
+        for idx, (outer, top_row, lbl, rb, normal_bg) in enumerate(self._row_widgets):
+            bg = hl_bg if idx == active_idx else normal_bg
+            for w in (outer, top_row):
+                w.configure(bg=bg)
+            lbl.configure(bg=bg, font=("TkDefaultFont", 9, "bold" if idx == active_idx else "normal"))
+            rb.configure(bg=bg, activebackground=bg)
 
     def _build_override_editor(
         self, parent: tk.Frame, path: str, ovr: Dict[str, Any]
@@ -408,10 +420,12 @@ class SampleManagerWindow:
         """Switch the active spectrum to *idx*."""
         try:
             self._islat.switch_to_spectrum(idx)
-            self._active_var.set(idx)
         except Exception as exc:
-            print(f"[SampleManagerWindow] switch error: {exc}")
-        self._rebuild_rows()
+            self._report(f"Could not switch to spectrum {idx + 1}: {exc}")
+        # Only the highlight changes: no need to rebuild the rows.
+        active = int(getattr(self._islat, "sample_spectra_index", idx))
+        self._active_var.set(active)
+        self._highlight_active(active)
         self._refresh_file_pane()
 
     def _remove(self, idx: int) -> None:
@@ -524,7 +538,7 @@ class SampleManagerWindow:
                 try:
                     setattr(islat.molecules_dict, prop, value)
                 except Exception as exc:
-                    print(f"[SampleManagerWindow] apply error: {exc}")
+                    self._report(f"Could not apply override {prop}: {exc}")
 
         self._save_state()
         self._update_override_button(spectrum_path, len(ovr))
@@ -555,7 +569,7 @@ class SampleManagerWindow:
             try:
                 save()
             except Exception as exc:
-                print(f"[SampleManagerWindow] save error: {exc}")
+                self._report(f"Could not save the sample: {exc}")
 
     def _add_spectra(self) -> None:
         """Open a file dialog and add selected files to the sample."""
@@ -585,6 +599,16 @@ class SampleManagerWindow:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _report(self, message: str) -> None:
+        """Show *message* in iSLAT's message pane (and the terminal)."""
+        print(f"[SampleManagerWindow] {message}")
+        data_field = getattr(getattr(self._islat, "GUI", None), "data_field", None)
+        if data_field is not None:
+            try:
+                data_field.insert_text(message)
+            except Exception:
+                pass
+
     def _refresh_file_pane(self) -> None:
         """Sync the FileInteractionPane label if the GUI is available."""
         try:
@@ -604,15 +628,20 @@ class SampleManagerWindow:
             self._rows_frame_id, width=self._canvas.winfo_width()
         )
 
+    def _on_mouse_wheel(self, event: Any) -> None:
+        """Scroll the rows; Windows reports 120 per wheel step, macOS small steps (±1...)."""
+        step = event.delta if platform.system() == "Darwin" else event.delta / 120
+        units = int(-step) or (-1 if step > 0 else 1 if step < 0 else 0)
+        if units:
+            self._canvas.yview_scroll(units, "units")
+
     def _bind_scroll(self, widget: tk.Widget) -> None:
         """Recursively bind mouse-wheel scrolling to *widget* and children."""
 
-        def _on_scroll(event: Any) -> None:
-            self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        widget.bind("<MouseWheel>", _on_scroll)
-        # Tk 9 sends the trackpad as <TouchpadScroll>, not <MouseWheel>.
-        bind_touchpad_scroll(widget, self._canvas)
+        widget.bind("<MouseWheel>", self._on_mouse_wheel)
+        # Tk 9 sends the trackpad as <TouchpadScroll>, not <MouseWheel>.  Replace
+        # rather than add: the rows frame is rebound on every rebuild.
+        bind_touchpad_scroll(widget, self._canvas, add=False)
         for child in widget.winfo_children():
             self._bind_scroll(child)
 

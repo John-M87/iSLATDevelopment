@@ -141,13 +141,15 @@ def bind_touchpad_scroll(
     vertical: bool = True,
     horizontal: bool = False,
     bind_all: bool = False,
+    add: bool = True,
 ) -> Optional[Callable[[Any], None]]:
     """Make two-finger trackpad scrolling over *widget* scroll *scroll_canvas* (Tk 9).
 
     With only *horizontal* scrolling, vertical finger movement scrolls
     sideways too (like the plain mouse wheel in such frames).  With
     *bind_all* the binding is made with ``bind_all`` (for frames that bind
-    on ``<Enter>`` and unbind on ``<Leave>``).  Returns the handler, or
+    on ``<Enter>`` and unbind on ``<Leave>``); with *add* False it replaces
+    the widget's ``<TouchpadScroll>`` binding instead of adding to it.  Returns the handler, or
     ``None`` when this Tk has no ``<TouchpadScroll>`` event.
     """
     if not touchpad_scroll_supported(widget):
@@ -165,7 +167,7 @@ def bind_touchpad_scroll(
     if bind_all:
         widget.bind_all("<TouchpadScroll>", _on_touchpad)
     else:
-        widget.bind("<TouchpadScroll>", _on_touchpad, add="+")
+        widget.bind("<TouchpadScroll>", _on_touchpad, add="+" if add else "")
     return _on_touchpad
 
 

@@ -424,3 +424,110 @@ def test_bottom_buttons_are_packed_before_the_rows_area(monkeypatch):
     finally:
         root.withdraw()
         root.destroy()
+
+
+
+# ---------------------------------------------------------------------------
+# Window behaviour (hidden windows)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def manager(monkeypatch):
+    """A SampleManagerWindow over a fake iSLAT with 30 spectra; every window stays hidden."""
+    import tkinter as tk
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from iSLAT.Modules.GUI.Widgets.SampleManagerWindow import SampleManagerWindow
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display not available (headless environment)")
+    root.withdraw()
+    original = tk.Toplevel.__init__
+
+    def hidden(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.withdraw()
+
+    monkeypatch.setattr(tk.Toplevel, "__init__", hidden)
+    islat = SimpleNamespace(
+        sample_spectra=[f"/data/spec_{i}.csv" for i in range(30)], sample_spectra_index=0,
+        sample_spectra_params={}, sample_spectra_overrides={},
+        GUI=SimpleNamespace(data_field=MagicMock(), file_interaction_pane=MagicMock()),
+    )
+
+    def switch(index):
+        islat.sample_spectra_index = index
+
+    islat.switch_to_spectrum = switch
+    window = SampleManagerWindow(root, islat, {})
+    window._win.update_idletasks()
+    yield window, islat
+    window._win.destroy()
+    root.withdraw()
+    root.destroy()
+
+
+def _bold_rows(window):
+    return [i for i, (_, _, lbl, _, _) in enumerate(window._row_widgets) if "bold" in str(lbl.cget("font"))]
+
+
+def test_activating_a_row_moves_the_highlight_without_rebuilding(manager, monkeypatch):
+    window, islat = manager
+    first_widgets = list(window._row_widgets)
+    rebuilds = []
+    monkeypatch.setattr(window, "_rebuild_rows", lambda: rebuilds.append(1))
+    window._activate(5)
+    assert islat.sample_spectra_index == 5
+    assert rebuilds == []
+    assert window._row_widgets == first_widgets   # same widgets, not recreated
+    assert _bold_rows(window) == [5]
+    bg = {i: outer.cget("bg") for i, (outer, *_rest) in enumerate(window._row_widgets)}
+    assert bg[5] != bg[0] and bg[0] == bg[1]
+
+
+def test_switch_errors_reach_the_message_pane(manager):
+    window, islat = manager
+
+    def broken(index):
+        raise OSError("file vanished")
+
+    islat.switch_to_spectrum = broken
+    window._activate(3)
+    message = islat.GUI.data_field.insert_text.call_args[0][0]
+    assert "spectrum 4" in message and "file vanished" in message
+    assert _bold_rows(window) == [0]    # still highlights the spectrum that is really active
+
+
+def test_rebuild_keeps_the_users_window_size(manager, monkeypatch):
+    """Only the first build sizes the window; later rebuilds leave the user's size alone."""
+    window, _islat = manager
+    sizes = []
+    monkeypatch.setattr(window._win, "geometry", lambda *args: sizes.append(args))
+    window._rebuild_rows()
+    window._activate(2)
+    assert sizes == []
+
+
+def test_rebuild_does_not_stack_touchpad_handlers(manager):
+    window, _islat = manager
+    if not window._rows_frame.bind("<TouchpadScroll>"):
+        pytest.skip("no <TouchpadScroll> in Tk 8.6")
+    for _ in range(4):
+        window._rebuild_rows()
+    script = window._rows_frame.bind("<TouchpadScroll>")
+    assert len([line for line in script.splitlines() if line.strip()]) == 1
+
+
+@pytest.mark.parametrize("system, delta, expected", [
+    ("Darwin", 1, -1), ("Darwin", -3, 3), ("Darwin", 0, 0),
+    ("Windows", 120, -1), ("Windows", -240, 2), ("Windows", 30, -1),
+])
+def test_mouse_wheel_scrolls_on_every_platform(manager, monkeypatch, system, delta, expected):
+    from types import SimpleNamespace
+    window, _islat = manager
+    monkeypatch.setattr("platform.system", lambda: system)
+    calls = []
+    monkeypatch.setattr(window._canvas, "yview_scroll", lambda n, what: calls.append((n, what)))
+    window._on_mouse_wheel(SimpleNamespace(delta=delta))
+    assert calls == ([(expected, "units")] if expected else [])
