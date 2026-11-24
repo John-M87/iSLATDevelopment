@@ -170,6 +170,7 @@ _PREVIOUS_BINDINGS = [
     (("Right", 0), "_cycle_spectrum_next"),
     (("comma", 0), "_retreat_plot_start"),
     (("period", 0), "_advance_plot_start"),
+    (("k", CTRL), "_open_command_palette"),
 ]
 
 
@@ -255,3 +256,99 @@ class TestLineListViewExportShortcut:
         win._export_csv = MagicMock()
         assert LineListViewWindow._on_export_shortcut(win, None) == "break"
         win._export_csv.assert_called_once_with()
+
+
+# ---------------------------------------------------------------------------
+# Command palette (Ctrl/Cmd+K)
+# ---------------------------------------------------------------------------
+
+def test_cmd_k_opens_palette_even_from_a_text_field():
+    h = _handler()
+    assert h._on_tk_keypress(_event("k", CTRL, widget_class="TEntry")) == "break"
+    h._open_command_palette.assert_called_once_with()
+    assert h._on_tk_keypress(_event("s", CTRL, widget_class="TEntry")) is None  # other shortcuts still ignored
+    h._save_parameters.assert_not_called()
+
+
+def test_action_title():
+    from iSLAT.Modules.GUI.KeyBindings import action_title
+    assert action_title("toggle_full_spectrum") == "Toggle full spectrum"
+    assert action_title("open_center_view_dialog") == "Open center view dialog"
+
+
+def _registry():
+    registry = ActionRegistry()
+    registry.register_defaults({action_id: MagicMock(name=action_id) for action_id in DEFAULT_KEYMAP})
+    return registry
+
+
+def test_filter_actions_matches_every_word_and_ranks_prefix_matches_first():
+    from iSLAT.Modules.GUI.KeyBindings import filter_actions
+    actions = _registry().actions()
+    assert filter_actions(actions, "") == actions
+    found = [a.id for a in filter_actions(actions, "full spec")]
+    assert set(found) == {"toggle_full_spectrum", "open_full_spectrum_window", "output_full_spectrum"}
+    assert [a.id for a in filter_actions(actions, "output")][0] == "output_full_spectrum"
+    assert [a.id for a in filter_actions(actions, "SAVE param")] == ["save_parameters", "save_parameters_to_file"]
+    assert filter_actions(actions, "no such command") == []
+
+
+def test_filter_actions_finds_shortcuts():
+    from iSLAT.Modules.GUI.KeyBindings import filter_actions
+    actions = _registry().actions()
+    assert [a.id for a in filter_actions(actions, "ctrl+shift+s", system="Windows")] == ["save_parameters_to_file"]
+    assert [a.id for a in filter_actions(actions, "cmd+shift+s", system="Darwin")] == ["save_parameters_to_file"]
+
+
+@pytest.fixture
+def palette(monkeypatch):
+    """A CommandPalette over a hidden root, itself kept hidden."""
+    import tkinter as tk
+    from iSLAT.Modules.GUI.KeyBindings import CommandPalette
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display not available (headless environment)")
+    root.withdraw()
+    monkeypatch.setattr(CommandPalette, "_place", lambda self, parent: self.withdraw())
+    registry = _registry()
+    pal = CommandPalette(root, registry)
+    yield pal, registry, root
+    pal.close()
+    root.withdraw()
+    root.destroy()
+
+
+def test_palette_lists_every_action_but_itself(palette):
+    pal, registry, _root = palette
+    titles = [pal.tree.item(i, "text") for i in pal.tree.get_children()]
+    assert len(titles) == len(DEFAULT_KEYMAP) - 1
+    assert "Open command palette" not in titles
+    first = pal.tree.get_children()[0]
+    assert pal.tree.item(first, "values")[0] == format_chord(DEFAULT_KEYMAP[pal.selected_action().id][0])
+
+
+def test_palette_filters_moves_and_runs(palette):
+    pal, registry, root = palette
+    pal.query.set("full spectrum")
+    assert len(pal.tree.get_children()) == 3
+    first = pal.selected_action()
+    pal._move(1)
+    chosen = pal.selected_action()
+    assert chosen is not first
+    pal._move(-5)  # stays on the list
+    assert pal.selected_action() is first
+    pal._move(1)
+    pal.run_selected()
+    assert pal._closed
+    root.update_idletasks()  # the action runs once the palette is gone
+    chosen.callback.assert_called_once_with()
+    first.callback.assert_not_called()
+
+
+def test_palette_escape_closes_without_running(palette):
+    pal, registry, root = palette
+    pal.close()
+    root.update_idletasks()
+    for action in registry.actions():
+        action.callback.assert_not_called()

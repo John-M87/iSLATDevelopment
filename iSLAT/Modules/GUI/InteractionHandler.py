@@ -2,7 +2,7 @@ import numpy as np
 import time
 from matplotlib.widgets import SpanSelector
 from typing import Optional, Tuple, Callable, Dict, Any
-from .KeyBindings import ActionRegistry, TEXT_INPUT_CLASSES, chord_from_event
+from .KeyBindings import ActionRegistry, CommandPalette, TEXT_INPUT_CLASSES, chord_from_event
 from .TrackpadNavigation import is_right_click
 
 #: How far (pixels) another animated artist's clip box must stay from a
@@ -569,6 +569,7 @@ class InteractionHandler:
         "retreat_plot_start_half": "_retreat_plot_start_half",
         "advance_plot_start": "_advance_plot_start",
         "advance_plot_start_half": "_advance_plot_start_half",
+        "open_command_palette": "_open_command_palette",
     }
 
     def _build_action_registry(self) -> ActionRegistry:
@@ -610,12 +611,27 @@ class InteractionHandler:
             widget_class = event.widget.winfo_class()
         except AttributeError:
             return None
+        chord = chord_from_event(event)
+        registry = self._get_action_registry()
         if widget_class in TEXT_INPUT_CLASSES:
-            return None  # Don't consume event, let typing work
+            # Let typing work; only the command palette opens from a text field.
+            action = registry.action_for_chord(chord)
+            if action is None or action.id != "open_command_palette":
+                return None
 
-        if self._get_action_registry().dispatch(chord_from_event(event)):
+        if registry.dispatch(chord):
             return 'break'
         return None
+
+    def _open_command_palette(self):
+        """Open the command palette (Ctrl/Cmd+K), or bring it back to the front."""
+        palette = getattr(self, "_command_palette", None)
+        if palette is not None and palette.winfo_exists():
+            palette.lift()
+            palette.entry.focus_set()
+            return
+        parent = self.canvas.get_tk_widget().winfo_toplevel()
+        self._command_palette = CommandPalette(parent, self._get_action_registry())
 
     def _cycle_spectrum_previous(self):
         """Switch to the previous spectrum in the sample list."""

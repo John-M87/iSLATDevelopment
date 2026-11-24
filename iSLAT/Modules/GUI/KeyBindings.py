@@ -11,13 +11,17 @@ their default chords.  The GUI binds callbacks to action IDs through an
 :class:`ActionRegistry`, and UI text (menu labels, tooltips) is generated with
 :func:`shortcut_text` so it always matches the real bindings.
 
-This module has no Tk dependency so it can be unit-tested headlessly.
+:class:`CommandPalette` (Ctrl/Cmd+K) lists every action with its shortcut:
+type to filter, Up / Down to choose, Enter (or a double-click) to run.
+Everything else here works without a Tk window, so it can be unit-tested headlessly.
 """
 
 from __future__ import annotations
 
 import platform
+import tkinter as tk
 from dataclasses import dataclass, field
+from tkinter import ttk
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 __all__ = [
@@ -25,6 +29,9 @@ __all__ = [
     "TEXT_INPUT_CLASSES",
     "Action",
     "ActionRegistry",
+    "CommandPalette",
+    "action_title",
+    "filter_actions",
     "chord_from_event",
     "format_chord",
     "is_mac",
@@ -87,6 +94,7 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "retreat_plot_start_half": ("Shift+,",),
     "advance_plot_start": (".",),
     "advance_plot_start_half": ("Shift+.",),
+    "open_command_palette": ("Ctrl+K",),
 }
 
 
@@ -174,6 +182,27 @@ def shortcut_text(action_id: str, system: Optional[str] = None) -> str:
     return format_chord(chords[0], system)
 
 
+def action_title(action_id: str) -> str:
+    """Readable name of an action ID: ``"toggle_full_spectrum"`` -> ``"Toggle full spectrum"``."""
+    return action_id.replace("_", " ").strip().capitalize()
+
+
+def filter_actions(actions: Iterable["Action"], query: str, system: Optional[str] = None) -> List["Action"]:
+    """Actions whose title, ID or shortcut contain every word of *query* (any case).
+
+    Titles that start with the query come first; otherwise the given order is kept.
+    """
+    words = query.lower().split()
+    query = query.strip().lower()
+
+    def text(action: "Action") -> str:
+        keys = " ".join(format_chord(c, system) for c in action.chords)
+        return f"{action_title(action.id)} {action.id} {keys}".lower()
+
+    matches = [a for a in actions if all(word in text(a) for word in words)]
+    return sorted(matches, key=lambda a: not action_title(a.id).lower().startswith(query))
+
+
 @dataclass
 class Action:
     """A named, keyboard-invokable command."""
@@ -256,3 +285,111 @@ class ActionRegistry:
             return False
         action.callback()
         return True
+
+
+class CommandPalette(tk.Toplevel):
+    """Searchable list of the actions in an :class:`ActionRegistry`."""
+
+    #: Actions not listed (opening the palette from itself does nothing useful).
+    EXCLUDED = ("open_command_palette",)
+
+    def __init__(self, parent: tk.Misc, registry: ActionRegistry) -> None:
+        super().__init__(parent)
+        self.title("Commands")
+        self.transient(parent)
+        self.resizable(False, False)
+        self._actions: List[Action] = [a for a in registry.actions() if a.id not in self.EXCLUDED]
+        self._shown: List[Action] = []
+        self._closed = False
+
+        frame = ttk.Frame(self, padding=8)
+        frame.pack(fill="both", expand=True)
+        self.query = tk.StringVar(master=self)
+        self.entry = ttk.Entry(frame, textvariable=self.query, width=48)
+        self.entry.pack(fill="x")
+        self.tree = ttk.Treeview(frame, columns=("keys",), show="tree", height=12,
+                                 selectmode="browse", takefocus=False)
+        self.tree.column("#0", width=320, stretch=True)
+        self.tree.column("keys", width=110, anchor="e", stretch=False)
+        self.tree.pack(fill="both", expand=True, pady=(6, 0))
+
+        self.query.trace_add("write", lambda *_: self._refresh())
+        self.entry.bind("<Down>", lambda _e: self._move(1))
+        self.entry.bind("<Up>", lambda _e: self._move(-1))
+        self.entry.bind("<Return>", lambda _e: self.run_selected())
+        self.tree.bind("<Double-Button-1>", lambda _e: self.run_selected())
+        # Keep the keyboard in the entry: arrow and letter keys on the list
+        # would otherwise also reach iSLAT's global shortcuts.
+        self.tree.bind("<ButtonRelease-1>", lambda _e: self.entry.focus_set())
+        self.bind("<Escape>", lambda _e: self.close())
+        self.bind("<FocusOut>", lambda _e: self.after(100, self._close_if_unfocused))
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+        self._refresh()
+        self._place(parent)
+        self.entry.focus_set()
+
+    # -- list ---------------------------------------------------------
+    def _refresh(self) -> None:
+        self._shown = filter_actions(self._actions, self.query.get())
+        self.tree.delete(*self.tree.get_children())
+        for index, action in enumerate(self._shown):
+            keys = format_chord(action.chords[0]) if action.chords else ""
+            self.tree.insert("", "end", iid=str(index), text=action_title(action.id), values=(keys,))
+        if self._shown:
+            self._select(0)
+
+    def _select(self, index: int) -> None:
+        iid = str(index)
+        self.tree.selection_set(iid)
+        self.tree.see(iid)
+
+    def _move(self, step: int) -> str:
+        if self._shown:
+            current = self.tree.selection()
+            index = int(current[0]) if current else 0
+            self._select(max(0, min(len(self._shown) - 1, index + step)))
+        return "break"
+
+    def selected_action(self) -> Any:
+        current = self.tree.selection()
+        return self._shown[int(current[0])] if current else None
+
+    # -- running / closing --------------------------------------------
+    def run_selected(self) -> str:
+        """Close the palette, then run the selected action (after the palette is gone)."""
+        action = self.selected_action()
+        parent = self.master
+        self.close()
+        if action is not None:
+            parent.after_idle(action.callback)
+        return "break"
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+
+    def _close_if_unfocused(self) -> None:
+        if self._closed:
+            return
+        try:
+            focused = self.focus_get()
+        except (KeyError, tk.TclError):
+            focused = None
+        if focused is None or focused.winfo_toplevel() is not self:
+            self.close()
+
+    def _place(self, parent: tk.Misc) -> None:
+        """Centre horizontally over *parent*, near its top (like editors' command palettes)."""
+        self.update_idletasks()
+        try:
+            x = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_reqwidth()) // 2
+            y = parent.winfo_rooty() + 80
+        except tk.TclError:
+            return
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
