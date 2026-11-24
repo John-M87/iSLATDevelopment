@@ -5,6 +5,15 @@
 
 Please see the new [wiki page](https://github.com/spexod/iSLAT/wiki) for detailed information on installation, examples, and GUI functions and parameters.
 
+## Installation
+From the cloned repository folder, use one of:
+
+- **conda** (recommended): `conda env create -f environment-tk9.yml` then `conda activate islat`. This uses Tk 9 from Anaconda's `defaults` channel; for a conda-forge-only setup (Tk 8.6) use `environment.yml` instead (env name `islat`).
+- **pip**: `pip install -e .`
+- **uv**: `uv sync`
+
+Then launch the GUI with `islat` (or `uv run islat`, or `python iSLAT-launch.py`).
+
 ## **RECOMMENDED**
 If updating from version 4: clone the new iSLAT in a new folder on your machine, and copy over any save files you may have made with version 4 into the respective folders (e.g. SAVES/ or LINESAVES/ or LINELISTS/). 
 

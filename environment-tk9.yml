@@ -1,5 +1,5 @@
 # Uses Anaconda's "defaults" channel, which is subject to Anaconda's Terms of Service.
-name: islat-tk9
+name: islat
 channels:
   - defaults
 dependencies:
