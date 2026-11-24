@@ -943,60 +943,29 @@ def write_molecules_to_csv(molecules_dict, file_path=save_folder_path, file_name
     # Ensure the directory exists
     os.makedirs(file_path, exist_ok=True)
 
+    from iSLAT.Modules.DataTypes.ParameterSet import SAVE_COLUMNS, ParameterSet
+
     # Detect whether we received live Molecule objects or raw dicts
     first_value = next(iter(molecules_dict.values()), None) if molecules_dict else None
     is_raw_dict: bool = isinstance(first_value, dict)
 
+    if is_raw_dict:
+        # Raw dict-of-dicts path (batch fitting save data)
+        rows = [{**params, "Molecule Name": mol_name}
+                for mol_name, params in molecules_dict.items() if not mol_name.startswith("_")]
+    else:
+        # Live MoleculeDict path: the same rows a captured parameter set holds
+        rows = ParameterSet.capture(molecules_dict).rows()
+    # Missing values of raw rows (live rows have every column)
+    defaults = {"KeplerianFWHM": 0.0, "InstrumentalProfile": "constant"}
+
     try:
         with open(csv_filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
-            header = ['Molecule Name', 'File Path', 'Molecule Label', 'Temp', 'Rad', 'N_Mol', 'Color', 'Vis', 'Dist', 'StellarRV', 'FWHM', 'KeplerianFWHM', 'InstrumentalProfile', 'Broad', 'RV Shift']
-            writer.writerow(header)
-
-            if is_raw_dict:
-                # Raw dict-of-dicts path (batch fitting save data)
-                for mol_name, params in molecules_dict.items():
-                    if mol_name.startswith("_"):
-                        continue
-                    row = [
-                        mol_name,
-                        params.get("File Path", ""),
-                        params.get("Molecule Label", mol_name),
-                        params.get("Temp", ""),
-                        params.get("Rad", ""),
-                        params.get("N_Mol", ""),
-                        params.get("Color", ""),
-                        params.get("Vis", ""),
-                        params.get("Dist", ""),
-                        params.get("StellarRV", ""),
-                        params.get("FWHM", ""),
-                        params.get("KeplerianFWHM", 0.0),
-                        params.get("InstrumentalProfile", "constant"),
-                        params.get("Broad", ""),
-                        params.get("RV Shift", ""),
-                    ]
-                    writer.writerow(row)
-            else:
-                # Live MoleculeDict path (original behaviour)
-                for mol_name, mol_obj in molecules_dict.items():
-                    row = [
-                        mol_name,
-                        getattr(mol_obj, 'filepath', getattr(mol_obj, 'hitran_data', '')),
-                        getattr(mol_obj, 'displaylabel', mol_name),
-                        getattr(mol_obj, 'temp', 600),
-                        getattr(mol_obj, 'radius', 0.5),
-                        getattr(mol_obj, 'n_mol', 1e17),
-                        getattr(mol_obj, 'color', '#FF0000'),
-                        getattr(mol_obj, 'is_visible', True),
-                        getattr(molecules_dict, '_global_dist', 140),
-                        getattr(molecules_dict, '_global_stellar_rv', 0),
-                        getattr(mol_obj, 'fwhm', 200),                              # Instrumental FWHM in km/s
-                        getattr(mol_obj, 'keplerian_fwhm', 0.0),                    # Keplerian FWHM in km/s
-                        getattr(mol_obj, 'instrumental_profile_key', 'constant'),  # Profile key
-                        getattr(mol_obj, 'broad', 2.5),                             # Default broadening
-                        getattr(mol_obj, 'rv_shift', 0),                            # Default RV shift
-                    ]
-                    writer.writerow(row)
+            writer.writerow(SAVE_COLUMNS)
+            for row in rows:
+                defaults["Molecule Label"] = row["Molecule Name"]
+                writer.writerow([row.get(column, defaults.get(column, "")) for column in SAVE_COLUMNS])
 
         return csv_filename
 

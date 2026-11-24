@@ -1223,49 +1223,68 @@ class MoleculeDict(ObservableMixin, dict):
         
         return results
 
-    def _load_single_molecule(self, mol_data: Dict[str, Any], 
+    def build_molecule(self, mol_data: Dict[str, Any],
+                       initial_molecule_parameters: Dict[str, Any]) -> Molecule:
+        """Build (without adding) the molecule for a molsave row or keyword dict; cheap, as line data loads lazily."""
+        mol_name = mol_data.get("Molecule Name") or mol_data.get("name")
+        if not mol_name:
+            raise ValueError("molecule data has no name")
+
+        mol_initial_params = initial_molecule_parameters.get(
+            mol_name,
+            initial_molecule_parameters.get('default_initial_params', {})
+        )
+        use_user_save_data = "Molecule Name" in mol_data
+
+        return Molecule(
+            user_save_data=mol_data if use_user_save_data else None,
+            hitran_data=mol_data.get("hitran_data"),
+            line_data_source=mol_data.get("line_data_source"),
+            line_format=mol_data.get("line_format"),
+            name=mol_name,
+            filepath=mol_data.get("file") or mol_data.get("File Path"),
+            displaylabel=mol_data.get("displaylabel") or mol_data.get("label") or mol_data.get("Molecule Label", mol_name),
+            temp=_safe_float(mol_data, "Temp"),
+            radius=_safe_float(mol_data, ["Radius", "Rad"], default=0.5),
+            n_mol=_safe_float(mol_data, "N_Mol"),
+            color=mol_data.get("Color") or mol_data.get("color"),
+            is_visible=mol_data.get("Vis", True),
+            wavelength_range=self._global_wavelength_range,
+            distance=self._global_dist,
+            intensity_calculation_method=self._global_intensity_calculation_method,
+            fwhm=_safe_float(mol_data, "FWHM"),
+            rv_shift=_safe_float(mol_data, "RV Shift"),
+            broad=_safe_float(mol_data, "Broad"),
+            model_pixel_res=self._global_model_pixel_res,
+            model_line_width=self._global_model_line_width,
+            initial_molecule_parameters=mol_initial_params
+        )
+
+    def restore_saved_globals(self, distance: float, stellar_rv: float) -> bool:
+        """Set the globals as loading a save file does: no per-molecule push, no notifications.
+
+        Returns whether either changed.
+        """
+        distance, stellar_rv = float(distance), float(stellar_rv)
+        changed = (distance != self._global_dist, stellar_rv != self._global_stellar_rv)
+        self._global_dist = distance
+        self._global_stellar_rv = stellar_rv
+        if changed[1]:
+            self._clear_all_caches()
+        return any(changed)
+
+    def invalidate_summed_flux_cache(self) -> None:
+        self._clear_all_caches()
+
+    def _load_single_molecule(self, mol_data: Dict[str, Any],
                              initial_molecule_parameters: Dict[str, Any]) -> bool:
         """Load a single molecule with optimized parameter extraction."""
         try:
             mol_name = mol_data.get("Molecule Name") or mol_data.get("name")
             if not mol_name or mol_name in self:
                 return mol_name in self  # Return True if already exists, False if no name
-            
-            # Get initial parameters
-            mol_initial_params = initial_molecule_parameters.get(
-                mol_name, 
-                initial_molecule_parameters.get('default_initial_params', {})
-            )
 
-            # Extract parameters efficiently
-            use_user_save_data = "Molecule Name" in mol_data
-            
-            # Create molecule using module-level _safe_float for performance
-            molecule = Molecule(
-                user_save_data=mol_data if use_user_save_data else None,
-                hitran_data=mol_data.get("hitran_data"),
-                line_data_source=mol_data.get("line_data_source"),
-                line_format=mol_data.get("line_format"),
-                name=mol_name,
-                filepath=mol_data.get("file") or mol_data.get("File Path"),
-                displaylabel=mol_data.get("displaylabel") or mol_data.get("label") or mol_data.get("Molecule Label", mol_name),
-                temp=_safe_float(mol_data, "Temp"),
-                radius=_safe_float(mol_data, ["Radius", "Rad"], default=0.5),
-                n_mol=_safe_float(mol_data, "N_Mol"),
-                color=mol_data.get("Color") or mol_data.get("color"),
-                is_visible=mol_data.get("Vis", True),
-                wavelength_range=self._global_wavelength_range,
-                distance=self._global_dist,
-                intensity_calculation_method=self._global_intensity_calculation_method,
-                fwhm=_safe_float(mol_data, "FWHM"),
-                rv_shift=_safe_float(mol_data, "RV Shift"),
-                broad=_safe_float(mol_data, "Broad"),
-                model_pixel_res=self._global_model_pixel_res,
-                model_line_width=self._global_model_line_width,
-                initial_molecule_parameters=mol_initial_params
-            )
-            
-            self[mol_name] = molecule
+            self[mol_name] = self.build_molecule(mol_data, initial_molecule_parameters)
             return True
             
         except Exception as e:

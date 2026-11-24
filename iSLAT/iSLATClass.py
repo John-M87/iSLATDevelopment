@@ -18,6 +18,7 @@ from .Modules.FileHandling.line_list_paths import to_portable_line_list_path
 from . import Constants as c
 from .Modules.DataTypes.Molecule import Molecule
 from .Modules.DataTypes.MoleculeDict import MoleculeDict
+from .Modules.DataTypes.ParameterSet import ApplyResult, ParameterSet
 from .Modules.Debug.DebugConfig import debug_config
 
 from iSLAT import __version__ as iSLAT_version
@@ -145,6 +146,24 @@ class iSLAT:
             first_mol_name = next(iter(self.molecules_dict))
             self.molecules_dict.active_molecule = self.molecules_dict[first_mol_name]
             print(f"Default molecule '{active_molecule_name}' not found, using '{first_mol_name}'")
+
+    def apply_parameter_set(self, parameter_set: ParameterSet) -> ApplyResult:
+        """Make the loaded molecules match *parameter_set* in place (see ParameterSet.apply_to)."""
+        if not hasattr(self, "molecules_dict"):
+            self.molecules_dict = MoleculeDict()
+        method = self.user_settings.get("intensity_calculation_method", "curve_growth")
+        if self.molecules_dict.global_intensity_calculation_method != method:
+            self.molecules_dict.global_intensity_calculation_method = method
+
+        result = parameter_set.apply_to(self.molecules_dict, self.initial_molecule_parameters)
+        if self.molecules_dict.active_molecule is None:
+            self._set_initial_active_molecule()
+        self._molecules_loaded = True
+
+        for name, error in result.failed.items():
+            print(f"Error loading molecule '{name}': {error}")
+        print(f"Applied parameters {parameter_set.name or ''}: {result.summary()}")
+        return result
 
     def init_molecules(self, mole_save_data=None, use_parallel=False):
         """
@@ -413,23 +432,21 @@ class iSLAT:
         if not hasattr(self, "molecules_dict"):
             self.molecules_dict = MoleculeDict()
 
-        if reset:
-            print("Resetting molecules_dict to empty.")
-            self.molecules_dict.clear()
-
         try:
             # Lazy load default molecule data
             if self.default_molecule_csv_data is None:
                 print("Loading default molecule CSV data...")
                 self.default_molecule_csv_data = read_default_csv()
-                
+
             if not self.default_molecule_csv_data:
                 print("Error: Could not load default molecule CSV data.")
                 return
-            
-            # Use parallel loading setting
-            use_parallel_loading = use_parallel or self.use_parallel_processing
-            self.init_molecules(self.default_molecule_csv_data, use_parallel=use_parallel_loading)
+
+            if reset:
+                self.apply_parameter_set(ParameterSet(self.default_molecule_csv_data, name="defaults"))
+            else:
+                use_parallel_loading = use_parallel or self.use_parallel_processing
+                self.init_molecules(self.default_molecule_csv_data, use_parallel=use_parallel_loading)
             # Update GUI components
             if hasattr(self, 'GUI'):
                 if hasattr(self.GUI, 'plot'):
@@ -545,20 +562,14 @@ class iSLAT:
         
         try:
             print(f"Loading saved parameters from: {save_file}")
-            
-            # Clear existing molecules
-            self.molecules_dict.clear()
-            
-            # Get molecule save data for this spectrum
             mole_save_data = self.get_mole_save_data()
-            
-            # Initialize molecules from loaded data
+            if not mole_save_data:
+                raise ValueError("the save file holds no molecules")
+
             start_time = time.time()
-            self.init_molecules(mole_save_data)
+            self.apply_parameter_set(ParameterSet(mole_save_data, name=os.path.basename(save_file)))
             elapsed_time = time.time() - start_time
-            
-            self._molecules_loaded = True
-            
+
             print(f"Successfully loaded {len(mole_save_data)} molecules from: {save_file}")
             print(f"Parameter loading completed in {elapsed_time:.3f}s")
             
@@ -604,9 +615,7 @@ class iSLAT:
                 print(f"[SampleManager] No molecule data in {param_file}")
                 return False
 
-            self.molecules_dict.clear()
-            self.init_molecules(mole_save_data)
-            self._molecules_loaded = True
+            self.apply_parameter_set(ParameterSet(mole_save_data, name=os.path.basename(param_file)))
 
             msg = f"Loaded parameters from: {os.path.basename(param_file)}"
             print(f"[SampleManager] {msg}")

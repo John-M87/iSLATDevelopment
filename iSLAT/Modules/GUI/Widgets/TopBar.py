@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 import iSLAT.Constants as c
+from iSLAT.Modules.DataTypes.ParameterSet import ParameterSet
 from ..GUIFunctions import create_button, create_menu_btn
 from ..KeyBindings import action_description, action_tooltip, shortcut_text
 from ..Tooltips import CreateToolTip, MenuToolTip
@@ -1449,10 +1450,7 @@ class TopBar(ResizableFrame):
                     )
                 return
             
-            # Clear existing molecules and load from file
-            self.islat.molecules_dict.clear()
-            self.islat.init_molecules(mole_save_data)
-            self.islat._molecules_loaded = True
+            self.islat.apply_parameter_set(ParameterSet(mole_save_data, name=file_name))
             
             # Update GUI components
             if hasattr(self.islat, 'GUI'):
