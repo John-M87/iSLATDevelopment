@@ -259,6 +259,7 @@ class TestStore:
     def setup(self, dicts):
         md = dicts(ROWS)
         store = ParameterSetStore()
+        store.ensure_active(md)  # as iSLAT does once the first molecules load
         apply = lambda pset: pset.apply_to(md, {})
         return md, store, apply
 
@@ -322,9 +323,13 @@ class TestStore:
     def test_pathless_sets_open_fresh_and_names_stay_unique(self, setup):
         md, store, apply = setup
         store.open(ParameterSet(ROWS, name="Defaults"), md, apply)
+        store.open(ParameterSet(ROWS, name="Defaults"), md, apply)  # unchanged: replaced
+        assert store.names == ["Defaults"]
         md["CO"].temp = 777.0
-        store.open(ParameterSet(ROWS, name="Defaults"), md, apply)
-        assert md["CO"].temp == 600.0 and store.names == ["Defaults"]
+        store.open(ParameterSet(ROWS, name="Defaults"), md, apply)  # edited: kept
+        assert md["CO"].temp == 600.0 and store.names == ["Defaults", "Defaults (2)"]
+        store.switch("Defaults", md, apply)
+        assert md["CO"].temp == 777.0
         store.open(ParameterSet(ROWS, name="set.csv"), md, apply, path="/a/set.csv")
         assert store.open(ParameterSet(ROWS, name="set.csv"), md, apply, path="/b/set.csv") == "set.csv (2)"
 
@@ -332,7 +337,8 @@ class TestStore:
         md, store, apply = setup
         with pytest.raises(KeyError):
             store.switch("nope", md, apply)
-        assert not store.revert(md, apply) and not store.is_modified(md)
+        empty = ParameterSetStore()
+        assert not empty.revert(md, apply) and not empty.is_modified(md)
 
 
 class TestIslatParameterSets:
@@ -395,3 +401,260 @@ class TestTopBarSave:
         bar.save_parameters()
         ask.assert_called_once()
         bar.islat.save_parameters_to.assert_not_called()
+
+
+class TestStoreManagement:
+    @pytest.fixture
+    def setup(self, dicts):
+        md = dicts(ROWS)
+        store = ParameterSetStore()
+        store.ensure_active(md)
+        apply = lambda pset: pset.apply_to(md, {})
+        events = []
+        store.add_listener(lambda: events.append(store.active))
+        store.open(ParameterSet(ROWS, name="A"), md, apply, path="/saves/A.csv")
+        return md, store, apply, events
+
+    def test_new_set_keeps_the_current_parameters(self, setup):
+        md, store, apply, events = setup
+        md["CO"].temp = 777.0
+        assert store.new(md, "  Trial ") == "Trial" and store.active == "Trial"
+        assert not store.is_modified(md) and store.path() is None
+        assert store.is_modified(name="A")  # the edit stays with A too
+        assert store.new(md, "") == "Set" and store.new(md, "Trial") == "Trial (2)"
+        assert events[-1] == "Trial (2)"
+
+    def test_rename_keeps_order_path_and_edits(self, setup):
+        md, store, apply, events = setup
+        store.new(md, "B")
+        store.switch("A", md, apply)
+        md["CO"].temp = 777.0
+        assert store.rename("A", "Fit 1") == "Fit 1"
+        assert store.names == ["Fit 1", "B"] and store.active == "Fit 1"
+        assert store.path() == "/saves/A.csv" and store.is_modified(md)
+        assert store.rename("Fit 1", "B") == "B (2)" and store.rename("B", " ") == "B"
+        with pytest.raises(KeyError):
+            store.rename("nope", "x")
+
+    def test_close_shows_a_neighbour(self, setup):
+        md, store, apply, events = setup
+        store.new(md, "B")
+        md["CO"].temp = 888.0
+        store.new(md, "C")
+        store.switch("B", md, apply)
+        store.close("B", md, apply)  # the previous set is shown
+        assert store.names == ["A", "C"] and store.active == "A" and md["CO"].temp == 600.0
+        store.close("A", md, apply)  # no previous set: the next one
+        assert store.active == "C" and md["CO"].temp == 888.0
+        store.close("C", md, apply)
+        assert store.names == [] and store.active is None
+        assert store.find("/saves/A.csv") is None
+
+    def test_cycle_wraps(self, setup):
+        md, store, apply, events = setup
+        store.new(md, "B")
+        store.new(md, "C")
+        assert [store.cycle(1, md, apply) for _ in range(3)] == ["A", "B", "C"]
+        assert store.cycle(-1, md, apply) == "B"
+        assert ParameterSetStore().cycle(1, md, apply) is None
+
+    def test_listeners_hear_every_change(self, setup):
+        md, store, apply, events = setup
+        before = len(events)
+        store.new(md, "B")
+        store.switch("A", md, apply)
+        store.rename("A", "A2")
+        store.revert(md, apply)
+        store.close("B", md, apply)
+        assert len(events) - before == 5
+        listener = lambda: events.append("x")
+        store.add_listener(listener)
+        store.remove_listener(listener)
+        store.new(md, "D")
+        assert "x" not in events
+
+
+class TestParameterSetMenu:
+    @pytest.fixture
+    def menu(self, dicts, monkeypatch):
+        import tkinter as tk
+        from iSLAT.iSLATClass import iSLAT
+        from iSLAT.Modules.GUI.Widgets.ParameterSetMenu import ParameterSetMenu
+        try:
+            root = tk.Tk()
+        except tk.TclError:
+            pytest.skip("Tk display not available")
+        root.withdraw()
+        islat = iSLAT.__new__(iSLAT)
+        islat._user_settings = {"default_active_molecule": "CO", "intensity_calculation_method": "curve_growth"}
+        islat._initial_molecule_parameters = {}
+        islat.molecules_dict = dicts(ROWS)
+        islat.parameter_sets = ParameterSetStore()
+        islat.GUI = None
+        widget = ParameterSetMenu(root, {}, islat, 0, 0)
+        yield widget, islat, root
+        Molecule.remove_molecule_parameter_change_callback(widget._on_parameter_change)
+        root.withdraw()
+        root.destroy()
+
+    def _labels(self, widget):
+        widget._rebuild()
+        end = widget.menu.index("end")
+        return [widget.menu.entrycget(i, "label") for i in range(end + 1)
+                if widget.menu.type(i) != "separator"]
+
+    def test_lists_sets_and_marks_unsaved_changes(self, menu):
+        widget, islat, root = menu
+        assert widget.button.cget("text") == "Parameter Sets"
+        assert self._labels(widget)[0] == "No parameter sets yet"
+        islat.parameter_sets.ensure_active(islat.molecules_dict)
+        assert widget.button.cget("text") == "Untitled"
+        islat.open_parameter_set(ParameterSet(ROWS, name="A"), path="/saves/A.csv")
+        islat.parameter_sets.new(islat.molecules_dict, "B")
+        assert widget.button.cget("text") == "B"
+        islat.molecules_dict["CO"].temp = 777.0   # change callback -> refresh when idle
+        root.update()
+        assert widget.button.cget("text") == "B \u2022"
+        assert self._labels(widget)[:2] == ["A", "B \u2022"]
+
+    def test_switching_from_the_menu(self, menu, monkeypatch):
+        widget, islat, root = menu
+        islat.parameter_sets.ensure_active(islat.molecules_dict)
+        islat.open_parameter_set(ParameterSet(ROWS, name="A"), path="/saves/A.csv")
+        islat.molecules_dict["CO"].temp = 777.0
+        islat.parameter_sets.new(islat.molecules_dict, "B")
+        islat.molecules_dict["CO"].temp = 999.0
+        widget._rebuild()
+        widget.menu.invoke(0)           # "A"
+        assert islat.parameter_sets.active == "A" and islat.molecules_dict["CO"].temp == 777.0
+        widget.cycle(1)
+        assert islat.parameter_sets.active == "B" and islat.molecules_dict["CO"].temp == 999.0
+
+    def test_new_rename_close(self, menu, monkeypatch):
+        widget, islat, root = menu
+        mod = importlib.import_module("iSLAT.Modules.GUI.Widgets.ParameterSetMenu")
+        islat.parameter_sets.ensure_active(islat.molecules_dict)
+        islat.open_parameter_set(ParameterSet(ROWS, name="A"), path="/saves/A.csv")
+        monkeypatch.setattr(mod.simpledialog, "askstring", lambda *a, **k: "Trial")
+        assert widget.new_set() == "Trial"
+        monkeypatch.setattr(mod.simpledialog, "askstring", lambda *a, **k: "Trial 2")
+        assert widget.rename_set() == "Trial 2"
+        islat.molecules_dict["CO"].temp = 777.0
+        ask = MagicMock(return_value="no")
+        monkeypatch.setattr(mod.messagebox, "askquestion", ask)
+        widget.close_set()                    # unsaved changes: asks, and keeps it
+        assert "Trial 2" in islat.parameter_sets and ask.called
+        ask.return_value = "yes"
+        widget.close_set()
+        assert islat.parameter_sets.names == ["A"] and islat.molecules_dict["CO"].temp == 600.0
+        monkeypatch.setattr(mod.simpledialog, "askstring", lambda *a, **k: None)
+        assert widget.new_set() is None       # cancelled
+
+
+def test_palette_lists_the_other_sets(dicts):
+    from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+    from iSLAT.Modules.GUI.KeyBindings import display_title
+    md = dicts(ROWS)
+    store = ParameterSetStore()
+    store.ensure_active(md)
+    apply = lambda pset: pset.apply_to(md, {})
+    store.open(ParameterSet(ROWS, name="A"), md, apply, path="/saves/A.csv")
+    store.new(md, "B")
+    menu = MagicMock(store=store)
+    h = InteractionHandler.__new__(InteractionHandler)
+    h._parameter_set_menu = lambda: menu
+    actions = h._parameter_set_actions()
+    assert [display_title(a) for a in actions] == ["Switch to set: A"]
+    actions[0].callback()
+    menu.switch.assert_called_once_with("A")
+
+
+class TestUntitled:
+    @pytest.fixture
+    def setup(self, dicts):
+        md = dicts(ROWS)
+        store = ParameterSetStore()
+        apply = lambda pset: pset.apply_to(md, {})
+        return md, store, apply
+
+    def test_startup_parameters_are_untitled_and_dropped_when_untouched(self, setup):
+        md, store, apply = setup
+        assert store.ensure_active(md) == "Untitled" and store.path() is None
+        assert store.ensure_active(md) == "Untitled" and store.names == ["Untitled"]
+        store.open(ParameterSet([_row("CO", 400.0)], name="A"), md, apply, path="/saves/A.csv")
+        assert store.names == ["A"]
+
+    def test_edited_untitled_is_kept(self, setup):
+        md, store, apply = setup
+        store.ensure_active(md)
+        md["CO"].temp = 777.0
+        store.open(ParameterSet([_row("CO", 400.0)], name="A"), md, apply, path="/saves/A.csv")
+        assert store.names == ["Untitled", "A"]
+        store.switch("Untitled", md, apply)
+        assert md["CO"].temp == 777.0
+
+    def test_parameters_in_no_set_are_never_dropped(self, setup):
+        md, store, apply = setup  # e.g. after closing the last set
+        md["CO"].temp = 777.0
+        store.open(ParameterSet([_row("CO", 400.0)], name="A"), md, apply, path="/saves/A.csv")
+        store.switch("Untitled", md, apply)
+        assert md["CO"].temp == 777.0
+
+    def test_saving_from_untitled_moves_it_to_the_file(self, setup):
+        md, store, apply = setup
+        store.ensure_active(md)
+        md["CO"].temp = 777.0
+        store.mark_saved(md, "/saves/fit.csv")
+        assert store.names == ["fit.csv"] and not store.is_modified(md)
+
+    def test_renamed_untitled_is_kept(self, setup):
+        md, store, apply = setup
+        store.ensure_active(md)
+        store.rename("Untitled", "Baseline")
+        store.open(ParameterSet([_row("CO", 400.0)], name="A"), md, apply, path="/saves/A.csv")
+        assert store.names == ["Baseline", "A"]
+
+    def test_closing_the_last_set_keeps_the_shown_parameters(self, setup):
+        md, store, apply = setup
+        store.ensure_active(md)
+        store.close("Untitled", md, apply)
+        assert store.active is None and len(md) == 3
+        store.open(ParameterSet([_row("CO", 400.0)], name="A"), md, apply, path="/saves/A.csv")
+        assert store.names == ["Untitled", "A"]
+
+    def test_first_molecules_loaded_become_untitled(self, dicts):
+        from iSLAT.iSLATClass import iSLAT
+        islat = iSLAT.__new__(iSLAT)
+        islat._user_settings = {"default_active_molecule": "CO", "intensity_calculation_method": "curve_growth"}
+        islat._initial_molecule_parameters = {}
+        islat.molecules_dict = dicts([])
+        islat.parameter_sets = ParameterSetStore()
+        assert islat.init_molecules({r["Molecule Name"]: r for r in ROWS})
+        assert islat.parameter_sets.names == ["Untitled"] and not islat.parameter_sets.is_modified(islat.molecules_dict)
+        islat.init_molecules({"NEW": _row("NEW")})  # adding molecules later is an edit, not a new set
+        assert islat.parameter_sets.names == ["Untitled"] and islat.parameter_sets.is_modified(islat.molecules_dict)
+
+
+def test_menu_label_keeps_the_mark_on_long_names(dicts):
+    import tkinter as tk
+    from iSLAT.Modules.GUI.Widgets.ParameterSetMenu import MODIFIED_MARK, ParameterSetMenu
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display not available")
+    root.withdraw()
+    islat = MagicMock()
+    islat.molecules_dict = dicts(ROWS)
+    islat.parameter_sets = ParameterSetStore()
+    widget = ParameterSetMenu(root, {}, islat, 0, 0)
+    try:
+        islat.parameter_sets.ensure_active(islat.molecules_dict)
+        islat.parameter_sets.rename("Untitled", "CITau_1d_v9.0_csub-molsave.csv")
+        islat.molecules_dict["CO"].temp = 777.0
+        widget.refresh()
+        text = widget.button.cget("text")
+        assert text.endswith("…" + MODIFIED_MARK) and len(text) < 40
+    finally:
+        Molecule.remove_molecule_parameter_change_callback(widget._on_parameter_change)
+        root.withdraw()
+        root.destroy()

@@ -216,6 +216,23 @@ class ParameterSetStore:
         self._saved: Dict[str, ParameterSet] = {}
         self._paths: Dict[str, Optional[str]] = {}
         self.active: Optional[str] = None
+        self._listeners: List[Any] = []
+        # "Untitled" sets made for parameters that came from no file; one left
+        # unchanged is dropped when another set is shown.
+        self._scratch: set = set()
+
+    def add_listener(self, callback) -> None:
+        """Call *callback()* whenever sets are opened, switched, saved, reverted, renamed or closed."""
+        if callback not in self._listeners:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback) -> None:
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
+    def _changed(self) -> None:
+        for callback in list(self._listeners):
+            callback()
 
     @property
     def names(self) -> List[str]:
@@ -251,19 +268,83 @@ class ParameterSetStore:
 
         A set already opened from *path* is switched to instead, keeping its
         in-memory edits.  A set without a path (e.g. the defaults) is applied
-        fresh, replacing a path-less set of the same name.  *apply* applies a
-        set to the molecules (``iSLAT.apply_parameter_set``).
+        fresh; it replaces a path-less set of the same name only when that set
+        has no unsaved changes.  *apply* applies a set to the molecules
+        (``iSLAT.apply_parameter_set``).
         """
         existing = self.find(path)
         if existing:
             self.switch(existing, molecules_dict, apply)
             return existing
+        name = parameter_set.name or (os.path.basename(path) if path else "Parameters")
+        replace = (not path and name in self._current and self._paths[name] is None
+                   and not self.is_modified(molecules_dict, name))
+        if not replace:
+            name = self._unique_name(name)
         self._stash_active(molecules_dict)
         apply(parameter_set)
-        name = parameter_set.name or (os.path.basename(path) if path else "Parameters")
-        if path or self._paths.get(name, "") is not None:
-            name = self._unique_name(name)
         self._set(name, ParameterSet.capture(molecules_dict, name), path)
+        self._changed()
+        return name
+
+    def ensure_active(self, molecules_dict: "MoleculeDict") -> Optional[str]:
+        """Put the molecules' parameters in an "Untitled" set if no set is active (e.g. at startup)."""
+        if self.active is None and molecules_dict is not None and len(molecules_dict):
+            name = self._unique_name(UNTITLED)
+            self._set(name, ParameterSet.capture(molecules_dict, name), None)
+            self._scratch.add(name)
+            self._changed()
+        return self.active
+
+    def new(self, molecules_dict: "MoleculeDict", name: Optional[str] = None) -> str:
+        """Make a new set (not tied to a file) holding the current parameters, and make it active."""
+        self._stash_active(molecules_dict)
+        name = self._unique_name((name or "").strip() or "Set")
+        self._set(name, ParameterSet.capture(molecules_dict, name), None)
+        self._changed()
+        return name
+
+    def rename(self, old: str, new: str) -> str:
+        """Rename set *old*; returns the name used (made unique).  Its file, if any, is unchanged."""
+        if old not in self._current:
+            raise KeyError(f"No parameter set named {old!r}")
+        new = (new or "").strip()
+        if not new or new == old:
+            return old
+        new = self._unique_name(new)
+        for table in (self._current, self._saved, self._paths):  # rename in place, keeping the order
+            items = list(table.items())
+            table.clear()
+            table.update((new if n == old else n, value) for n, value in items)
+        if self.active == old:
+            self.active = new
+        if old in self._scratch:  # a named set is the user's, never dropped automatically
+            self._scratch.discard(old)
+        self._changed()
+        return new
+
+    def close(self, name: str, molecules_dict: "MoleculeDict", apply) -> None:
+        """Forget set *name* (and its unsaved changes); closing the active set shows a neighbour."""
+        if name not in self._current:
+            raise KeyError(f"No parameter set named {name!r}")
+        names = self.names
+        if name == self.active:
+            others = names[:names.index(name)][-1:] or names[names.index(name) + 1:][:1]
+            if others:
+                self._scratch.discard(name)  # closing is explicit: never auto-dropped twice
+                self.switch(others[0], molecules_dict, apply)
+        if name in self._current:
+            self._forget(name)
+        self._changed()
+
+    def cycle(self, step: int, molecules_dict: "MoleculeDict", apply) -> Optional[str]:
+        """Switch to the set *step* places after the active one (wrapping); returns its name."""
+        names = self.names
+        if not names:
+            return None
+        start = names.index(self.active) if self.active in names else -1 if step > 0 else 0
+        name = names[(start + step) % len(names)]
+        self.switch(name, molecules_dict, apply)
         return name
 
     def switch(self, name: str, molecules_dict: "MoleculeDict", apply) -> None:
@@ -275,6 +356,7 @@ class ParameterSetStore:
         self._stash_active(molecules_dict)
         apply(self._current[name])
         self.active = name
+        self._changed()
 
     def mark_saved(self, molecules_dict: "MoleculeDict", path: str) -> str:
         """Record that the molecules' parameters were written to *path*; returns that set's name.
@@ -285,9 +367,13 @@ class ParameterSetStore:
         """
         target = self.find(path)
         if self.active and self.active != target:
-            self._current[self.active] = self._saved[self.active]
+            if self.active in self._scratch:
+                self._forget(self.active)
+            else:
+                self._current[self.active] = self._saved[self.active]
         name = target or self._unique_name(os.path.basename(path))
         self._set(name, ParameterSet.capture(molecules_dict, name), path)
+        self._changed()
         return name
 
     def revert(self, molecules_dict: "MoleculeDict", apply) -> bool:
@@ -297,6 +383,7 @@ class ParameterSetStore:
         saved = self._saved[self.active]
         apply(saved)
         self._current[self.active] = saved
+        self._changed()
         return True
 
     def _set(self, name: str, snapshot: ParameterSet, path: Optional[str]) -> None:
@@ -305,14 +392,34 @@ class ParameterSetStore:
         self.active = name
 
     def _stash_active(self, molecules_dict: "MoleculeDict") -> None:
-        if self.active in self._current:
+        """Keep the shown parameters before another set is shown."""
+        if self.active is None:
+            # Parameters in no set (none opened yet, or the last one closed): keep them.
+            if molecules_dict is not None and len(molecules_dict):
+                name = self._unique_name(UNTITLED)
+                snapshot = ParameterSet.capture(molecules_dict, name)
+                self._current[name] = self._saved[name] = snapshot
+                self._paths[name] = None
+        elif self.active in self._scratch and not self.is_modified(molecules_dict):
+            self._forget(self.active)  # an untouched Untitled set holds nothing worth keeping
+        elif self.active in self._current:
             self._current[self.active] = ParameterSet.capture(molecules_dict, self.active)
+
+    def _forget(self, name: str) -> None:
+        for table in (self._current, self._saved, self._paths):
+            del table[name]
+        self._scratch.discard(name)
+        if self.active == name:
+            self.active = None
 
     def _unique_name(self, name: str) -> str:
         candidate, n = name, 2
         while candidate in self._current:
             candidate, n = f"{name} ({n})", n + 1
         return candidate
+
+
+UNTITLED = "Untitled"
 
 
 def _path_key(path: str) -> str:

@@ -3,7 +3,7 @@ import time
 import tkinter as tk
 from matplotlib.widgets import SpanSelector
 from typing import Optional, Tuple, Callable, Dict, Any
-from .KeyBindings import ActionRegistry, CommandPalette, TEXT_INPUT_CLASSES, chord_from_event
+from .KeyBindings import Action, ActionRegistry, CommandPalette, TEXT_INPUT_CLASSES, chord_from_event
 from .TrackpadNavigation import is_right_click
 
 #: How far (pixels) another animated artist's clip box must stay from a
@@ -578,6 +578,9 @@ class InteractionHandler:
         "load_parameters": "_load_parameters",
         "load_parameters_from_file": "_load_parameters_from_file",
         "revert_parameters": "_revert_parameters",
+        "previous_parameter_set": "_previous_parameter_set",
+        "next_parameter_set": "_next_parameter_set",
+        "new_parameter_set": "_new_parameter_set",
         "select_previous_molecule": "_select_previous_molecule",
         "select_next_molecule": "_select_next_molecule",
         "cycle_spectrum_previous": "_cycle_spectrum_previous",
@@ -822,7 +825,8 @@ class InteractionHandler:
             palette.entry.focus_set()
             return
         parent = self.canvas.get_tk_widget().winfo_toplevel()
-        self._command_palette = CommandPalette(parent, self._get_action_registry())
+        self._command_palette = CommandPalette(parent, self._get_action_registry(),
+                                               extra_actions=self._parameter_set_actions())
 
     def _cycle_spectrum_previous(self):
         """Switch to the previous spectrum in the sample list."""
@@ -1455,6 +1459,39 @@ class InteractionHandler:
             if hasattr(self.islat.GUI.top_bar, 'load_parameters'):
                 self.islat.GUI.top_bar.load_parameters()
     
+    def _parameter_set_menu(self):
+        return getattr(self._gui_part("top_bar"), "parameter_set_menu", None)
+
+    def _previous_parameter_set(self):
+        """Show the previous parameter set (Ctrl/Cmd+[)."""
+        menu = self._parameter_set_menu()
+        if menu is not None:
+            menu.cycle(-1)
+
+    def _next_parameter_set(self):
+        """Show the next parameter set (Ctrl/Cmd+])."""
+        menu = self._parameter_set_menu()
+        if menu is not None:
+            menu.cycle(1)
+
+    def _new_parameter_set(self):
+        """Make a parameter set from the current parameters (command palette)."""
+        menu = self._parameter_set_menu()
+        if menu is not None:
+            menu.new_set()
+
+    def _parameter_set_actions(self) -> list:
+        """One command-palette entry per parameter set that is not shown."""
+        menu = self._parameter_set_menu()
+        if menu is None:
+            return []
+        store = menu.store
+        return [Action(f"switch_parameter_set:{name}", (lambda n=name: menu.switch(n)),
+                       title=f"Switch to set: {name}",
+                       description=f"Show the parameter set {name}"
+                                   + (" (unsaved changes)." if store.is_modified(name=name) else "."))
+                for name in store.names if name != store.active]
+
     def _revert_parameters(self):
         """Discard unsaved parameter changes (command palette), as the Manage Molecules menu does."""
         top_bar = self._gui_part("top_bar")

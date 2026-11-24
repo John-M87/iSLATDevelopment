@@ -193,6 +193,8 @@ _PREVIOUS_BINDINGS = [
     (("h", 0), "_toggle_grid"),
     (("b", 0), "_toggle_active_molecule_bold"),
     (("Escape", 0), "_clear_selection"),
+    (("bracketleft", CTRL), "_previous_parameter_set"),
+    (("bracketright", CTRL), "_next_parameter_set"),
 ]
 
 

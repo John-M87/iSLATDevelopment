@@ -39,6 +39,7 @@ __all__ = [
     "CommandPalette",
     "action_description",
     "action_title",
+    "display_title",
     "action_tooltip",
     "filter_actions",
     "chord_from_event",
@@ -66,6 +67,8 @@ _MODIFIER_ALIASES = {
 _KEYSYM_ALIASES = {
     "comma": ",", "less": ",", "<": ",",
     "period": ".", "greater": ".", ">": ".",
+    "bracketleft": "[", "braceleft": "[", "{": "[",
+    "bracketright": "]", "braceright": "]", "}": "]",
     "up": "Up", "down": "Down", "left": "Left", "right": "Right",
     "escape": "Escape", "return": "Return", "tab": "Tab", "space": "Space",
     "delete": "Delete", "backspace": "BackSpace",
@@ -99,6 +102,9 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "load_parameters": ("Ctrl+L",),
     "load_parameters_from_file": ("Ctrl+Shift+L",),
     "revert_parameters": (),  # no default key: it discards edits
+    "previous_parameter_set": ("Ctrl+[",),
+    "next_parameter_set": ("Ctrl+]",),
+    "new_parameter_set": (),
     "select_previous_molecule": ("Up",),
     "select_next_molecule": ("Down",),
     "cycle_spectrum_previous": ("Left",),
@@ -177,6 +183,9 @@ ACTION_DESCRIPTIONS: Dict[str, str] = {
         "Load molecule parameters from\na user-selected CSV save file,\nreplacing existing molecules."
     ),
     "revert_parameters": "Discard the unsaved changes to the\nactive parameter set (back to its\nlast saved version).",
+    "previous_parameter_set": "Show the previous parameter set\n(edits to the current one are kept).",
+    "next_parameter_set": "Show the next parameter set\n(edits to the current one are kept).",
+    "new_parameter_set": "Make a new parameter set holding\nthe current parameters.",
     "select_previous_molecule": "Make the molecule above the active one\nin the control panel active.",
     "select_next_molecule": "Make the molecule below the active one\nin the control panel active.",
     "cycle_spectrum_previous": "Switch to the previous spectrum\nin the loaded sample.",
@@ -320,6 +329,11 @@ def one_line(text: str) -> str:
     return " ".join(text.split())
 
 
+def display_title(action: "Action") -> str:
+    """The name the command palette shows for *action*."""
+    return action.title or action_title(action.id)
+
+
 def filter_actions(
     actions: Iterable["Action"],
     query: str,
@@ -341,14 +355,14 @@ def filter_actions(
 
     def text(action: "Action") -> str:
         keys = " ".join(format_chord(c, system) for c in action.chords)
-        return f"{action_title(action.id)} {action.id} {keys}".lower()
+        return f"{display_title(action)} {action.id} {keys}".lower()
 
     matches = [a for a in actions if all(word in text(a) for word in words)]
     if not matches and words:
         matches = [a for a in actions if all(word in one_line(a.description).lower() for word in words)]
 
     rank = {action_id: i for i, action_id in enumerate(recent)}
-    return sorted(matches, key=lambda a: (not action_title(a.id).lower().startswith(query),
+    return sorted(matches, key=lambda a: (not display_title(a).lower().startswith(query),
                                           rank.get(a.id, len(rank))))
 
 
@@ -360,6 +374,7 @@ class Action:
     callback: Callable[[], Any]
     chords: Tuple[str, ...] = field(default_factory=tuple)
     description: str = ""
+    title: str = ""  # shown instead of action_title(id) when set
 
     def __post_init__(self) -> None:
         self.chords = tuple(normalize_chord(c) for c in self.chords)
@@ -474,13 +489,16 @@ class CommandPalette(tk.Toplevel):
     DESCRIPTION_LINES = 4
     RECENT_NOTE = "Recently used."
 
-    def __init__(self, parent: tk.Misc, registry: ActionRegistry) -> None:
+    def __init__(self, parent: tk.Misc, registry: ActionRegistry,
+                 extra_actions: Iterable[Action] = ()) -> None:
         super().__init__(parent)
         self.title("Commands")
         self.transient(parent)
         self.resizable(False, False)
         self._registry = registry
+        # Registered actions, then *extra_actions* (made for this opening, e.g. one per parameter set)
         self._actions: List[Action] = [a for a in registry.actions() if a.id not in self.EXCLUDED]
+        self._actions += list(extra_actions)
         self._shown: List[Action] = []
         self._closed = False
 
@@ -532,7 +550,7 @@ class CommandPalette(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         for index, action in enumerate(self._shown):
             keys = format_chord(action.chords[0]) if action.chords else ""
-            self.tree.insert("", "end", iid=str(index), text=action_title(action.id), values=(keys,))
+            self.tree.insert("", "end", iid=str(index), text=display_title(action), values=(keys,))
         if self._shown:
             self._select(0)
         else:

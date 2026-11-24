@@ -16,6 +16,7 @@ from ..YAxisDataSync import (
     Y_DATA_SYNC_MENU_LABEL, Y_DATA_SYNC_MENU_TIP, Y_DATA_SYNC_OFF,
     add_y_data_range_controls, add_y_data_sync_menu, y_data_sync_var_value,
 )
+from .ParameterSetMenu import ParameterSetMenu
 from .ResizableFrame import ResizableFrame
 from iSLAT.Modules.GUI.Widgets.ChartWindow import MoleculeSelector
 from iSLAT.Modules.GUI.Widgets.SampleManagerWindow import SampleManagerWindow
@@ -423,6 +424,17 @@ class TopBar(ResizableFrame):
         create_button(self.button_frame, self.theme, "Full Spectrum", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
         create_button(self.button_frame, self.theme, "Total Model", self.toggle_summed_spectrum, 0, 6, tip_text=toggle_summed_tip)
         create_button(self.button_frame, self.theme, "Legend", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
+
+        # Parameter sets: which one is shown, and switching between them
+        self.parameter_set_menu = ParameterSetMenu(
+            self.button_frame, self.theme, self.islat, 0, 8,
+            menu_options=dict(
+                bg=btn_theme.get("background", "lightgray"),
+                fg=self.theme.get("foreground", "#F0F0F0"),
+                activebackground=btn_theme.get("active_background", "gray"),
+                activeforeground=self.theme.get("foreground", "#F0F0F0"),
+            ),
+        )
         
         # Navigate buttons - compact with minimal padding
         retreat_tip = action_tooltip("retreat_plot_start")

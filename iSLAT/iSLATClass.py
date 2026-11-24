@@ -199,6 +199,25 @@ class iSLAT:
         """Restore the active parameter set to its last saved version; returns whether it did."""
         return self.parameter_sets.revert(self.molecules_dict, self.apply_parameter_set)
 
+    def switch_parameter_set(self, name: str) -> None:
+        """Show parameter set *name* (the current set's edits stay in memory) and refresh the GUI."""
+        self.parameter_sets.switch(name, self.molecules_dict, self.apply_parameter_set)
+        self._refresh_gui_after_parameter_change()
+
+    def cycle_parameter_set(self, step: int) -> Optional[str]:
+        """Show the next (*step* > 0) or previous parameter set and refresh the GUI."""
+        name = self.parameter_sets.cycle(step, self.molecules_dict, self.apply_parameter_set)
+        if name is not None:
+            self._refresh_gui_after_parameter_change()
+        return name
+
+    def close_parameter_set(self, name: str) -> None:
+        """Forget parameter set *name*; closing the shown set shows a neighbouring one."""
+        was_active = name == self.parameter_sets.active
+        self.parameter_sets.close(name, self.molecules_dict, self.apply_parameter_set)
+        if was_active and self.parameter_sets.active is not None:
+            self._refresh_gui_after_parameter_change()
+
     def init_molecules(self, mole_save_data=None, use_parallel=False):
         """
         Initialize molecules with automatic optimization and spectrum-aware loading.
@@ -270,6 +289,9 @@ class iSLAT:
                     print(f"  - {error}")
 
             self._set_initial_active_molecule()
+            store = getattr(self, "parameter_sets", None)
+            if store is not None:
+                store.ensure_active(self.molecules_dict)  # e.g. the startup molecules: "Untitled"
             
             section.end()
             section.get_breakdown(print_output=True)
