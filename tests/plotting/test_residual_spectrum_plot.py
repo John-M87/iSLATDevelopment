@@ -454,6 +454,31 @@ class TestResidualSpectrumPlot:
         assert out.exists()
         rsp.close()
 
+    def test_panels_use_plot_theme(self):
+        """Spectrum and residual sub-panels draw with the plot's theme, not the default one."""
+        rsp = self._make_rsp(theme={"foreground": "white", "background": "black"})
+        rsp.generate_plot()
+        for spectrum_panel, residual_panel in rsp.panels.values():
+            assert spectrum_panel.theme is rsp.theme
+            assert residual_panel.theme is rsp.theme
+        rsp.close()
+
+    def test_legend_falls_back_to_model_components(self):
+        """Without molecules the legend lists the labelled model components, at the residual plot's font size."""
+        wave, flux, err = make_wave_flux(n=200)
+        comps = [
+            {"wave": wave, "flux": flux * 0.5, "color": "red", "label": "comp A"},
+            {"wave": wave, "flux": flux * 0.2, "color": "blue"},  # unlabelled: not listed
+        ]
+        rsp = ResidualSpectrumPlot(
+            wave, flux, flux * 0.9, error_data=err, n_panels=3, model_components=comps,
+        )
+        rsp.generate_plot()
+        legend = rsp.subplots[0][0].get_legend()
+        assert [t.get_text() for t in legend.get_texts()] == ["comp A"]
+        assert legend.get_texts()[0].get_fontsize() == 7
+        rsp.close()
+
 
 # ======================================================================
 # Integration: n_panels correctness

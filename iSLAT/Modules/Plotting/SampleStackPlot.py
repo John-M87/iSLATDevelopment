@@ -37,11 +37,10 @@ import numpy as np
 from matplotlib import transforms
 from matplotlib.axes import Axes
 from matplotlib.gridspec import GridSpecFromSubplotSpec
-from matplotlib.ticker import MaxNLocator
 
 from .FullSpectrumPlot import FullSpectrumPlot
 from .ModelOverlays import draw_molecule_traces, draw_summed_fill
-from .StackedSpectralPanel import StackedSpectralPanel, draw_boxed_label
+from .StackedSpectralPanel import draw_boxed_label
 from .SpectralPanel import SpectralPanel, GapMode, peak_ylim
 from .SpectrumPanel import SpectrumPanel
 
@@ -419,8 +418,12 @@ class SampleStackPlot(FullSpectrumPlot):
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
-    def generate_plot(self, **kwargs) -> None:
-        self.subplots.clear()
+    def _prepare_render(self) -> Dict[str, Any]:
+        """Compute every spectrum's models (shared by spectra with the same parameter set).
+
+        Replaces :meth:`FullSpectrumPlot._prepare_render`: the stack draws
+        each spectrum's own models, not the primary spectrum's cache.
+        """
         self._axes_spectrum.clear()
         computed: Dict[Tuple[Any, ...], StackModels] = {}
         self._models = []
@@ -429,23 +432,17 @@ class SampleStackPlot(FullSpectrumPlot):
             if key not in computed:
                 computed[key] = compute_stack_models(spectrum, self.model_mode)
             self._models.append(computed[key])
-        kwargs.setdefault(
-            "model_linewidth", self._get_theme_value("full_spectrum_model_linewidth", 1.0),
-        )
-        kwargs.setdefault(
-            "model_alpha", self._get_theme_value("full_spectrum_model_alpha", 0.8),
-        )
-        StackedSpectralPanel.generate_plot(self, **kwargs)
+        return self._model_style_kwargs()
 
-        legend_ax = self._legend_axes
-        if legend_ax is not None:
-            labels: List[str] = []
-            colors: List[str] = []
-            if self.model_mode == "molecules" and self.primary.molecules is not None:
-                visible = self.primary.molecules.get_visible_molecules(return_objects=True)
-                labels = [self.get_molecule_display_name(m) for m in visible]
-                colors = [self.get_molecule_color(m) for m in visible]
-            self.legend_strategy.build_legend(legend_ax, self.fig, labels, colors)
+    def _legend_entries(self) -> Optional[Tuple[List[str], List[str]]]:
+        """The primary spectrum's visible molecules in ``"molecules"`` mode, else none (removes the legend)."""
+        if self.model_mode != "molecules" or self.primary.molecules is None:
+            return [], []
+        visible = self.primary.molecules.get_visible_molecules(return_objects=True)
+        return (
+            [self.get_molecule_display_name(m) for m in visible],
+            [self.get_molecule_color(m) for m in visible],
+        )
 
     def update_panels_inplace(self) -> None:
         """Re-render (the stack is always rebuilt: offsets depend on every model)."""
@@ -459,10 +456,7 @@ class SampleStackPlot(FullSpectrumPlot):
         gs_slot: "SubplotSpec",
         **kwargs,
     ) -> List[SpectralPanel]:
-        common = dict(
-            gap_mode=self.gap_mode, gap_threshold=self.gap_threshold,
-            x_scaling=self.x_scaling, theme=self.theme,
-        )
+        common = self._panel_kwargs()
         if self.layout == "offset":
             ax = self.fig.add_subplot(gs_slot)
             panel = SampleOffsetPanel(
@@ -497,7 +491,6 @@ class SampleStackPlot(FullSpectrumPlot):
         cell_panels: List[SpectralPanel],
         is_last: bool,
     ) -> None:
-        fg = self._get_theme_value("foreground", "black")
         rows = self.layout == "rows"
         for p_idx, panel in enumerate(cell_panels):
             ax = panel.ax
@@ -507,16 +500,14 @@ class SampleStackPlot(FullSpectrumPlot):
             lims = self._stack_panel_ylim(panel)
             if lims is not None:
                 ax.set_ylim(*lims)
-            ax.tick_params(axis="x", labelsize=7)
-            ax.tick_params(axis="y", labelsize=6 if rows else 7)
-            ax.xaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
-            if rows:
-                ax.yaxis.set_major_locator(MaxNLocator(nbins=3, prune="both"))
-            is_bottom = p_idx == len(cell_panels) - 1
-            if not is_bottom:
-                ax.tick_params(axis="x", labelbottom=False)
-            elif is_last:
-                ax.set_xlabel("Wavelength (\u03bcm)", color=fg)
+            self._style_cell_axes(
+                ax,
+                is_bottom=(p_idx == len(cell_panels) - 1),
+                is_last=is_last,
+                x_nbins=6,
+                y_nbins=3 if rows else None,
+                y_labelsize=6 if rows else 7,
+            )
             if rows:
                 self._draw_row_label(ax, self._axes_spectrum.get(ax))
 

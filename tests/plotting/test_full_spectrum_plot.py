@@ -193,3 +193,20 @@ class TestFullSpectrumPlot:
             assert yl[0] == pytest.approx(ylims[0][0], abs=0.001)
             assert yl[1] == pytest.approx(ylims[0][1], abs=0.001)
         fsp.close()
+
+    def test_panels_use_plot_theme(self):
+        """Every row's SpectrumPanel draws with the plot's theme, not the default one."""
+        theme = {"foreground": "white", "background": "black"}
+        fsp = self._make_fsp(theme=theme)
+        fsp.generate_plot()
+        for cell_panels in fsp.panels.values():
+            for panel in cell_panels:
+                assert panel.theme is fsp.theme
+        fsp.close()
+
+    def test_model_style_kwargs_override_theme(self):
+        """Passing the model line style to generate_plot overrides the theme default instead of raising."""
+        fsp = self._make_fsp()
+        fsp.generate_plot(model_linewidth=2.5, model_alpha=0.5)
+        assert len(fsp.panels) == 3
+        fsp.close()

@@ -6,7 +6,7 @@ Each row (cell) may contain an **arbitrary number** of sub-panels arranged verti
 
 For example, a single spectrum axes (as in :class:`FullSpectrumPlot`) or a spectrum + residual pair (as in :class:`ResidualSpectrumPlot`).
 
-Concrete subclasses must implement :meth:`_create_cell` to produce the panels and axes for each wavelength row, and may override hooks like :meth:`_post_render_cell` and :meth:`_cell_height_ratios`.
+Concrete subclasses must implement :meth:`_create_cell` to produce the panels and axes for each wavelength row, and may override the hooks :meth:`_prepare_render` (shared caches and y-limits computed once per render), :meth:`_post_render_cell` (per-row decoration) and :meth:`_legend_entries` (the molecule color legend).
 
 Usage sketch::
 
@@ -46,6 +46,7 @@ from .BasePlot import BasePlot
 from .CompositePlot import CompositePlot
 from .ModelOverlays import summed_model_flux
 from .SpectralPanel import SpectralPanel, GapMode, XScaling, peak_ylim
+from .SpectrumPanel import SpectrumPanel
 from .LegendStrategy import LegendStrategy, MoleculeColorLegend
 
 if TYPE_CHECKING:
@@ -53,6 +54,10 @@ if TYPE_CHECKING:
     from matplotlib.text import Text
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from .CompositeStackedPanel import CompositeStackedPanel
+
+
+#: X-axis label of the bottom row of a stacked figure.
+WAVELENGTH_LABEL = "Wavelength (μm)"
 
 
 def draw_boxed_label(
@@ -140,12 +145,20 @@ class StackedSpectralPanel(CompositePlot):
         Default 2.0.
     figsize : tuple, optional
         Explicit figure size.  When *None* it is computed from
-        ``(14, row_height * n_cells)``.
+        ``(default_fig_width, row_height * n_cells)``.
+    wave_data_obs : np.ndarray, optional
+        Observer-frame wavelengths, used by MoleculeDict methods that apply
+        the stellar RV correction internally (summed model, matched
+        sampling).  Defaults to *wave_data*.
     **kwargs
         Forwarded to :class:`BasePlot`.
     """
     #: Shared y-axis label drawn down the left side of the figure.
     y_axis_label: str = "Flux Density (Jy)"
+    #: Figure width (inches) when no *figsize* is given.
+    default_fig_width: float = 14.0
+    #: Font size of the molecule color legend (``None``: the strategy's default).
+    legend_fontsize: Optional[float] = None
 
     def __init__(
         self,
@@ -165,6 +178,7 @@ class StackedSpectralPanel(CompositePlot):
         gap_threshold: Optional[float] = None,
         x_scaling: XScaling | str = XScaling.WAVELENGTH,
         panel_ranges: Optional[Sequence[Tuple[float, float]]] = None,
+        wave_data_obs: Optional[np.ndarray] = None,
         **kwargs,
     ):
         super().__init__(figsize=figsize, **kwargs)
@@ -179,6 +193,10 @@ class StackedSpectralPanel(CompositePlot):
         self.flux_data = np.asarray(flux_data)
         self.error_data = (
             np.asarray(error_data) if error_data is not None else None
+        )
+        self.wave_data_obs: np.ndarray = (
+            np.asarray(wave_data_obs) if wave_data_obs is not None
+            else self.wave_data
         )
         self.molecules = molecules
         self.n_panels = n_panels
@@ -218,10 +236,60 @@ class StackedSpectralPanel(CompositePlot):
 
         # Auto figsize
         if self._figsize is None:
-            self._figsize = (14, self.row_height * len(self._panel_edges))
+            self._figsize = (self.default_fig_width, self.row_height * len(self._panel_edges))
 
         # Storage: {row_index: list[SpectralPanel]}
         self.panels: Dict[int, List[SpectralPanel]] = {}
+
+        # Backward-compatible per-row axes, filled by _create_cell: one Axes
+        # per row, or a tuple of the row's axes for multi-axes cells.
+        self.subplots: Dict[int, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Public data mutator (for interactive reuse)
+    # ------------------------------------------------------------------
+    def update_data(
+        self,
+        wave_data: np.ndarray,
+        flux_data: np.ndarray,
+        molecules: Optional["MoleculeDict"] = None,
+        error_data: Optional[np.ndarray] = None,
+        wave_data_obs: Optional[np.ndarray] = None,
+    ) -> bool:
+        """Replace the data arrays and recompute the panel layout.
+
+        *molecules* is kept when ``None``; *error_data* and *wave_data_obs*
+        are always replaced (``wave_data_obs`` defaults to *wave_data*).
+        Call :meth:`generate_plot` afterwards to re-render.
+
+        Returns *True* if the panel edges changed (caller should rebuild
+        subplots); *False* if only the data values changed.
+        """
+        self.wave_data = np.asarray(wave_data)
+        self.flux_data = np.asarray(flux_data)
+        self.wave_data_obs = (
+            np.asarray(wave_data_obs) if wave_data_obs is not None
+            else self.wave_data
+        )
+        if molecules is not None:
+            self.molecules = molecules
+        self.error_data = np.asarray(error_data) if error_data is not None else None
+
+        old_edges = self._panel_edges.copy()
+
+        # _xlim_start/_xlim_end define the *plot display range* and are owned by the view
+        # (set via _set_display_range / plot-start / plot-range fields in the GUI).
+        # update_data must not touch them.
+        # On the very first render (no layout yet) initialise from the data bounds as a safe fallback; the view will override them once active.
+        if len(self._panel_edges) == 0:
+            self._xlim_start = float(np.nanmin(self.wave_data))
+            self._xlim_end = float(np.nanmax(self.wave_data))
+        self._compute_panel_layout()
+
+        return (
+            len(old_edges) != len(self._panel_edges)
+            or not np.allclose(old_edges, self._panel_edges, atol=1e-6)
+        )
 
     # ------------------------------------------------------------------
     # Panel-layout computation
@@ -396,7 +464,7 @@ class StackedSpectralPanel(CompositePlot):
 
         cur_w, cur_h = (
             self._figsize if self._figsize is not None
-            else (14.0, self.row_height * max(len(self._panel_edges), 1))
+            else (self.default_fig_width, self.row_height * max(len(self._panel_edges), 1))
         )
         if width is not None:
             cur_w = _positive("width", width)
@@ -493,6 +561,122 @@ class StackedSpectralPanel(CompositePlot):
         ...
 
     # ------------------------------------------------------------------
+    # Shared building blocks for _create_cell
+    # ------------------------------------------------------------------
+    def _panel_kwargs(self) -> Dict[str, Any]:
+        """Keyword arguments every child panel shares with this plot (gap handling, x scaling, theme)."""
+        return dict(
+            gap_mode=self.gap_mode,
+            gap_threshold=self.gap_threshold,
+            x_scaling=self.x_scaling,
+            theme=self.theme,
+        )
+
+    def _make_spectrum_panel(
+        self,
+        xmin: float,
+        xmax: float,
+        ax: Axes,
+        **panel_kw: Any,
+    ) -> SpectrumPanel:
+        """A :class:`SpectrumPanel` of this plot's observed data over ``[xmin, xmax]`` on *ax*.
+
+        *panel_kw* (``mol_cache``, ``summed_wave``, ``summed_flux``,
+        ``line_list``, ...) are added to, or override, the shared data and
+        :meth:`_panel_kwargs`.
+        """
+        kw: Dict[str, Any] = dict(
+            wave_data=self.wave_data,
+            flux_data=self.flux_data,
+            error_data=self.error_data,
+            molecules=self.molecules,
+            wave_data_obs=self.wave_data_obs,
+            **self._panel_kwargs(),
+        )
+        kw.update(panel_kw)
+        return SpectrumPanel(xmin=xmin, xmax=xmax, ax=ax, **kw)
+
+    def _model_style_kwargs(self) -> Dict[str, Any]:
+        """The Full Spectrum model-line styling (``model_linewidth``, ``model_alpha``) from the theme."""
+        return dict(
+            model_linewidth=self._get_theme_value("full_spectrum_model_linewidth", 1.0),
+            model_alpha=self._get_theme_value("full_spectrum_model_alpha", 0.8),
+        )
+
+    def _summed_model_flux(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """The visible molecules' summed model ``(wave, flux)``, or ``(None, None)``."""
+        return summed_model_flux(self.molecules, self.wave_data_obs)
+
+    # ------------------------------------------------------------------
+    # Render hooks
+    # ------------------------------------------------------------------
+    def _prepare_render(self) -> Dict[str, Any]:
+        """Compute what every cell of a render shares, before the cells are created.
+
+        Called once per :meth:`generate_plot`.  Subclasses build their
+        model caches and per-panel y-limits here.  The returned keyword
+        arguments go to every :meth:`_create_cell` and child-panel
+        ``generate_plot`` call; keyword arguments given to
+        :meth:`generate_plot` override them.  The default returns ``{}``.
+        """
+        return {}
+
+    def _legend_entries(self) -> Optional[Tuple[List[str], List[str]]]:
+        """``(labels, colors)`` of the molecule color legend, or ``None`` for no legend.
+
+        Called after the cells are rendered.  Empty lists remove an existing
+        legend.  The default draws none.
+        """
+        return None
+
+    @property
+    def _legend_axes(self) -> Optional[Axes]:
+        """The axes that receive the molecule color legend: the first axes of the first rendered row."""
+        if not self.panels:
+            return None
+        cell_panels = self.panels[min(self.panels)]
+        return getattr(cell_panels[0], "ax", None) if cell_panels else None
+
+    def _build_legend(self, labels: List[str], colors: List[str]) -> None:
+        """Draw (or, with no *labels*, remove) the molecule color legend on :attr:`_legend_axes`."""
+        legend_ax = self._legend_axes
+        if legend_ax is None:
+            return
+        kw: Dict[str, Any] = {}
+        if self.legend_fontsize is not None:
+            kw["fontsize"] = self.legend_fontsize
+        self.legend_strategy.build_legend(legend_ax, self.fig, labels, colors, **kw)
+
+    def _style_cell_axes(
+        self,
+        ax: Axes,
+        *,
+        is_bottom: bool = True,
+        is_last: bool = False,
+        x_nbins: int = 8,
+        y_nbins: Optional[int] = 6,
+        y_labelsize: float = 7,
+        xlabel_fontsize: Optional[float] = None,
+    ) -> None:
+        """Apply the stacked-figure tick styling to *ax*, one axes of a cell.
+
+        Small tick labels and pruned ``MaxNLocator`` ticks (no y locator when
+        *y_nbins* is ``None``).  Only the bottom axes of a cell (*is_bottom*)
+        keeps its wavelength tick labels, and the bottom axes of the last row
+        (*is_last*) gets the wavelength axis label.
+        """
+        ax.tick_params(axis="x", labelsize=7, labelbottom=is_bottom)
+        ax.tick_params(axis="y", labelsize=y_labelsize)
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=x_nbins, prune="both"))
+        if y_nbins is not None:
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=y_nbins, prune="both"))
+        if is_bottom and is_last:
+            label_kw: Dict[str, Any] = {"color": self._get_theme_value("foreground", "black")}
+            if xlabel_fontsize is not None:
+                label_kw["fontsize"] = xlabel_fontsize
+            ax.set_xlabel(WAVELENGTH_LABEL, **label_kw)
+
+    # ------------------------------------------------------------------
     # Optional per-row hook
     # ------------------------------------------------------------------
     def _post_render_cell(
@@ -508,22 +692,16 @@ class StackedSpectralPanel(CompositePlot):
         implementation applies common tick locators and hides x-axis
         labels on all but the last row.
         """
-        fg = self._get_theme_value("foreground", "black")
         for p_idx, panel in enumerate(cell_panels):
             ax = panel.ax
             if ax is None:
                 continue
-            ax.tick_params(axis="x", labelsize=7)
-            ax.tick_params(axis="y", labelsize=7)
-            ax.xaxis.set_major_locator(MaxNLocator(nbins=8, prune="both"))
-            ax.yaxis.set_major_locator(MaxNLocator(nbins=6, prune="both"))
-            is_bottom_ax = (p_idx == len(cell_panels) - 1)
-            if is_last and is_bottom_ax:
-                ax.set_xlabel(
-                    "Wavelength (\u03bcm)", fontsize=8, color=fg,
-                )
-            else:
-                ax.tick_params(axis="x", labelbottom=is_bottom_ax)
+            self._style_cell_axes(
+                ax,
+                is_bottom=(p_idx == len(cell_panels) - 1),
+                is_last=is_last,
+                xlabel_fontsize=8,
+            )
 
         # --- Gap indicators (drawn after y-limits are finalised) -------
         if self.gap_mode is GapMode.SKIP:
@@ -814,16 +992,32 @@ class StackedSpectralPanel(CompositePlot):
     def generate_plot(self, **kwargs) -> None:
         """Build the stacked multi-panel figure.
 
-        For each panel edge a cell is created (via :meth:`_create_cell`),
-        each child panel's :meth:`~SpectralPanel.generate_plot` is
-        invoked, and :meth:`_post_render_cell` is called for per-row
-        decoration.
+        :meth:`_prepare_render` runs once first.  Then for each panel edge
+        a cell is created (via :meth:`_create_cell`), each child panel's
+        :meth:`~SpectralPanel.generate_plot` is invoked, and
+        :meth:`_post_render_cell` is called for per-row decoration.
+        Last, the molecule color legend is drawn from
+        :meth:`_legend_entries`.
+
+        *kwargs* go to every :meth:`_create_cell` and child-panel
+        ``generate_plot`` call, overriding the keys :meth:`_prepare_render`
+        returns.
 
         When :attr:`gap_mode` is :attr:`GapMode.SKIP`, cells whose
         wavelength range contains no finite observed data are omitted
         entirely.  A small "skipped" annotation is placed between
         adjacent rows that span a gap.
         """
+        self.subplots.clear()
+        cell_kwargs = self._prepare_render()
+        cell_kwargs.update(kwargs)
+        self._render_cells(**cell_kwargs)
+        entries = self._legend_entries()
+        if entries is not None:
+            self._build_legend(*entries)
+
+    def _render_cells(self, **kwargs) -> None:
+        """Create, render and decorate every row, then add the figure labels and theme."""
         # Determine which cells to render.
         active_indices, active_edges = self._active_panel_edges()
         n_active = len(active_indices)
@@ -1018,8 +1212,6 @@ def _extract_cell_kwargs(ssp: StackedSpectralPanel) -> Dict[str, Any]:
         kw["mol_cache"] = mol_cache
 
     if getattr(ssp, "molecules", None) is not None:
-        kw["summed_wave"], kw["summed_flux"] = summed_model_flux(
-            ssp.molecules, getattr(ssp, "wave_data_obs", ssp.wave_data),
-        )
+        kw["summed_wave"], kw["summed_flux"] = ssp._summed_model_flux()
 
     return kw
