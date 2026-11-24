@@ -286,6 +286,13 @@ class TestOnSelectionBothPanels:
         vlines = [entry[0] for entry in view.active_lines if entry[0] is not None]
         assert len(vlines) > 0
 
+    def test_line_labels_are_clipped_to_the_panel(self, tpv_fixture):
+        """Labels zoomed out of view must not stick out of ax2 (constrained layout would make room for them)."""
+        view, mol, pm = tpv_fixture
+        view.on_selection(self.XMIN, self.XMAX)
+        labels = [entry[1] for entry in view.active_lines if entry[1] is not None]
+        assert labels and all(label.get_clip_on() for label in labels)
+
     def test_population_diagram_has_scatter_after_selection(self, tpv_fixture):
         """After on_selection, ax3 must have active-line scatter plotted.
 

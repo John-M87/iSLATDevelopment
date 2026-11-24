@@ -226,6 +226,7 @@ class LineInspectionPlot(SpectrumPanel):
                 fontsize="x-small",
                 color=color,
                 rotation=45,
+                clip_on=True,  # like the lines: zoomed out of view they must not resize the layout
             )
         return max_y
 
@@ -292,6 +293,7 @@ class LineInspectionPlot(SpectrumPanel):
                 f"{line.e_up:.0f},{line.a_stein:.3f}",
                 fontsize="x-small", color=color, rotation=45,
                 picker=True,
+                clip_on=True,  # like the lines: zoomed out of view they must not resize the layout
             )
             info = LineInspectionPlot.get_line_info(line, intensity, tau_val)
             info["lineheight"] = lineheight
