@@ -3,6 +3,7 @@ from tkinter import ttk
 import os
 from .ResizableFrame import ResizableFrame
 from ..Tooltips import CreateToolTip
+from ..KeyBindings import with_shortcut
 
 class trim_label(tk.Label):
     def __init__(self, parent, max_len: int = 25, **kwargs):
@@ -379,7 +380,8 @@ class FileInteractionPane(ttk.Frame):
             command=self._view_input_line_list,
             state="normal" if path else "disabled",
         )
-        menu.add_command(label="Load Line List\u2026", command=self._load_input_line_list)
+        menu.add_command(label=with_shortcut("Load Line List\u2026", "load_line_list"),
+                         command=self._load_input_line_list)
         menu.add_command(label="Saved Line Labels\u2026", command=self._open_saved_line_labels)
         menu.add_separator()
         menu.add_command(

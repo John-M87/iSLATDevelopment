@@ -179,7 +179,7 @@ class TestViewsRegisterOnTheMenu:
         assert _entries(menu)[n:] == [
             ("separator", None), ("command", "Full Spectrum Controls"),
             ("command", PANEL_RANGES_LABEL),
-            ("checkbutton", "Residuals"), ("checkbutton", "Data Density X-Scale"),
+            ("checkbutton", "Residuals (R)"), ("checkbutton", "Data Density X-Scale"),
             ("checkbutton", "Stack Sample Spectra"),
             ("cascade", "Stack Layout"), ("cascade", "Stack Models"),
         ]

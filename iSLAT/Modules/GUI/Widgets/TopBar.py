@@ -10,7 +10,7 @@ import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 import iSLAT.Constants as c
 from iSLAT.Modules.DataTypes.ParameterSet import ParameterSet
 from ..GUIFunctions import create_button, create_menu_btn
-from ..KeyBindings import action_description, action_tooltip, shortcut_text
+from ..KeyBindings import action_description, action_tooltip, shortcut_text, with_shortcut
 from ..Tooltips import CreateToolTip, MenuToolTip
 from ..YAxisDataSync import (
     Y_DATA_SYNC_MENU_LABEL, Y_DATA_SYNC_MENU_TIP, Y_DATA_SYNC_OFF,
@@ -338,9 +338,15 @@ class TopBar(ResizableFrame):
             activebackground=btn_theme.get("active_background", "gray"),
             activeforeground=self.theme.get("foreground", "#F0F0F0"),
         )
-        for _view_name in self.main_plot.views:
+        # Views with a key that switches to them show it in their label.
+        view_shortcuts = {"Three Panel": "toggle_three_panel", "Full Spectrum": "toggle_full_spectrum"}
+        view_labels = {
+            name: with_shortcut(name, view_shortcuts[name]) if name in view_shortcuts else name
+            for name in self.main_plot.views
+        }
+        for _view_name, _view_label in view_labels.items():
             views_menu.add_command(
-                label=_view_name,
+                label=_view_label,
                 command=lambda n=_view_name: self.main_plot.switch_view(n),
             )
 
@@ -350,8 +356,9 @@ class TopBar(ResizableFrame):
         views_menu.add_separator()
         self._y_autoscale_var = tk.BooleanVar(value=True)
         self._observed_var = tk.BooleanVar(value=True)
+        y_autoscale_label = with_shortcut("Auto-scale Y Axis", "toggle_y_autoscale")
         views_menu.add_checkbutton(
-            label="Auto-scale Y Axis",
+            label=y_autoscale_label,
             variable=self._y_autoscale_var,
             command=lambda: self.main_plot.set_y_autoscale(self._y_autoscale_var.get()),
         )
@@ -372,10 +379,25 @@ class TopBar(ResizableFrame):
         )
         y_limits_label = f"Set Y Limits\u2026 ({shortcut_text('open_y_limits_dialog')})"
         views_menu.add_command(label=y_limits_label, command=self.open_y_limits_dialog)
+        observed_label = with_shortcut("Show Observed Data", "toggle_observed_data")
         views_menu.add_checkbutton(
-            label="Show Observed Data",
+            label=observed_label,
             variable=self._observed_var,
             command=lambda: self.main_plot.toggle_observed_data(self._observed_var.get()),
+        )
+        self._summed_var = tk.BooleanVar(value=True)
+        summed_label = with_shortcut("Show Total Model", "toggle_summed_spectrum")
+        views_menu.add_checkbutton(
+            label=summed_label,
+            variable=self._summed_var,
+            command=lambda: self.set_summed_spectrum_visible(self._summed_var.get()),
+        )
+        self._legend_var = tk.BooleanVar(value=True)
+        legend_label = with_shortcut("Show Legend", "toggle_legend")
+        views_menu.add_checkbutton(
+            label=legend_label,
+            variable=self._legend_var,
+            command=lambda: self.set_legend_visible(self._legend_var.get()),
         )
         views_menu.add_separator()
         self._saved_labels_var = tk.BooleanVar(value=True)
@@ -389,17 +411,22 @@ class TopBar(ResizableFrame):
         views_menu.configure(postcommand=self._sync_plot_option_vars)
 
         views_drpwn.config(menu=views_menu)
-        self._views_menu_tips = {
+        view_tips = {
             "Three Panel":        "Standard 3-panel layout:\nfull spectrum, line inspection,\nand population diagram.",
             "Full Spectrum":      "Multi-panel full-spectrum view\nshowing the entire wavelength range.",
             "Optical Depth":      "Multi-panel optical depth τ(λ)\nof the visible molecules over\nthe entire wavelength range.",
             "Population Diagram": "Standalone Boltzmann / rotation\ndiagram for the active molecule.",
             "Line Grid":          "Grid of individual line fits\nfrom the most recent fit run.",
-            "Auto-scale Y Axis":  action_tooltip("toggle_y_autoscale"),
+        }
+        self._views_menu_tips = {
+            **{view_labels.get(name, name): tip for name, tip in view_tips.items()},
+            y_autoscale_label:    action_description("toggle_y_autoscale"),
             "Auto-scale Y to Model Flux": "When auto-scaling, fit the Y axis to the\nplotted model (molecule lines and sum)\ninstead of the observed data.",
             Y_DATA_SYNC_MENU_LABEL: Y_DATA_SYNC_MENU_TIP,
             y_limits_label:       action_description("open_y_limits_dialog"),
-            "Show Observed Data": action_tooltip("toggle_observed_data"),
+            observed_label:       action_description("toggle_observed_data"),
+            summed_label:         action_description("toggle_summed_spectrum"),
+            legend_label:         action_description("toggle_legend"),
             "Show Saved Line Labels": "Show / hide the saved-line labels\nin the current view (each view\nremembers its own setting).",
             "Saved Line Labels\u2026": "Choose which column of the input\nline list labels the saved lines,\nwith an optional prefix / suffix,\nand the views that show labels.",
         }
@@ -413,21 +440,17 @@ class TopBar(ResizableFrame):
         saved_lines_tip = action_tooltip("toggle_saved_lines")
         atomic_lines_tip = action_tooltip("toggle_atomic_lines")
         #export_model_tip = "Export current\nmodels into csv files"
-        toggle_legend_tip = action_tooltip("toggle_legend")
         toggle_full_spectrum_tip = (
             action_tooltip("toggle_full_spectrum")
             + f"\n\nOpen in new window: {shortcut_text('open_full_spectrum_window')}"
         )
-        toggle_summed_tip = action_tooltip("toggle_summed_spectrum")
         create_button(self.button_frame, self.theme, "Saved Lines", self.toggle_saved_lines, 0, 3, tip_text=saved_lines_tip)
         create_button(self.button_frame, self.theme, "Atomic Lines", self.toggle_atomic_lines, 0, 4, tip_text=atomic_lines_tip)
         create_button(self.button_frame, self.theme, "Full Spectrum", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
-        create_button(self.button_frame, self.theme, "Total Model", self.toggle_summed_spectrum, 0, 6, tip_text=toggle_summed_tip)
-        create_button(self.button_frame, self.theme, "Legend", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
 
         # Parameter sets: which one is shown, and switching between them
         self.parameter_set_menu = ParameterSetMenu(
-            self.button_frame, self.theme, self.islat, 0, 8,
+            self.button_frame, self.theme, self.islat, 0, 6,
             menu_options=dict(
                 bg=btn_theme.get("background", "lightgray"),
                 fg=self.theme.get("foreground", "#F0F0F0"),
@@ -441,11 +464,11 @@ class TopBar(ResizableFrame):
         advance_tip = action_tooltip("advance_plot_start")
         
         self._retreat_btn = ttk.Button(self.button_frame, text="<", command=self.retreat_plot_start, width=2)
-        self._retreat_btn.grid(row=0, column=9, padx=(4, 0), pady=2, sticky="nsew")
+        self._retreat_btn.grid(row=0, column=7, padx=(4, 0), pady=2, sticky="nsew")
         CreateToolTip(self._retreat_btn, retreat_tip)
         
         self._advance_btn = ttk.Button(self.button_frame, text=">", command=self.advance_plot_start, width=2)
-        self._advance_btn.grid(row=0, column=10, padx=(0, 1), pady=2, sticky="nsew")
+        self._advance_btn.grid(row=0, column=8, padx=(0, 1), pady=2, sticky="nsew")
         CreateToolTip(self._advance_btn, advance_tip)
 
     def save_line(self, save_type="selected"):
@@ -1614,6 +1637,8 @@ class TopBar(ResizableFrame):
             self._y_model_var.set(getattr(self.main_plot, 'y_autoscale_source', 'data') == 'model')
             self._y_data_sync_var.set(y_data_sync_var_value(getattr(self.main_plot, 'y_data_sync', None)))
             self._observed_var.set(bool(getattr(self.main_plot, 'observed_toggle', True)))
+            self._summed_var.set(bool(getattr(self.main_plot, 'summed_toggle', True)))
+            self._legend_var.set(bool(getattr(self.main_plot, 'legend_toggle', True)))
         except Exception:
             pass
         self._sync_saved_labels_var()
@@ -1633,6 +1658,16 @@ class TopBar(ResizableFrame):
                 "Show Saved Line Labels", state="normal" if has_labels else "disabled")
         except Exception:
             pass
+
+    def set_summed_spectrum_visible(self, visible: bool) -> None:
+        """Show or hide the total (summed) model, as the Views-menu check mark asks."""
+        if bool(getattr(self.main_plot, 'summed_toggle', True)) != bool(visible):
+            self.toggle_summed_spectrum()
+
+    def set_legend_visible(self, visible: bool) -> None:
+        """Show or hide the plot legend, as the Views-menu check mark asks."""
+        if bool(getattr(self.main_plot, 'legend_toggle', True)) != bool(visible):
+            self.toggle_legend()
 
     def set_saved_line_labels_visible(self, visible: bool) -> None:
         """Show or hide the saved-line labels in the active view."""

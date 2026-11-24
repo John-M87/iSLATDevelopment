@@ -11,7 +11,7 @@ from iSLAT.Modules.GUI.ControlSurface import ControlSurface
 from ..GUIFunctions import create_wrapper_frame, create_scrollable_frame, ColorButton
 #from .RegularFrame import RegularFrame
 from ..Tooltips import CreateToolTip
-from ..KeyBindings import action_tooltip, shortcut_text
+from ..KeyBindings import action_tooltip, shortcut_text, with_shortcut
 
 # Platform-specific layout constants — Windows uses larger font metrics than macOS
 _IS_WINDOWS = platform.system() == "Windows"
@@ -1492,6 +1492,13 @@ class ControlPanel(ttk.Frame):
     def _show_molecule_context_menu(self, mol_name: str, event) -> None:
         """Post a right-click context menu for a molecule row."""
         menu = tk.Menu(self, tearoff=0)
+        # The B / Shift+F keys act on the active molecule, so its row's menu shows them.
+        active = self._get_active_molecule_object()
+        is_active = active is not None and getattr(active, "name", None) == mol_name
+
+        def _label(text: str, action_id: str) -> str:
+            return with_shortcut(text, action_id) if is_active else text
+
         menu.add_command(
             label="Duplicate",
             command=lambda: self._duplicate_molecule_action(mol_name),
@@ -1521,11 +1528,12 @@ class ControlPanel(ttk.Frame):
             command=lambda: self._edit_molecule_label(mol_name),
         )
         menu.add_command(
-            label="Unbold on Plot" if self._is_molecule_bold(mol_name) else "Bold on Plot",
+            label=_label("Unbold on Plot" if self._is_molecule_bold(mol_name) else "Bold on Plot",
+                         "toggle_active_molecule_bold"),
             command=lambda: self._toggle_molecule_bold_action(mol_name),
         )
         menu.add_command(
-            label="Filter Line List",
+            label=_label("Filter Line List", "filter_active_line_list"),
             command=lambda: self._filter_line_list_action(mol_name),
         )
         menu.add_command(

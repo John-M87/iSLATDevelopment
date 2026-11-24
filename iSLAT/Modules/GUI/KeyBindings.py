@@ -48,6 +48,7 @@ __all__ = [
     "normalize_chord",
     "one_line",
     "shortcut_text",
+    "with_shortcut",
 ]
 
 # Tk ``event.state`` modifier bits.
@@ -307,6 +308,16 @@ def shortcut_text(action_id: str, system: Optional[str] = None) -> str:
     if not chords:
         raise KeyError(f"No default key binding for action {action_id!r}")
     return format_chord(chords[0], system)
+
+
+def with_shortcut(label: str, action_id: str, system: Optional[str] = None) -> str:
+    """Menu label *label* followed by *action_id*'s keybind: ``"Fit Line (G)"``.
+
+    *label* is returned unchanged when the action has no default keybind.
+    """
+    if not DEFAULT_KEYMAP.get(action_id):
+        return label
+    return f"{label} ({shortcut_text(action_id, system)})"
 
 
 def action_title(action_id: str) -> str:

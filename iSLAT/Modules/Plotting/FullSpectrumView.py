@@ -41,7 +41,7 @@ from .PlotView import (
     FigurePanel, PlotView, ask_save_path, default_save_name, draw_wavelength_markers,
     normalize_y_data_sync, notify_user,
 )
-from ..GUI.KeyBindings import action_tooltip
+from ..GUI.KeyBindings import action_tooltip, with_shortcut
 from .StackedSpectralPanel import StackedSpectralPanel
 from .FullSpectrumPlot import FullSpectrumPlot
 from .ResidualSpectrumPlot import ResidualSpectrumPlot
@@ -1350,7 +1350,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
 
         fields: List[Any] = [
             ToggleField(
-                "show_residuals", "Residuals",
+                "show_residuals", with_shortcut("Residuals", "toggle_residuals"),
                 getter=_residuals_getter,
                 setter=_residuals_setter,
                 owner=self,

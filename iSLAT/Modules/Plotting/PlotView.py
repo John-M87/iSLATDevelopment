@@ -17,6 +17,7 @@ from .ArtistTags import OBSERVED_TAG, SUMMED_TAG, iter_molecule_lines, iter_tagg
 from .FigureClipboard import ClipboardError, copy_figure_to_clipboard
 from .FigureExport import isolated_axes, save_figure_file
 from .PlotDebug import debug_config
+from ..GUI.KeyBindings import with_shortcut
 
 if TYPE_CHECKING:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -1293,7 +1294,11 @@ class PlotView(ABC):
         panel = self.panel_at(event) if event is not None else None
         if panel is not None:
             menu.add_command(label=f"Save {panel.label}…", command=lambda: self.save_panel(panel))
-        menu.add_command(label="Copy Figure to Clipboard", command=self.copy_figure_to_clipboard)
+        copy_label = "Copy Figure to Clipboard"
+        # Ctrl/Cmd+Shift+C copies the main window's active view, so only that view's menu shows it.
+        if getattr(getattr(self, "_pm", None), "active_view", None) is self:
+            copy_label = with_shortcut(copy_label, "copy_view_to_clipboard")
+        menu.add_command(label=copy_label, command=self.copy_figure_to_clipboard)
         if panel is not None:
             menu.add_command(label=f"Copy {panel.label} to Clipboard",
                              command=lambda: self.copy_panel_to_clipboard(panel))

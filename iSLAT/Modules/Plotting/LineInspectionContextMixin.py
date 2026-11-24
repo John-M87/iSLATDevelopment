@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from iSLAT.Modules.DataProcessing.LineIdentity import LineRef, match_line
+from iSLAT.Modules.GUI.KeyBindings import with_shortcut
 
 from .ArtistTags import SUMMED_TAG, iter_tagged
 from .ModelOverlays import draw_summed_fill
@@ -394,8 +395,8 @@ class LineInspectionContextMixin:
             except Exception:
                 pass
 
-        menu.add_command(label="Save Current Line",       command=_save_current_line)
-        menu.add_command(label="Fit Current Line",        command=_fit_current_line)
+        menu.add_command(label=with_shortcut("Save Current Line", "save_line"), command=_save_current_line)
+        menu.add_command(label=with_shortcut("Fit Current Line", "fit_line"),   command=_fit_current_line)
         menu.add_command(label="Run Deblender",           command=_run_deblender)
         menu.add_separator()
         menu.add_command(label="Save All Lines in Range", command=_save_all_lines_in_range)

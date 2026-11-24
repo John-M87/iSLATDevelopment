@@ -13,6 +13,7 @@ from iSLAT.Modules.GUI.KeyBindings import (
     format_chord,
     normalize_chord,
     shortcut_text,
+    with_shortcut,
 )
 
 SHIFT, CTRL, CMD, CAPS = 0x1, 0x4, 0x8, 0x2
@@ -84,6 +85,13 @@ class TestNormalizeAndFormat:
         assert shortcut_text("advance_plot_start") == ">"
         with pytest.raises(KeyError):
             shortcut_text("no_such_action")
+
+    def test_with_shortcut(self):
+        assert with_shortcut("Fit Line", "fit_line") == "Fit Line (G)"
+        assert with_shortcut("Load Line List", "load_line_list", system="Darwin") == "Load Line List (Cmd+O)"
+        # No keybind (or no such action): the label is left as it is.
+        assert with_shortcut("Revert Parameters", "revert_parameters") == "Revert Parameters"
+        assert with_shortcut("Other", "no_such_action") == "Other"
 
 
 # ---------------------------------------------------------------------------

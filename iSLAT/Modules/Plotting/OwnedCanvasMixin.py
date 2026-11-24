@@ -33,10 +33,18 @@ try:
 except ImportError:  # pragma: no cover - Tk is not available
     _FigureCanvasTkAgg = None
 
+from iSLAT.Modules.GUI.KeyBindings import with_shortcut
 from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation, is_right_click
 
 #: Pack options of a view's canvas widget inside its parent frame.
 CANVAS_PACK_OPTIONS: Dict[str, Any] = {"fill": "both", "expand": True, "padx": 0, "pady": 0}
+
+
+#: Views with a key that switches to them (from any other view).
+_VIEW_SHORTCUT_ACTIONS: Dict[str, str] = {
+    "Three Panel": "toggle_three_panel",
+    "Full Spectrum": "toggle_full_spectrum",
+}
 
 
 def add_view_switch_items(menu: Any, pm: Any, names: Tuple[str, ...]) -> None:
@@ -46,7 +54,11 @@ def add_view_switch_items(menu: Any, pm: Any, names: Tuple[str, ...]) -> None:
     menu.add_separator()
     for name in names:
         if name != pm.active_view_name:
-            menu.add_command(label=f"Switch to {name} View", command=lambda n=name: pm.switch_view(n))
+            label = f"Switch to {name} View"
+            action_id = _VIEW_SHORTCUT_ACTIONS.get(name)
+            if action_id is not None:
+                label = with_shortcut(label, action_id)
+            menu.add_command(label=label, command=lambda n=name: pm.switch_view(n))
 
 
 def popup_menu(menu: Any, canvas_widget: Any, event: Any) -> bool:
