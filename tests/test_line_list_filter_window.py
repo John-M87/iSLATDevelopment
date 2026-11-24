@@ -587,14 +587,26 @@ def _upper_v_is(v):
 
 
 @pytest.fixture
-def renamed_co_maker():
-    """A CO line list whose name ('CO_v1-0') matches no registered schema."""
-    from iSLAT.Modules.DataTypes.MoleculeLineList import MoleculeLineList
-    from iSLAT.Modules.DataProcessing.LineListMaker import LineListMaker
+def unidentified_co_par(tmp_path, monkeypatch):
+    """CO lines in a file whose header, name and molecule name identify no species."""
+    from iSLAT.Modules.DataTypes.QuantumStateSchema import QuantumStateRegistry
     if not os.path.exists(_CO_PAR):
         pytest.skip("CO HITRAN file not available")
-    line_list = MoleculeLineList(molecule_id='CO_v1-0',
-                                 filename=os.path.abspath(_CO_PAR),
+    monkeypatch.setattr("iSLAT.Modules.FileHandling.line_cache_folder_path", str(tmp_path / "cache"))
+    monkeypatch.setattr(QuantumStateRegistry, "_aliases", {})
+    lines = open(_CO_PAR).read().splitlines(keepends=True)
+    path = tmp_path / "band_lines.par"
+    path.write_text("# HITRAN ; id:; iso:;gid:\n" + "".join(lines[1:]))
+    return str(path)
+
+
+@pytest.fixture
+def renamed_co_maker(unidentified_co_par):
+    """A CO line list whose species cannot be identified ('band_v1-0', blank header)."""
+    from iSLAT.Modules.DataTypes.MoleculeLineList import MoleculeLineList
+    from iSLAT.Modules.DataProcessing.LineListMaker import LineListMaker
+    line_list = MoleculeLineList(molecule_id='band_v1-0',
+                                 filename=unidentified_co_par,
                                  wavelength_range=(4.9, 5.2))
     return LineListMaker(line_list)
 
@@ -607,7 +619,7 @@ def test_format_choices_start_with_auto_then_registered_schemas():
 
 def test_maker_schema_species_defaults_to_species(renamed_co_maker):
     assert renamed_co_maker.quantum_format is None
-    assert renamed_co_maker.schema_species == 'CO_v1-0'
+    assert renamed_co_maker.schema_species == 'band_v1-0'
 
 
 def test_maker_format_override_parses_without_renaming(renamed_co_maker):
@@ -620,15 +632,31 @@ def test_maker_format_override_parses_without_renaming(renamed_co_maker):
     base = maker.original_df
     expected = (base['lev_up'].str.split('|').str[0].str.strip() == '2').sum()
     assert 0 < len(maker) == expected
-    assert maker.species == 'CO_v1-0'
-    assert set(maker.df['species']) == {'CO_v1-0'}
+    assert maker.species == 'band_v1-0'
+    assert set(maker.df['species']) == {'band_v1-0'}
+
+
+@pytest.mark.parametrize("name, header", [
+    ('CO_v1-0', "# HITRAN ; id:; iso:;gid:\n"),         # species from the name prefix
+    ('band_v1-0', "# HITRAN CO; id:5; iso:1;gid:26\n"),  # species from the file header
+])
+def test_renamed_list_parses_without_an_override(unidentified_co_par, name, header):
+    from iSLAT.Modules.DataTypes.MoleculeLineList import MoleculeLineList
+    from iSLAT.Modules.DataProcessing.LineListMaker import LineListMaker
+    lines = open(unidentified_co_par).read().splitlines(keepends=True)
+    open(unidentified_co_par, "w").write(header + "".join(lines[1:]))
+    maker = LineListMaker(MoleculeLineList(molecule_id=name, filename=unidentified_co_par,
+                                           wavelength_range=(4.9, 5.2)))
+    maker.filter_expression(_upper_v_is(2))
+    assert 0 < len(maker) < len(maker.original_df)
+    assert maker.quantum_format is None
 
 
 def test_maker_format_override_survives_copy_and_clears_with_blank(renamed_co_maker):
     renamed_co_maker.quantum_format = 'CO'
     assert renamed_co_maker.copy().quantum_format == 'CO'
     renamed_co_maker.quantum_format = ''
-    assert renamed_co_maker.schema_species == 'CO_v1-0'
+    assert renamed_co_maker.schema_species == 'band_v1-0'
 
 
 @pytest.fixture
@@ -644,15 +672,13 @@ def tk_root():
 
 
 @pytest.fixture
-def renamed_co_molecule():
+def renamed_co_molecule(unidentified_co_par):
     from iSLAT.Modules.DataTypes.Molecule import Molecule
     from iSLAT.Modules.GUI.Widgets.LineListFilterWindow import LineListFilterWindow
-    if not os.path.exists(_CO_PAR):
-        pytest.skip("CO HITRAN file not available")
     LineListFilterWindow._format_overrides.clear()
     LineListFilterWindow._whole_list_choices.clear()
     yield Molecule(
-        name='CO_v1-0', displaylabel='CO_v1-0', filepath=_CO_PAR, color='#f00',
+        name='band_v1-0', displaylabel='band_v1-0', filepath=unidentified_co_par, color='#f00',
         is_visible=True, temp=600.0, radius=0.5, n_mol=1e17, distance=140.0,
         fwhm=130.0, wavelength_range=(4.9, 5.2), model_pixel_res=0.001,
         initial_molecule_parameters={'t_kin': 600.0, 'scale_exponent': 17.0,
@@ -680,7 +706,7 @@ def test_window_format_override_offers_quantum_fields(tk_root, renamed_co_molecu
         assert 'qn_upper:J' in {s.key for s in win._catalog}
         assert win._schema_note.winfo_manager() == ''
         assert win._mask_context().species == 'CO'
-        assert win._maker.species == 'CO_v1-0'
+        assert win._maker.species == 'band_v1-0'
         assert all(r.spec() is None or r.spec() in win._catalog
                    for g in win._group_rows for r in g.rows)
     finally:
@@ -776,7 +802,7 @@ def test_window_whole_list_filters_lines_outside_model_range(tk_root, renamed_co
         base = win._maker.original_df
         assert win._total_lines == len(base) > in_range
         assert base['lam'].min() < 4.9 or base['lam'].max() > 5.2
-        assert set(base['species']) == {'CO_v1-0'}
+        assert set(base['species']) == {'band_v1-0'}
 
         win._maker.filter_expression(_lam_between(4.5, 5.0))
         assert win._maker.df['lam'].min() < 4.9

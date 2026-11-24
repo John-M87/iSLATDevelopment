@@ -463,6 +463,50 @@ class QuantumStateRegistry:
 
     _registry: ClassVar[Dict[str, QuantumStateSchema]] = {}
     _fallback: ClassVar[QuantumStateSchema] = GenericDelimitedSchema()
+    # Molecule name -> species, from a line-list file header or a manual override.
+    _aliases: ClassVar[Dict[str, str]] = {}
+
+    @classmethod
+    def set_species(cls, molecule_id: str, species: Optional[str]) -> None:
+        """Parse *molecule_id*'s lines with *species*' schema (``None`` removes the mapping)."""
+        if species:
+            cls._aliases[molecule_id] = species
+        else:
+            cls._aliases.pop(molecule_id, None)
+
+    @classmethod
+    def rename_species(cls, old_id: str, new_id: str) -> None:
+        """Move *old_id*'s species mapping to *new_id* (after a molecule is renamed)."""
+        if old_id in cls._aliases:
+            cls._aliases[new_id] = cls._aliases.pop(old_id)
+
+    @classmethod
+    def species_from_name(cls, name: Optional[str]) -> Optional[str]:
+        """The registered species *name* is, or starts with at a ``_``: ``"H2O_hot_v0"`` -> ``"H2O"``."""
+        if not name:
+            return None
+        if name in cls._registry:
+            return name
+        parts = name.split('_')
+        for end in range(len(parts) - 1, 0, -1):
+            candidate = '_'.join(parts[:end])
+            if candidate in cls._registry:
+                return candidate
+        return None
+
+    @classmethod
+    def resolve_species(cls, molecule_id: Optional[str]) -> Optional[str]:
+        """The registered species whose schema *molecule_id* uses, or ``None``.
+
+        A species set with :meth:`set_species` (from a file header or by the
+        user) wins; otherwise the molecule name itself or its ``_`` prefix.
+        """
+        if not molecule_id:
+            return None
+        alias = cls._aliases.get(molecule_id)
+        if alias in cls._registry:
+            return alias
+        return cls.species_from_name(molecule_id)
 
     @classmethod
     def register(cls, molecule_id: str, schema: QuantumStateSchema) -> None:
@@ -573,7 +617,8 @@ class QuantumStateRegistry:
     def get_schema(cls, molecule_id: Optional[str]) -> QuantumStateSchema:
         """Return the schema for *molecule_id*, or the generic fallback.
 
-        If *molecule_id* is ``None`` or not registered, the singleton
+        *molecule_id* is resolved with :meth:`resolve_species`.  If it
+        resolves to no registered species, the singleton
         :class:`GenericDelimitedSchema` instance is returned so callers
         always receive a usable schema object.
 
@@ -587,9 +632,8 @@ class QuantumStateRegistry:
         QuantumStateSchema
             Registered schema, or :class:`GenericDelimitedSchema`.
         """
-        if molecule_id is None:
-            return cls._fallback
-        return cls._registry.get(molecule_id, cls._fallback)
+        species = cls.resolve_species(molecule_id)
+        return cls._registry[species] if species else cls._fallback
 
     @classmethod
     def get_fields(cls, molecule_id: Optional[str]) -> Tuple[QuantumField, ...]:

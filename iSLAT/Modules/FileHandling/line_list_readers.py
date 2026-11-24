@@ -172,7 +172,14 @@ class HitranParReader:
                     molar_mass = value
                     break
 
-        metadata: Dict[str, Any] = {"source_format": "hitran"}
+        from .molecular_data_reader import read_par_header
+        header = read_par_header(filepath)
+        metadata: Dict[str, Any] = {
+            "source_format": "hitran",
+            "hitran_id": header["hitran_id"],
+            "hitran_iso": header["hitran_iso"],
+            "header_names": header["names"],
+        }
         if molar_mass is not None:
             metadata["molar_mass"] = molar_mass
 

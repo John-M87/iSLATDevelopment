@@ -1383,6 +1383,8 @@ class MoleculeDict(ObservableMixin, dict):
         mol = self.pop(old_name)
         mol.name = new_name
         self[new_name] = mol
+        from .QuantumStateSchema import QuantumStateRegistry
+        QuantumStateRegistry.rename_species(old_name, new_name)
         print(f"MoleculeDict: renamed '{old_name}' → '{new_name}'")
         return True
 

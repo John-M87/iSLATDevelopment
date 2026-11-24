@@ -222,7 +222,8 @@ class MoleculeLineList(WavelengthRangeMixin):
                  '_g_up_cache', '_g_low_cache', '_data_loaded', '_filename', '_raw_lines_data',
                  '_pandas_df_cache', '_molar_mass', '_wavelength_range', '_filtered_raw_data',
                  '_lev_up_cache', '_lev_low_cache', '_extra_fields', '_source_format',
-                 '_quantum_cache', '_lam_order')
+                 '_quantum_cache', '_lam_order', '_hitran_id', '_hitran_iso',
+                 '_header_names', '_header_read', '_species_override')
     
     # Class-level reader registry — populated lazily to avoid circular imports
     _reader_registry: ClassVar[Dict[str, Any]] = {}
@@ -270,6 +271,12 @@ class MoleculeLineList(WavelengthRangeMixin):
         self._source_format: Optional[str] = format
         # Wavelength order of _raw_lines_data (_LAM_* value); None = not yet known.
         self._lam_order: Optional[int] = None
+        # Species information from the file header (see the species property)
+        self._hitran_id: Optional[int] = None
+        self._hitran_iso: Optional[int] = None
+        self._header_names: List[str] = []
+        self._header_read = False
+        self._species_override: Optional[str] = None
         
         # Define namedtuple types for data structure
         self._partition_type = namedtuple('partition', ['t', 'q'])
@@ -385,6 +392,10 @@ class MoleculeLineList(WavelengthRangeMixin):
         # Attach partition function and metadata
         obj.partition_function = result.partition
         obj._molar_mass = result.metadata.get("molar_mass")
+        obj._set_header_info(result.metadata)
+        from iSLAT.Modules.FileHandling.line_list_species import species_override_for_file
+        obj._species_override = species_override_for_file(filepath)
+        obj._register_species()
 
         return obj
 
@@ -501,6 +512,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         full._lam_order = self._lam_order
         full.partition_function = self.partition_function
         full._molar_mass = self._molar_mass
+        full._copy_species_info(self)
         full.lines = None  # Created on demand
         full._data_loaded = True
         return full
@@ -636,6 +648,9 @@ class MoleculeLineList(WavelengthRangeMixin):
             self._data_loaded = True
             self._invalidate_caches()
             self._lam_order = int(metadata[2])
+            if metadata.size >= 5:  # written since the header species was cached
+                self._hitran_id = None if np.isnan(metadata[3]) else int(metadata[3])
+                self._hitran_iso = None if np.isnan(metadata[4]) else int(metadata[4])
 
             return True
 
@@ -710,11 +725,14 @@ class MoleculeLineList(WavelengthRangeMixin):
                     np.array(self._extra_fields, dtype=object),
                 )
 
-            # Metadata last (version + molar mass + wavelength order): its
-            # mtime is what _is_cache_valid compares, and a cache missing it
-            # is never used, so a half-written cache is rebuilt.
+            # Metadata last (version, molar mass, wavelength order, HITRAN
+            # molecule and isotopologue numbers): its mtime is what
+            # _is_cache_valid compares, and a cache missing it is never used,
+            # so a half-written cache is rebuilt.
             metadata = np.array(
-                [_CACHE_VERSION, self._molar_mass if self._molar_mass else 0.0, self._get_lam_order()],
+                [_CACHE_VERSION, self._molar_mass if self._molar_mass else 0.0, self._get_lam_order(),
+                 np.nan if self._hitran_id is None else self._hitran_id,
+                 np.nan if self._hitran_iso is None else self._hitran_iso],
                 dtype=np.float64,
             )
             np.save(os.path.join(cache_filepath, "metadata.npy"), metadata)
@@ -772,6 +790,9 @@ class MoleculeLineList(WavelengthRangeMixin):
             section.mark("load_from_cache")
             if self._load_from_cache(cache_filepath):
                 debug_config.info('molecule_dict', f"[CACHE HIT] Loaded {self.molecule_id} from binary cache")
+                if fmt == "hitran" and self._hitran_id is None:
+                    self._read_header_info(source_filepath)  # cache written before ids were stored
+                self._register_species()
                 section.mark("cache_load_complete")
                 section.end()
                 section.get_breakdown(print_output=True)
@@ -796,8 +817,9 @@ class MoleculeLineList(WavelengthRangeMixin):
             section.mark("parse_complete")
             
             self.partition_function = partition_function
-            self._molar_mass = other_fields[0][1]
+            self._molar_mass = dict(other_fields or []).get("Molar_Mass")
             print(f'Molar_mass: {self._molar_mass}')
+            self._read_header_info(source_filepath)
         else:
             # Use reader registry for CSV / saved / custom formats
             self.__class__._ensure_registry()
@@ -815,6 +837,7 @@ class MoleculeLineList(WavelengthRangeMixin):
             self.partition_function = result.partition
             self._molar_mass = result.metadata.get("molar_mass")
             self._extra_fields = result.extra_columns
+            self._set_header_info(result.metadata)
             lines_data = result.lines_data
 
         # Convert list of dicts to structured numpy array for fast column access
@@ -831,6 +854,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         section.mark("save_to_cache")
         if self._save_to_cache(cache_filepath):
             print(f"[CACHE SAVED] {self.molecule_id} cached for faster loading")
+        self._register_species()
         
         section.end()
         section.get_breakdown(print_output=True)
@@ -863,14 +887,107 @@ class MoleculeLineList(WavelengthRangeMixin):
     def quantum_schema(self):
         """Return the :class:`~.QuantumStateSchema.QuantumStateSchema` for this molecule.
 
-        The schema is looked up in :class:`~.QuantumStateSchema.QuantumStateRegistry`
-        using :attr:`molecule_id`.  Importing :mod:`~.HITRANQuantumSchemas`
-        here (on first access) registers all HITRAN schemas as a side-effect
-        while keeping startup cost zero when the feature is not used.
+        The schema of :attr:`species`, looked up in
+        :class:`~.QuantumStateSchema.QuantumStateRegistry`.  Importing
+        :mod:`~.HITRANQuantumSchemas` here (on first access) registers all
+        HITRAN schemas as a side-effect while keeping startup cost zero when
+        the feature is not used.
         """
         import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401 — register side-effect
         from .QuantumStateSchema import QuantumStateRegistry
-        return QuantumStateRegistry.get_schema(self.molecule_id)
+        return QuantumStateRegistry.get_schema(self.species or self.molecule_id)
+
+    @property
+    def species(self) -> Optional[str]:
+        """The registered species whose quantum-number schema these lines use, or ``None``.
+
+        In order: a manual override (:attr:`species` set on this list, then the
+        file's entry in ``LineListSpecies.json``), the HITRAN molecule number in
+        the file header, a molecule name in the header, then :attr:`molecule_id`
+        or its ``_`` prefix (``"H2O_hot_v0"`` -> ``"H2O"``), then the same for
+        the file name.
+        """
+        from .HITRANQuantumSchemas import species_for_hitran_number
+        from .QuantumStateSchema import QuantumStateRegistry
+        from iSLAT.Modules.FileHandling.line_list_species import species_override_for_file
+
+        self._ensure_header_info()
+        file_stem = Path(str(self._filename)).stem if self._filename else None
+        candidates = [self._species_override, species_override_for_file(self._filename),
+                      species_for_hitran_number(self._hitran_id), *self._header_names,
+                      self.molecule_id, file_stem]
+        for candidate in candidates:
+            species = QuantumStateRegistry.species_from_name(candidate)
+            if species:
+                return species
+        return None
+
+    @species.setter
+    def species(self, value: Optional[str]) -> None:
+        """Override the species for this line list (``None`` clears the override)."""
+        self._species_override = value or None
+        self._quantum_cache.clear()
+        self._register_species()
+
+    @property
+    def hitran_id(self) -> Optional[int]:
+        """The HITRAN molecule number from the file header (``None`` if not given)."""
+        self._ensure_header_info()
+        return self._hitran_id
+
+    @property
+    def hitran_iso(self) -> Optional[int]:
+        """The HITRAN isotopologue number from the file header (``None`` if not given)."""
+        self._ensure_header_info()
+        return self._hitran_iso
+
+    def _read_header_info(self, source_filepath) -> None:
+        from iSLAT.Modules.FileHandling.molecular_data_reader import read_par_header
+        try:
+            info = read_par_header(source_filepath)
+        except OSError:
+            return
+        self._hitran_id = info["hitran_id"] if info["hitran_id"] is not None else self._hitran_id
+        self._hitran_iso = info["hitran_iso"] if info["hitran_iso"] is not None else self._hitran_iso
+        self._header_names = info["names"]
+        self._header_read = True
+
+    def _ensure_header_info(self) -> None:
+        """Read the header of a not-yet-loaded .par file (a few lines) for its species."""
+        if self._header_read or self._data_loaded or self._hitran_id is not None or not self._filename:
+            return
+        if str(self._filename).lower().endswith(".par"):
+            from iSLAT.Modules.FileHandling import absolute_data_files_path
+            path = str(self._filename)
+            if not os.path.isabs(path) and not os.path.exists(path):
+                path = os.path.join(absolute_data_files_path, path)
+            self._read_header_info(path)
+        self._header_read = True
+
+    def _set_header_info(self, metadata: Dict[str, Any]) -> None:
+        """Species information from a reader's metadata (.par header or CSV ``species`` column)."""
+        self._hitran_id = metadata.get("hitran_id", self._hitran_id)
+        self._hitran_iso = metadata.get("hitran_iso", self._hitran_iso)
+        names = list(metadata.get("header_names") or [])
+        species = metadata.get("species")
+        if species and len(species) == 1:
+            names.append(str(species[0]))
+        self._header_names = names
+        self._header_read = True
+
+    def _copy_species_info(self, other: "MoleculeLineList") -> None:
+        self._hitran_id, self._hitran_iso = other._hitran_id, other._hitran_iso
+        self._header_names = list(other._header_names)
+        self._header_read = other._header_read
+        self._species_override = other._species_override
+
+    def _register_species(self) -> None:
+        """Let schema lookups by :attr:`molecule_id` (e.g. a renamed molecule) find :attr:`species`."""
+        if not self.molecule_id:
+            return
+        import iSLAT.Modules.DataTypes.HITRANQuantumSchemas  # noqa: F401 — register side-effect
+        from .QuantumStateSchema import QuantumStateRegistry
+        QuantumStateRegistry.set_species(self.molecule_id, self.species)
 
     def get_quantum_numbers(self, state: str = 'upper') -> dict:
         """Return a dict of named quantum-number arrays for all lines.
@@ -1077,6 +1194,7 @@ class MoleculeLineList(WavelengthRangeMixin):
         new._lam_order = self._lam_order
         new.partition_function = self.partition_function
         new._molar_mass = self._molar_mass
+        new._copy_species_info(self)
         new.lines = None  # Created on demand
         new._data_loaded = True
         return new
@@ -1523,9 +1641,12 @@ class MoleculeLineList(WavelengthRangeMixin):
                 if header[col].iloc[0] is not None
             }
 
-        h_mol = overrides.get('mol', self.molecule_id or '')
-        h_M = overrides.get('M', '')
-        h_iso = overrides.get('isotopologue', '')
+        from .HITRANQuantumSchemas import HITRAN_MOLECULE_NUMBERS
+        species = self.species
+        species_number = {name: n for n, name in HITRAN_MOLECULE_NUMBERS.items()}.get(species)
+        h_mol = overrides.get('mol', species or self.molecule_id or '')
+        h_M = overrides.get('M', self._hitran_id if self._hitran_id is not None else (species_number or ''))
+        h_iso = overrides.get('isotopologue', self._hitran_iso if self._hitran_iso is not None else '')
         h_G = overrides.get('G', '')
         h_mass = overrides.get('molar_mass', self._molar_mass or '')
         h_source = overrides.get('source', 'Written from MoleculeLineList')

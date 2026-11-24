@@ -31,7 +31,47 @@ try:
 except ImportError:
     pd = None
 
-__all__ = ["read_molecular_data", "read_par_lines_in_range", "MolecularDataReader"]
+__all__ = ["read_molecular_data", "read_par_lines_in_range", "read_par_header",
+           "parse_par_header", "MolecularDataReader"]
+
+_HEADER_SOURCE_WORDS = {"HITRAN", "HITEMP"}
+
+
+def parse_par_header(comment_lines):
+    """Species information in a .par file's ``#`` header lines.
+
+    The first line reads like ``# HITRAN 2024 H2O; id:1; iso:1;gid:1``.  Returns
+    ``{"hitran_id", "hitran_iso", "names"}``: the HITRAN molecule and
+    isotopologue numbers (``None`` when blank or not numeric) and the words
+    naming the molecule (source words and years left out), in order.
+    """
+    import re
+
+    info = {"hitran_id": None, "hitran_iso": None, "names": []}
+    first = next((line for line in comment_lines if line.strip().lstrip("#").strip()), "")
+    text = first.strip().lstrip("#").strip()
+    if not re.search(r"\b(?:id|iso|gid):", text):
+        return info
+    for key, field in (("hitran_id", "id"), ("hitran_iso", "iso")):
+        match = re.search(rf"\b{field}:\s*(\d+)", text)
+        if match:
+            info[key] = int(match.group(1))
+    words = text.split(";", 1)[0].split()
+    info["names"] = [w for w in words if w.upper() not in _HEADER_SOURCE_WORDS and not w.isdigit() and w != "+"]
+    return info
+
+
+def read_par_header(filename):
+    """:func:`parse_par_header` of the ``#`` lines at the top of the .par file *filename*."""
+    comments = []
+    with open(filename, "r", errors="ignore") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            if not line.lstrip().startswith("#"):
+                break
+            comments.append(line)
+    return parse_par_header(comments)
 
 def read_par_lines_in_range(filename, lam_min, lam_max):
     """Read the lines of a .par file whose wavelength is in ``[lam_min, lam_max]``.

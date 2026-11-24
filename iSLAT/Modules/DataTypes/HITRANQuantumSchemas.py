@@ -34,7 +34,7 @@ HITRAN2024 supplementary material: Description of upper-state and lower-state qu
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .QuantumStateSchema import (
     QuantumField,
@@ -46,6 +46,26 @@ from .QuantumStateSchema import (
 
 __all__: List[str] = []   # concrete classes are not part of the public API;
                            # use QuantumStateRegistry to look them up.
+
+# HITRAN molecule number -> molecule name (the ``id:`` in a .par header).
+HITRAN_MOLECULE_NUMBERS: Dict[int, str] = {
+    1: 'H2O', 2: 'CO2', 3: 'O3', 4: 'N2O', 5: 'CO', 6: 'CH4', 7: 'O2', 8: 'NO',
+    9: 'SO2', 10: 'NO2', 11: 'NH3', 12: 'HNO3', 13: 'OH', 14: 'HF', 15: 'HCl', 16: 'HBr',
+    17: 'HI', 18: 'ClO', 19: 'OCS', 20: 'H2CO', 21: 'HOCl', 22: 'N2', 23: 'HCN', 24: 'CH3Cl',
+    25: 'H2O2', 26: 'C2H2', 27: 'C2H6', 28: 'PH3', 29: 'COF2', 30: 'SF6', 31: 'H2S', 32: 'HCOOH',
+    33: 'HO2', 34: 'O', 35: 'ClONO2', 36: 'NO+', 37: 'HOBr', 38: 'C2H4', 39: 'CH3OH', 40: 'CH3Br',
+    41: 'CH3CN', 42: 'CF4', 43: 'C4H2', 44: 'HC3N', 45: 'H2', 46: 'CS', 47: 'SO3', 48: 'C2N2',
+    49: 'COCl2', 50: 'SO', 51: 'CH3F', 52: 'GeH4', 53: 'CS2', 54: 'CH3I', 55: 'NF3', 56: 'H3+',
+    57: 'CH3', 58: 'S2', 59: 'COFCl', 60: 'HONO', 61: 'ClNO2',
+}
+
+
+def species_for_hitran_number(number: Any) -> Optional[str]:
+    """The molecule name for a HITRAN molecule number (``None`` if unknown)."""
+    try:
+        return HITRAN_MOLECULE_NUMBERS.get(int(number))
+    except (TypeError, ValueError):
+        return None
 
 # short alias
 _QF = QuantumField
