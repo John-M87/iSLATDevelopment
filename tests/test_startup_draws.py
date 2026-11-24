@@ -152,6 +152,7 @@ class TestRepaint:
         canvas.draw()
         canvas.draws.clear()
         blits = _count_blits(canvas)
+        canvas.figure.stale = True  # a change (an unchanged figure is only blitted)
         canvas.draw_idle()
         canvas.repaint_idle()
         _process_idle(tk_root)
@@ -162,6 +163,7 @@ class TestRepaint:
         canvas.draws.clear()
         blits = _count_blits(canvas)
         canvas.repaint_idle()
+        canvas.figure.stale = True  # a change (an unchanged figure is only blitted)
         canvas.draw_idle()
         _process_idle(tk_root)
         assert len(canvas.draws) == 1 and len(blits) == 1
@@ -170,6 +172,7 @@ class TestRepaint:
         canvas.draw()
         canvas.draws.clear()
         canvas.hold_draws()
+        canvas.figure.stale = True  # a change (an unchanged figure is only blitted)
         canvas.repaint_idle()
         _process_idle(tk_root)
         assert canvas.draws == []

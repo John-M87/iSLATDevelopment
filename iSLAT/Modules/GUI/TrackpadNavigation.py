@@ -284,6 +284,9 @@ class TrackpadNavigator:
         if touchpad_scroll_supported(self.widget):
             self.widget.bind("<TouchpadScroll>", self._on_touchpad_scroll, add="+")
         self._scroll_cid = canvas.mpl_connect("scroll_event", self._on_mpl_scroll)
+        # Toolbar pan drags pin "best" legends too, until the button is released.
+        canvas.mpl_connect("button_press_event", self._on_button_press)
+        canvas.mpl_connect("button_release_event", self._on_button_release)
         self.pinch_available = False
         if zoom and install_pinch_monitor():
             _ensure_pinch_poller(self.widget)
@@ -327,6 +330,17 @@ class TrackpadNavigator:
         else:
             # Positive = scroll up, so content moves down.
             self.pan_by_pixels(event.x, event.y, 0.0, -pixels)
+
+    def _on_button_press(self, event: Any) -> None:
+        """A toolbar pan drag starts: pin ``loc="best"`` legends while it runs."""
+        mode = getattr(getattr(self.canvas, "toolbar", None), "mode", None)
+        if getattr(mode, "name", None) == "PAN" and event.inaxes is not None:
+            self._freeze_best_legends()
+
+    def _on_button_release(self, event: Any) -> None:
+        """The drag ended: let pinned legends find their best place again (a trackpad gesture does that when it ends)."""
+        if self._gesture_job is None and self._restore_legends():
+            self.canvas.draw_idle()
 
     @staticmethod
     def _wheel_pixels(event: Any) -> float:

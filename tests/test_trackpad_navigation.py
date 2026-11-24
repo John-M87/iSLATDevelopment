@@ -385,3 +385,42 @@ def test_is_right_click(monkeypatch, button, darwin, linux):
     assert T.is_right_click(event) is darwin
     monkeypatch.setattr(T.sys, "platform", "linux")
     assert T.is_right_click(event) is linux
+
+
+def _mouse(canvas, name, x, y, button=1):
+    from matplotlib.backend_bases import MouseButton, MouseEvent
+    if name == "motion_notify_event":  # a drag: the button is held
+        MouseEvent(name, canvas, x, y, buttons={MouseButton(button)})._process()
+    else:
+        MouseEvent(name, canvas, x, y, button)._process()
+
+
+def test_toolbar_pan_drag_pins_best_legend_until_release(figure_canvas, tk_root):
+    from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+    ax = _linear_axes(figure_canvas)
+    ax.plot([0, 10], [0, 10], label="line")
+    ax.legend(loc="best")
+    figure_canvas.draw()
+    toolbar = NavigationToolbar2Tk(figure_canvas, tk_root, pack_toolbar=False)
+    T.attach_trackpad_navigation(figure_canvas)
+    toolbar.pan()
+    x, y = _center(ax)
+    _mouse(figure_canvas, "button_press_event", x, y)
+    assert isinstance(ax.get_legend()._loc, tuple)          # pinned while dragging
+    _mouse(figure_canvas, "motion_notify_event", x + 40, y)
+    assert ax.get_xlim()[0] < 0                             # the toolbar panned
+    assert isinstance(ax.get_legend()._loc, tuple)
+    _mouse(figure_canvas, "button_release_event", x + 40, y)
+    assert ax.get_legend()._loc == 0                        # "best" again
+
+
+def test_clicks_outside_pan_mode_leave_legend_alone(figure_canvas, tk_root):
+    from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+    ax = _linear_axes(figure_canvas)
+    ax.plot([0, 10], [0, 10], label="line")
+    ax.legend(loc="best")
+    figure_canvas.draw()
+    NavigationToolbar2Tk(figure_canvas, tk_root, pack_toolbar=False)  # no mode active
+    T.attach_trackpad_navigation(figure_canvas)
+    _mouse(figure_canvas, "button_press_event", *_center(ax))
+    assert ax.get_legend()._loc == 0

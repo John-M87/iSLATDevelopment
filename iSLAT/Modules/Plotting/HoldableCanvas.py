@@ -13,15 +13,25 @@ HoldableCanvas - the TkAgg canvas used for iSLAT's plots.
   unpacked and packed again.
 * It blits opaque figures to Tk as data without alpha, which spares Tk a
   per-pixel transparency scan (~20% of a full-window blit).
+* It redraws only the axes that changed when it can
+  (:meth:`~HoldableFigureCanvasTkAgg._draw_changed_axes_only`): a pan or a
+  data update in one panel repaints that panel's area, without drawing the
+  other panels or laying the figure out again.
 """
 from __future__ import annotations
 
+import contextlib
+import math
 import time
 import tkinter as tk
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from matplotlib.backend_bases import DrawEvent
 from matplotlib.backends import _backend_tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.transforms import Bbox
+
+from .CachedLayout import CachedLayoutMixin
 
 #: ``Tk_PhotoImageBlock`` offsets of red, green, blue and alpha in RGBA8888 data.
 RGBA_OFFSETS = (0, 1, 2, 3)
@@ -48,6 +58,9 @@ class HoldableFigureCanvasTkAgg(FigureCanvasTkAgg):
         self._holding_draws = False
         self._draw_requested = False
         self._idle_repaint_id: Optional[str] = None
+        self._frame_drawn = False
+        self._cells_key: Any = None
+        self._cells: Optional[Dict[Any, Bbox]] = None
         super().__init__(*args, **kwargs)
 
     # ------------------------------------------------------------------
@@ -160,3 +173,145 @@ class HoldableFigureCanvasTkAgg(FigureCanvasTkAgg):
     def blit(self, bbox: Any = None) -> None:
         offsets = RGB_OFFSETS if self._figure_is_opaque() else RGBA_OFFSETS
         _backend_tk.blit(self._tkphoto, self.renderer.buffer_rgba(), offsets, bbox=bbox)
+
+    # ------------------------------------------------------------------
+    # Redrawing only the axes that changed
+    # ------------------------------------------------------------------
+    def draw(self) -> None:
+        if not self._draw_changed_axes_only():
+            super().draw()
+            self._frame_drawn = True
+
+    def _draw_changed_axes_only(self) -> bool:
+        """Repaint only the areas of the axes that changed; ``False`` when a full draw is needed.
+
+        When nothing is stale the last frame is shown again.  A partial
+        redraw is used when some (not all) axes are stale, the last frame is still in
+        the buffer at the current size, the figure background is opaque, the
+        figure has no artists of its own besides its background, and the
+        layout keeps every axes where it is.  Each axes owns a cell of the
+        figure (:meth:`_axes_cells`); a changed axes' cell is cleared to the
+        figure background and the axes drawn into it.  Anything an axes draws
+        outside its cell is undone, so the buffer stays exactly the full
+        figure.  Listeners get the usual ``draw_event``.
+        """
+        figure = self.figure
+        renderer = getattr(self, "renderer", None)
+        if (not self._frame_drawn or renderer is None or self.get_renderer() is not renderer
+                or not figure.get_visible() or not self._figure_is_opaque()):
+            return False
+        if not figure.stale:
+            # Nothing changed since the last draw (matplotlib marks every
+            # change made through its setters): show the frame we have.
+            self.blit()
+            return True
+        axes = list(figure.axes)
+        stale = [ax for ax in axes if ax.stale]
+        if not stale or len(stale) == len(axes):
+            return False
+        if any(child is not figure.patch and child not in axes and child.get_visible()
+               for child in figure.get_children()):
+            return False  # suptitle, figure legend, figure text...
+        engine = figure.get_layout_engine()
+        if engine is not None and not isinstance(engine, CachedLayoutMixin):
+            return False
+        get_draw_artists = getattr(figure, "_get_draw_artists", None)
+        if get_draw_artists is None:
+            return False
+        try:
+            with getattr(figure, "_render_lock", None) or contextlib.nullcontext():
+                positions = [ax.get_position().bounds for ax in axes]
+                get_draw_artists(renderer)  # applies fixed aspects, as Figure.draw does
+                if engine is not None:
+                    engine.execute(figure)
+                if [ax.get_position().bounds for ax in axes] != positions:
+                    return False  # the layout moved something
+                cells = self._axes_cells(axes, renderer)
+                dirty = list(dict.fromkeys(cells[ax] for ax in stale if ax in cells))
+                if len(dirty) == len(set(cells.values())):
+                    return False  # every cell changed: no gain
+                for cell in dirty:
+                    self._redraw_cell(cell, [ax for ax in axes if cells.get(ax) is cell], renderer)
+                # Reading the positions re-applies aspects, which marks every axes
+                # stale; the ones not redrawn did not move, so their pixels are current.
+                for ax in axes:
+                    ax.stale = False
+                figure.stale = False
+        except Exception:
+            return False  # anything unexpected: the full draw repaints everything
+        DrawEvent("draw_event", self, renderer)._process()
+        for cell in dirty:
+            self.blit(cell)
+        return True
+
+    def _redraw_cell(self, cell: Bbox, cell_axes: List[Any], renderer: Any) -> None:
+        """Clear *cell* to the figure background and draw *cell_axes* in it; leave the rest untouched."""
+        figure = self.figure
+        full = figure.bbox
+        outside = [Bbox.from_extents(*extents) for extents in (
+            (full.x0, full.y0, cell.x0, full.y1), (cell.x1, full.y0, full.x1, full.y1),
+            (cell.x0, full.y0, cell.x1, cell.y0), (cell.x0, cell.y1, cell.x1, full.y1),
+        ) if extents[2] > extents[0] and extents[3] > extents[1]]
+        kept = [self.copy_from_bbox(box) for box in outside]
+        patch = figure.patch
+        clip_box, clip_on = patch.get_clip_box(), patch.get_clip_on()
+        patch.set_clip_box(cell)
+        patch.set_clip_on(True)
+        try:
+            patch.draw(renderer)
+        finally:
+            patch.set_clip_box(clip_box)
+            patch.set_clip_on(clip_on)
+            patch.stale = False
+        for ax in sorted(cell_axes, key=lambda a: (a.get_zorder(), figure.axes.index(a))):
+            ax.draw(renderer)
+        for region in kept:
+            self.restore_region(region)
+
+    def _axes_cells(self, axes: List[Any], renderer: Any) -> Dict[Any, Bbox]:
+        """Split the figure into one cell per visible axes (overlapping axes share one).
+
+        Cells are measured from the axes' extents with their decorations, and
+        reach halfway into the gaps between them, so they never overlap.
+        Kept until an axes is added, removed, shown, hidden or moved.
+        """
+        figure = self.figure
+        key = (tuple((id(ax), ax.get_visible(), ax.get_position().bounds) for ax in axes),
+               tuple(figure.bbox.bounds), figure.dpi)
+        if key == self._cells_key and self._cells is not None:
+            return self._cells
+        groups: List[Tuple[List[Any], Bbox]] = []
+        for ax in axes:
+            if not ax.get_visible():
+                continue
+            box = ax.get_tightbbox(renderer)
+            if box is None:
+                continue
+            members = [ax]
+            for group in [g for g in groups if g[1].overlaps(box)]:
+                groups.remove(group)
+                members = group[0] + members
+                box = Bbox.union([group[1], box])
+            groups.append((members, box))
+        full = figure.bbox
+        cells: Dict[Any, Bbox] = {}
+        for members, box in groups:
+            x0, y0, x1, y1 = full.extents
+            for _, other in (g for g in groups if g[0] is not members):
+                gap_x = max(other.x0 - box.x1, box.x0 - other.x1)
+                gap_y = max(other.y0 - box.y1, box.y0 - other.y1)
+                if gap_x >= gap_y:  # split at a vertical line in the middle of the gap
+                    if other.x0 >= box.x1:
+                        x1 = min(x1, math.floor((box.x1 + other.x0) / 2))
+                    else:
+                        x0 = max(x0, math.floor((other.x1 + box.x0) / 2))
+                else:
+                    if other.y0 >= box.y1:
+                        y1 = min(y1, math.floor((box.y1 + other.y0) / 2))
+                    else:
+                        y0 = max(y0, math.floor((other.y1 + box.y0) / 2))
+            cell = Bbox.from_extents(max(x0, full.x0), max(y0, full.y0), min(x1, full.x1), min(y1, full.y1))
+            for ax in members:
+                cells[ax] = cell
+        self._cells_key, self._cells = key, cells
+        return cells
