@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 import iSLAT.Constants as c
 from ..GUIFunctions import create_button, create_menu_btn
-from ..KeyBindings import shortcut_text
+from ..KeyBindings import action_description, action_tooltip, shortcut_text
 from ..Tooltips import CreateToolTip, MenuToolTip
 from ..YAxisDataSync import (
     Y_DATA_SYNC_MENU_LABEL, Y_DATA_SYNC_MENU_TIP, Y_DATA_SYNC_OFF,
@@ -260,16 +260,16 @@ class TopBar(ResizableFrame):
         MenuToolTip(molecule_menu, {
             "HITRAN Query":                        "Open the HITRAN molecule selector\nto query and add molecules by species.",
             "Default Molecules":                   "Load the default set of molecules\nfor the current spectrum.",
-            add_molecule_label:                    "Add a molecule from the available\nHITRAN files.",
+            add_molecule_label:                    action_description("add_molecule"),
             "Sort Molecules":                      "Sort the molecules in the control panel\nby a chosen property (temperature, radius,\ncolumn density, …), ascending or descending.",
             "Bulk Apply Properties":               "Set one or more properties on many molecules\nat once, optionally only the visible ones.",
             "Intensity Settings":                  "Choose how line intensities are calculated\nfrom the optical depth: curve of growth\n(with or without line overlap) or RADEX.\nApplies to all molecules and is saved\nas the default.",
-            export_models_label:                   "Export current model spectra\nto CSV files for external use.",
-            save_params_label:                     "Save current molecule parameters\nto the default save file\nfor this spectrum.",
-            load_params_label:                     "Load molecule parameters from\nthe default save file\nfor this spectrum.",
-            load_params_file_label:                "Load molecule parameters from\na user-selected CSV save file,\nreplacing existing molecules.",
+            export_models_label:                   action_description("export_models"),
+            save_params_label:                     action_description("save_parameters"),
+            load_params_label:                     action_description("load_parameters"),
+            load_params_file_label:                action_description("load_parameters_from_file"),
             "Import Parameters From File":         "Load molecules from a CSV save file\nand add them to the existing set\nwithout replacing current molecules.",
-            save_params_file_label:                "Save current molecule parameters\nto a user-selected CSV file.",
+            save_params_file_label:                action_description("save_parameters_to_file"),
         })
 
         spec_functions_drpwn = create_menu_btn(self.button_frame, self.theme, "Spectral Functions", 0, 1)
@@ -310,19 +310,19 @@ class TopBar(ResizableFrame):
         
         spec_functions_drpwn.config(menu=spec_functions_menu)
         MenuToolTip(spec_functions_menu, {
-            save_line_label:                    "Save the currently selected line\nto the output line measurements file.",
-            fit_line_label:                     "Fit a Gaussian to the currently\nselected spectral line.",
+            save_line_label:                    action_description("save_line"),
+            fit_line_label:                     action_description("fit_line"),
             "Fit Saved Lines":                  "Fit Gaussians to all lines\nin the saved line list.",
             "Fit Saved Lines To Sample":        "Fit saved lines across a sample\nof spectrum files.",
-            slab_fit_label:                     "Run a single-slab LTE model fit\nusing the saved line measurements.",
+            slab_fit_label:                     action_description("single_slab_fit"),
             "Line de-Blender":                  "Fit and de-blend overlapping\nspectral lines in the selection.",
             "Subtract Models from Data":        "Subtract all visible molecule models\nfrom the observed spectrum.",
-            output_fs_label: "Save the full combined model spectrum\nto a file, matching the current overlay,\nobserved-data and Y-axis settings.",
+            output_fs_label:                    action_description("output_full_spectrum"),
             "Full Spectrum Export Settings\u2026": "Set the exported full-spectrum figure\nwidth, per-panel height and font sizes,\nand export a multi-page PDF (one page\nper range). Remembered for this session.",
-            display_fs_label:                   "Open the full combined model spectrum\nin a separate window.",
-            manage_sample_label:                "Open the sample manager to add,\nremove, and switch between spectra.",
-            center_view_label:                  "Reposition the plot window: center + range,\ncenter + number of data points,\nor an exact start / end.\nOptionally mark the center wavelength.\nKeybind: " + shortcut_text("open_center_view_dialog"),
-            mark_wavelengths_label:             "Mark a wavelength (line) or a range\n(shaded band) on the spectrum plots,\nwith an optional label (left / center /\nright of the mark), line and label\ncolors (color pickers) and line style.\nMarks are included in full-spectrum output.\nKeybind: " + shortcut_text("open_wavelength_marker_dialog"),
+            display_fs_label:                   action_description("open_full_spectrum_window"),
+            manage_sample_label:                action_description("open_sample_manager"),
+            center_view_label:                  action_tooltip("open_center_view_dialog"),
+            mark_wavelengths_label:             action_tooltip("open_wavelength_marker_dialog"),
             "Find Lines in Range\u2026":       "List every line in a wavelength range\n(typed in or selected on the plot)\nfrom a chosen set of .par files and\nCSV line lists, in a sortable table\nthat can be exported to CSV.",
         })
 
@@ -391,11 +391,11 @@ class TopBar(ResizableFrame):
             "Optical Depth":      "Multi-panel optical depth τ(λ)\nof the visible molecules over\nthe entire wavelength range.",
             "Population Diagram": "Standalone Boltzmann / rotation\ndiagram for the active molecule.",
             "Line Grid":          "Grid of individual line fits\nfrom the most recent fit run.",
-            "Auto-scale Y Axis":  f"ON: the main plot's Y axis follows\nthe data in view.\nOFF: it stays at the current / set limits.\nKeybind: {shortcut_text('toggle_y_autoscale')}",
+            "Auto-scale Y Axis":  action_tooltip("toggle_y_autoscale"),
             "Auto-scale Y to Model Flux": "When auto-scaling, fit the Y axis to the\nplotted model (molecule lines and sum)\ninstead of the observed data.",
             Y_DATA_SYNC_MENU_LABEL: Y_DATA_SYNC_MENU_TIP,
-            y_limits_label:       "Pin the main plot's Y axis to\nspecific values (turns auto-scale off).",
-            "Show Observed Data": f"Show / hide the observed spectrum\non the main plot.\nKeybind: {shortcut_text('toggle_observed_data')}",
+            y_limits_label:       action_description("open_y_limits_dialog"),
+            "Show Observed Data": action_tooltip("toggle_observed_data"),
             "Show Saved Line Labels": "Show / hide the saved-line labels\nin the current view (each view\nremembers its own setting).",
             "Saved Line Labels\u2026": "Choose which column of the input\nline list labels the saved lines,\nwith an optional prefix / suffix,\nand the views that show labels.",
         }
@@ -406,15 +406,15 @@ class TopBar(ResizableFrame):
         self._views_menu_surface = ViewsMenuSurface(views_menu, self._views_menu_tips)
         # ──────────────────────────────────────────────────────────────
 
-        saved_lines_tip = f"Show saved lines\nfrom the 'Input Line List'\nKeybind: {shortcut_text('toggle_saved_lines')}"
-        atomic_lines_tip = f"Show atomic lines\nusing separation threshold\nset in the 'Line Separ.\nKeybind: {shortcut_text('toggle_atomic_lines')}"
+        saved_lines_tip = action_tooltip("toggle_saved_lines")
+        atomic_lines_tip = action_tooltip("toggle_atomic_lines")
         #export_model_tip = "Export current\nmodels into csv files"
-        toggle_legend_tip = f"Turn legend on/off\nKeybind: {shortcut_text('toggle_legend')}"
+        toggle_legend_tip = action_tooltip("toggle_legend")
         toggle_full_spectrum_tip = (
-            f"Toggle full spectrum view on/off\nKeybind: {shortcut_text('toggle_full_spectrum')}"
-            f"\n\nOpen in new window: {shortcut_text('open_full_spectrum_window')}"
+            action_tooltip("toggle_full_spectrum")
+            + f"\n\nOpen in new window: {shortcut_text('open_full_spectrum_window')}"
         )
-        toggle_summed_tip = f"Toggle summed model flux on/off\n(gray fill in plot)\nKeybind: {shortcut_text('toggle_summed_spectrum')}"
+        toggle_summed_tip = action_tooltip("toggle_summed_spectrum")
         create_button(self.button_frame, self.theme, "Saved Lines", self.toggle_saved_lines, 0, 3, tip_text=saved_lines_tip)
         create_button(self.button_frame, self.theme, "Atomic Lines", self.toggle_atomic_lines, 0, 4, tip_text=atomic_lines_tip)
         create_button(self.button_frame, self.theme, "Full Spectrum", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
@@ -422,8 +422,8 @@ class TopBar(ResizableFrame):
         create_button(self.button_frame, self.theme, "Legend", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
         
         # Navigate buttons - compact with minimal padding
-        retreat_tip = f"Retreat the plot start\nby the current range value\nShortcut: {shortcut_text('retreat_plot_start')}"
-        advance_tip = f"Advance the plot start\nby the current range value\nShortcut: {shortcut_text('advance_plot_start')}"
+        retreat_tip = action_tooltip("retreat_plot_start")
+        advance_tip = action_tooltip("advance_plot_start")
         
         self._retreat_btn = ttk.Button(self.button_frame, text="<", command=self.retreat_plot_start, width=2)
         self._retreat_btn.grid(row=0, column=9, padx=(4, 0), pady=2, sticky="nsew")

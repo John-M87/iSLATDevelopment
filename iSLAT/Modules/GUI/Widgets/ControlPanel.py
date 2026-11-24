@@ -11,7 +11,7 @@ from iSLAT.Modules.GUI.ControlSurface import ControlSurface
 from ..GUIFunctions import create_wrapper_frame, create_scrollable_frame, ColorButton
 #from .RegularFrame import RegularFrame
 from ..Tooltips import CreateToolTip
-from ..KeyBindings import shortcut_text
+from ..KeyBindings import action_tooltip, shortcut_text
 
 # Platform-specific layout constants — Windows uses larger font metrics than macOS
 _IS_WINDOWS = platform.system() == "Windows"
@@ -441,13 +441,7 @@ class ControlPanel(ttk.Frame):
                     command=self._toggle_match_spectral_sampling
                 )
                 self._match_sampling_btn.grid(row=row, column=start_col + 2, columnspan=2, padx=_MATCH_BTN_PADX, sticky="w")
-                match_tip = ("Toggle matched spectral sampling.\n"
-                             "When enabled, model flux is interpolated\n"
-                             "pixel-by-pixel to match the spectrum's\n"
-                             "wavelength grid\n"
-                             f"Keybind: {shortcut_text('toggle_match_pixel_sampling')}") #(for data-model subtraction).\n"
-                             #"MIRI and other spectra have uneven\n"
-                             #"pixel sampling that varies with wavelength.")
+                match_tip = action_tooltip('toggle_match_pixel_sampling')
                 CreateToolTip(self._match_sampling_btn, match_tip)
             
             col_offset += 1

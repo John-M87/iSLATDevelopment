@@ -41,7 +41,7 @@ from .PlotView import (
     FigurePanel, PlotView, ask_save_path, default_save_name, draw_wavelength_markers,
     normalize_y_data_sync, notify_user,
 )
-from ..GUI.KeyBindings import shortcut_text
+from ..GUI.KeyBindings import action_tooltip
 from .StackedSpectralPanel import StackedSpectralPanel
 from .FullSpectrumPlot import FullSpectrumPlot
 from .ResidualSpectrumPlot import ResidualSpectrumPlot
@@ -1349,7 +1349,7 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                 getter=_residuals_getter,
                 setter=_residuals_setter,
                 owner=self,
-                tip=f"Toggle residual sub-panels on/off\nin full spectrum mode\nKeybind: {shortcut_text('toggle_residuals')}",
+                tip=action_tooltip('toggle_residuals'),
             ),
             ToggleField(
                 "data_density", "Data Density X-Scale",

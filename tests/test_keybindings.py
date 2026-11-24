@@ -578,3 +578,109 @@ class TestStepLineList:
         h = self._handler(monkeypatch, selection=(17.25, 17.35))
         h._next_line_list_line()
         h.plot_manager.show_line_in_spectrum.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Action descriptions and recently used actions (command palette)
+# ---------------------------------------------------------------------------
+
+def test_every_action_has_a_description_and_no_stray_ones():
+    from iSLAT.Modules.GUI.KeyBindings import ACTION_DESCRIPTIONS
+    assert set(ACTION_DESCRIPTIONS) == set(DEFAULT_KEYMAP)
+    assert all(text.strip() for text in ACTION_DESCRIPTIONS.values())
+
+
+def test_register_defaults_fills_descriptions():
+    from iSLAT.Modules.GUI.KeyBindings import ACTION_DESCRIPTIONS
+    for action in _registry().actions():
+        assert action.description == ACTION_DESCRIPTIONS[action.id]
+
+
+def test_action_tooltip_is_description_then_keybind():
+    from iSLAT.Modules.GUI.KeyBindings import action_tooltip
+    assert action_tooltip("fit_line", system="Windows") == (
+        "Fit a Gaussian to the currently\nselected spectral line.\nKeybind: G")
+    assert action_tooltip("save_parameters", system="Darwin").endswith("\nKeybind: Cmd+S")
+
+
+def test_one_line_collapses_breaks():
+    from iSLAT.Modules.GUI.KeyBindings import one_line
+    assert one_line("Fit a Gaussian to the currently\nselected  line.") == "Fit a Gaussian to the currently selected line."
+
+
+def test_filter_actions_falls_back_to_descriptions():
+    from iSLAT.Modules.GUI.KeyBindings import filter_actions
+    actions = _registry().actions()
+    assert [a.id for a in filter_actions(actions, "gaussian")] == ["fit_line"]
+    assert "copy_view_to_clipboard" in [a.id for a in filter_actions(actions, "image")]
+    # A title match wins: descriptions are not searched then.
+    assert [a.id for a in filter_actions(actions, "fit line")] == ["fit_line"]
+
+
+def test_filter_actions_lists_recent_first():
+    from iSLAT.Modules.GUI.KeyBindings import filter_actions
+    actions = _registry().actions()
+    recent = ["export_models", "toggle_legend"]
+    shown = [a.id for a in filter_actions(actions, "", recent=recent)]
+    assert shown[:2] == recent
+    assert shown[2:] == [a.id for a in actions if a.id not in recent]
+    # With a query, prefix matches still lead; recency orders within them.
+    shown = [a.id for a in filter_actions(actions, "toggle", recent=["toggle_legend"])]
+    assert shown[0] == "toggle_legend"
+    assert set(shown) == {a.id for a in actions if a.id.startswith("toggle")}
+
+
+class TestRecentActions:
+    def test_most_recent_first_without_duplicates(self):
+        registry = _registry()
+        for action_id in ("fit_line", "save_line", "fit_line"):
+            registry.note_used(action_id)
+        assert registry.recent() == ["fit_line", "save_line"]
+
+    def test_capped(self):
+        registry = _registry()
+        ids = list(DEFAULT_KEYMAP)[: ActionRegistry.RECENT_LIMIT + 2]
+        for action_id in ids:
+            registry.note_used(action_id)
+        assert registry.recent() == ids[::-1][: ActionRegistry.RECENT_LIMIT]
+
+    def test_unknown_ignored_and_unregister_forgets(self):
+        registry = _registry()
+        registry.note_used("no_such_action")
+        assert registry.recent() == []
+        registry.note_used("fit_line")
+        registry.unregister("fit_line")
+        assert registry.recent() == []
+
+    def test_key_presses_are_not_recorded(self):
+        registry = _registry()
+        registry.dispatch("G")
+        assert registry.recent() == []
+
+
+def test_palette_shows_the_selected_description(palette):
+    from iSLAT.Modules.GUI.KeyBindings import one_line
+    pal, _registry_, _root = palette
+    pal.query.set("gaussian")
+    assert pal.selected_action().id == "fit_line"
+    assert pal.description.get() == one_line(pal.selected_action().description)
+    pal.query.set("no such command")
+    assert pal.description.get() == ""
+
+
+def test_palette_remembers_what_it_ran(palette, monkeypatch):
+    from iSLAT.Modules.GUI.KeyBindings import CommandPalette
+    pal, registry, root = palette
+    pal.query.set("export models")
+    pal.run_selected()
+    root.update_idletasks()
+    assert registry.recent() == ["export_models"]
+
+    again = CommandPalette(root, registry)
+    try:
+        assert again.selected_action().id == "export_models"
+        assert again.description.get().startswith(CommandPalette.RECENT_NOTE)
+        again._move(1)
+        assert not again.description.get().startswith(CommandPalette.RECENT_NOTE)
+    finally:
+        again.close()
