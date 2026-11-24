@@ -477,7 +477,7 @@ class TestPanelRanges:
         win.set_panel_ranges(self.RANGES)
         assert _ranges(win) == self.RANGES
         axes = _spectrum_axes(win)
-        assert [ax.get_xlim() for ax in axes] == pytest.approx(self.RANGES)
+        assert np.asarray([ax.get_xlim() for ax in axes]) == pytest.approx(np.asarray(self.RANGES))
         assert win.n_panels_var.get() == "3"
         assert win.ranges_btn.cget("text") == "Ranges*\u2026"
 
@@ -573,7 +573,7 @@ class TestPanelRanges:
         text.delete("1.0", "end")
         text.insert("1.0", "DATASTART 6\n9 DATAEND")
         _button(dlg, "Apply").invoke()
-        assert _ranges(win) == pytest.approx([(WAVE[0], 6.0), (9.0, WAVE[-1])])
+        assert np.asarray(_ranges(win)) == pytest.approx(np.asarray([(WAVE[0], 6.0), (9.0, WAVE[-1])]))
 
 
 class TestStackedPanelRanges:
@@ -583,7 +583,7 @@ class TestStackedPanelRanges:
         assert list(zip(plot._panel_edges, plot._panel_ends)) == [(8, 9), (5, 6)]
         assert (plot.n_panels, plot._xlim_start, plot._xlim_end) == (2, 5.0, 9.0)
         plot.generate_plot()
-        assert [ax.get_xlim() for ax in plot.subplots.values()] == pytest.approx([(8, 9), (5, 6)])
+        assert np.asarray([ax.get_xlim() for ax in plot.subplots.values()]) == pytest.approx(np.asarray([(8, 9), (5, 6)]))
         plot._compute_panel_layout()  # e.g. update_data / regenerate keep the ranges
         assert list(plot._panel_edges) == [8, 5]
         plot.set_panel_ranges(None)

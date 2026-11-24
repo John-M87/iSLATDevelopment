@@ -33,7 +33,7 @@ iSLAT/DATAFILES/LINELISTS/
 !iSLAT/DATAFILES/LINELISTS/MIRI_H2O_v1-1.csv
 
 .idea/
-.venv/
+.venv*/
 
 .vscode/
 .coverage

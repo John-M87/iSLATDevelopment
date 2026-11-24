@@ -117,6 +117,10 @@ def empty_start(tmp_path, monkeypatch):
     import tkinter as tk
     try:
         probe = tk.Tk()
+        # Withdraw before destroying: on macOS Tk 9.0.4, destroying a root that was
+        # never withdrawn or drawn leaves its "show window" idle task queued, and
+        # the next event loop then crashes (segfault) in Tk_MacOSXGetTkWindow.
+        probe.withdraw()
         probe.destroy()
     except tk.TclError:
         pytest.skip("Tk display not available (headless environment)")

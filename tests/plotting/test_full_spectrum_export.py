@@ -160,7 +160,7 @@ class TestFullSpectrumPlotDisplayOptions:
         assert lims[1] == pytest.approx((1.0, 4.0))
         assert lims[2] == pytest.approx((3.8, 4.2))
         plot.update_panels_inplace()               # in-place model updates keep it
-        assert [plot.subplots[i].get_ylim() for i in sorted(plot.subplots)] == pytest.approx(lims)
+        assert np.asarray([plot.subplots[i].get_ylim() for i in sorted(plot.subplots)]) == pytest.approx(np.asarray(lims))
         plot.close()
 
     def test_data_sync_wins_over_model_but_not_manual(self):
