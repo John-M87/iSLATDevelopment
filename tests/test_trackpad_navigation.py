@@ -375,3 +375,13 @@ def test_owned_canvas_views_get_navigation(tk_root):
     view = _View(tk_root)
     view._ensure_canvas()
     assert getattr(view._canvas.get_tk_widget(), T._NAV_ATTR, None) is not None
+
+
+@pytest.mark.parametrize("button, darwin, linux", [(1, False, False), (2, True, False), (3, True, True), (None, False, False)])
+def test_is_right_click(monkeypatch, button, darwin, linux):
+    """On macOS, matplotlib 3.11 reports Tk 9's right button (3) as 2."""
+    event = SimpleNamespace() if button is None else SimpleNamespace(button=button)
+    monkeypatch.setattr(T.sys, "platform", "darwin")
+    assert T.is_right_click(event) is darwin
+    monkeypatch.setattr(T.sys, "platform", "linux")
+    assert T.is_right_click(event) is linux

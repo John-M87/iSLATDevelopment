@@ -37,7 +37,7 @@ from .FitLinesPlotGrid import FitLinesPlotGrid
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 from iSLAT.Modules.GUI.TrackpadNavigation import (
-    attach_trackpad_navigation, bind_touchpad_scroll, touchpad_scroll_supported,
+    attach_trackpad_navigation, bind_touchpad_scroll, is_right_click, touchpad_scroll_supported,
 )
 
 if TYPE_CHECKING:
@@ -810,7 +810,7 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
         pm = self._pm
 
         def _on_button_press(event):
-            if event.button != 3 or event.inaxes is None:
+            if not is_right_click(event) or event.inaxes is None:
                 return
             hit = ax_map.get(event.inaxes)
             if hit is None:

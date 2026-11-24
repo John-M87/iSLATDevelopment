@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 
+from iSLAT.Modules.GUI.TrackpadNavigation import is_right_click
 from iSLAT.Modules.Plotting.PopulationDiagramContextMixin import (
     PopulationDiagramContextMixin,
 )
@@ -409,7 +410,7 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
     # Context menu (same dialogs as the main view)
     # ------------------------------------------------------------------
     def _on_canvas_button_press(self, event) -> None:
-        if getattr(event, "button", None) != 3:
+        if not is_right_click(event):
             return
         widget = self._canvas.get_tk_widget()
         menu = self.build_context_menu(event, widget)

@@ -3,6 +3,7 @@ import time
 from matplotlib.widgets import SpanSelector
 from typing import Optional, Tuple, Callable, Dict, Any
 from .KeyBindings import ActionRegistry, TEXT_INPUT_CLASSES, chord_from_event
+from .TrackpadNavigation import is_right_click
 
 #: How far (pixels) another animated artist's clip box must stay from a
 #: selector's axes for the selector to treat its background as clean
@@ -250,7 +251,7 @@ class InteractionHandler:
                 self._on_double_click(event)
             elif not is_double_click:  # Single click
                 self._on_single_click(event)
-        elif event.button == 3:  # Right click
+        elif is_right_click(event):
             self._on_right_click(event)
     
     def _on_mouse_release(self, event):

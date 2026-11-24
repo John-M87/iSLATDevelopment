@@ -28,6 +28,7 @@ from iSLAT.Modules.DataProcessing.PartitionFunctionExtender import (
 )
 from iSLAT.Modules.FileHandling.partition_function_writer import write_partition_function_csv
 from iSLAT.Modules.GUI.Tooltips import CreateToolTip
+from iSLAT.Modules.GUI.TrackpadNavigation import is_right_click
 
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
@@ -561,7 +562,7 @@ class PartitionFunctionWindow(tk.Toplevel):
     # Figure context menu
     # ------------------------------------------------------------------
     def _on_canvas_button_press(self, event) -> None:
-        if getattr(event, "button", None) != 3:
+        if not is_right_click(event):
             return
         widget = self._canvas.get_tk_widget()
         menu = tk.Menu(widget, tearoff=0)

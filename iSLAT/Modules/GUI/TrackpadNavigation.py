@@ -42,6 +42,7 @@ __all__ = [
     "bind_touchpad_scroll",
     "decode_touchpad_delta",
     "install_pinch_monitor",
+    "is_right_click",
     "scroll_canvas_by_pixels",
     "touchpad_scroll_supported",
     "touchpad_distinct_from_wheel",
@@ -71,6 +72,16 @@ _NAV_ATTR = "_islat_trackpad_nav"
 # ----------------------------------------------------------------------
 # Tk helpers
 # ----------------------------------------------------------------------
+def is_right_click(event: Any) -> bool:
+    """Whether a matplotlib mouse event is a right-click (or two-finger trackpad click).
+
+    On macOS matplotlib (3.11) swaps Tk buttons 2 and 3 for Tk 8.6, but Tk 9
+    already reports the right button as 3, so it arrives as button 2.
+    """
+    button = getattr(event, "button", None)
+    return button == 3 or (sys.platform == "darwin" and button == 2)
+
+
 def touchpad_scroll_supported(widget: tk.Misc) -> bool:
     """Return whether this Tk knows the ``<TouchpadScroll>`` event (Tk 9+)."""
     try:

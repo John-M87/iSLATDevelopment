@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - Tk is not available
     _FigureCanvasTkAgg = None
 
-from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation
+from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation, is_right_click
 
 #: Pack options of a view's canvas widget inside its parent frame.
 CANVAS_PACK_OPTIONS: Dict[str, Any] = {"fill": "both", "expand": True, "padx": 0, "pady": 0}
@@ -127,7 +127,7 @@ class OwnedCanvasMixin:
     # ------------------------------------------------------------------
     def _on_canvas_button_press(self, event: Any) -> None:
         """Route right-clicks to :meth:`build_context_menu` and pop the menu up at the mouse."""
-        if event.button != 3 or self._canvas is None:
+        if not is_right_click(event) or self._canvas is None:
             return
         try:
             canvas_widget = self._canvas.get_tk_widget()
