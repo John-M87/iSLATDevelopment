@@ -390,3 +390,37 @@ def test_refresh_gui_helper_handles_missing_gui(islat_with_sample):
     islat.GUI = None
     # Should not raise
     islat._refresh_gui_after_parameter_change()
+
+
+def test_bottom_buttons_are_packed_before_the_rows_area(monkeypatch):
+    """pack shrinks the last-packed widgets first: the button bar must come before the expanding rows area."""
+    import tkinter as tk
+    from tkinter import ttk
+    from types import SimpleNamespace
+    from iSLAT.Modules.GUI.Widgets.SampleManagerWindow import SampleManagerWindow
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tk display not available (headless environment)")
+    root.withdraw()
+    original = tk.Toplevel.__init__
+
+    def hidden(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.withdraw()
+
+    monkeypatch.setattr(tk.Toplevel, "__init__", hidden)
+    islat = SimpleNamespace(sample_spectra=["/data/a.csv", "/data/b.csv"], sample_spectra_index=0,
+                            sample_spectra_params={}, sample_spectra_overrides={})
+    try:
+        win = SampleManagerWindow(root, islat, {})._win
+        slaves = win.pack_slaves()
+        bar = next(w for w in slaves if any(isinstance(b, ttk.Button) and b.cget("text") == "Close"
+                                            for b in w.winfo_children()))
+        rows = next(w for w in slaves if w.pack_info().get("expand") in (1, True, "1"))
+        assert bar.pack_info()["side"] == "bottom"
+        assert slaves.index(bar) < slaves.index(rows)
+        win.destroy()
+    finally:
+        root.withdraw()
+        root.destroy()

@@ -161,6 +161,24 @@ class SampleManagerWindow:
 
         ttk.Separator(win, orient="horizontal").pack(fill="x", padx=8, pady=2)
 
+        # Bottom button bar: packed before the rows area (from the bottom) so
+        # a short window shrinks the rows area, not the buttons.
+        btn_bar = tk.Frame(win)
+        btn_bar.pack(side="bottom", fill="x", padx=8, pady=(2, 8))
+        ttk.Separator(win, orient="horizontal").pack(
+            side="bottom", fill="x", padx=8, pady=(4, 2)
+        )
+
+        ttk.Button(
+            btn_bar, text="Add Spectra\u2026", command=self._add_spectra
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_bar, text="Clear All", command=self._clear_all).pack(
+            side="left", padx=4
+        )
+        ttk.Button(btn_bar, text="Close", command=self._win.destroy).pack(
+            side="right"
+        )
+
         # Scrollable rows area
         container = tk.Frame(win)
         container.pack(fill="both", expand=True, padx=8, pady=2)
@@ -184,23 +202,6 @@ class SampleManagerWindow:
             lambda e: self._canvas.itemconfig(
                 self._rows_frame_id, width=e.width
             ),
-        )
-
-        # Bottom button bar
-        ttk.Separator(win, orient="horizontal").pack(
-            fill="x", padx=8, pady=(4, 2)
-        )
-        btn_bar = tk.Frame(win)
-        btn_bar.pack(fill="x", padx=8, pady=(2, 8))
-
-        ttk.Button(
-            btn_bar, text="Add Spectra\u2026", command=self._add_spectra
-        ).pack(side="left", padx=(0, 4))
-        ttk.Button(btn_bar, text="Clear All", command=self._clear_all).pack(
-            side="left", padx=4
-        )
-        ttk.Button(btn_bar, text="Close", command=self._win.destroy).pack(
-            side="right"
         )
 
     # ------------------------------------------------------------------
