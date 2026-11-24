@@ -24,6 +24,7 @@ import tkinter.ttk as ttk
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from iSLAT.Modules.GUI.Tooltips import CreateToolTip
+from iSLAT.Modules.GUI.TrackpadNavigation import bind_touchpad_scroll
 
 if TYPE_CHECKING:
     pass
@@ -609,6 +610,8 @@ class SampleManagerWindow:
             self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         widget.bind("<MouseWheel>", _on_scroll)
+        # Tk 9 sends the trackpad as <TouchpadScroll>, not <MouseWheel>.
+        bind_touchpad_scroll(widget, self._canvas)
         for child in widget.winfo_children():
             self._bind_scroll(child)
 

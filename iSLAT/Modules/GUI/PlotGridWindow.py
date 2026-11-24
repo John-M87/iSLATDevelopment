@@ -4,6 +4,9 @@ import platform as _plat
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from iSLAT.Modules.Plotting.FitLinesPlotGrid import FitLinesPlotGrid
+from iSLAT.Modules.GUI.TrackpadNavigation import (
+    attach_trackpad_navigation, bind_touchpad_scroll, touchpad_scroll_supported,
+)
 
 from typing import List, TYPE_CHECKING
 if TYPE_CHECKING:
@@ -111,6 +114,8 @@ class PlotGridWindow(tk.Toplevel):
         fig_canvas.draw()
         fig_widget = fig_canvas.get_tk_widget()
         fig_widget.pack(fill=tk.BOTH, expand=True)
+        # Pinch / Ctrl+scroll zoom only: two-finger scrolling scrolls the grid.
+        attach_trackpad_navigation(fig_canvas, pan=False)
         
         # Update scroll region when inner frame changes size
         def update_scroll_region(event=None):
@@ -145,11 +150,15 @@ class PlotGridWindow(tk.Toplevel):
             scroll_canvas.bind_all("<MouseWheel>", on_mousewheel)
             scroll_canvas.bind_all("<Button-4>", on_mousewheel)
             scroll_canvas.bind_all("<Button-5>", on_mousewheel)
+            # Tk 9 sends the trackpad as <TouchpadScroll>, not <MouseWheel>.
+            bind_touchpad_scroll(scroll_canvas, scroll_canvas, bind_all=True)
 
         def unbind_mousewheel(event):
             scroll_canvas.unbind_all("<MouseWheel>")
             scroll_canvas.unbind_all("<Button-4>")
             scroll_canvas.unbind_all("<Button-5>")
+            if touchpad_scroll_supported(scroll_canvas):
+                scroll_canvas.unbind_all("<TouchpadScroll>")
         
         scroll_canvas.bind("<Enter>", bind_mousewheel)
         scroll_canvas.bind("<Leave>", unbind_mousewheel)

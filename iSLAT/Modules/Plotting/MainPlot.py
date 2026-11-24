@@ -29,6 +29,7 @@ from iSLAT.Modules.DataProcessing.FittingEngine import FittingEngine
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 from iSLAT.Modules.GUI.ControlSurface import ControlBus
+from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation
 from iSLAT.Modules.GUI.Widgets.iSLATToolbar import iSLATNavigationToolbar, ConfigureSubplotsSurface
 
 if TYPE_CHECKING:
@@ -106,6 +107,8 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         self.parent_frame = parent_frame
 
         self.canvas = HoldableFigureCanvasTkAgg(self.fig, master=self.parent_frame)
+        # Two-finger trackpad pan, pinch zoom (macOS) and Ctrl+scroll zoom.
+        self.trackpad_navigation = attach_trackpad_navigation(self.canvas)
         
         # Apply theme to matplotlib figure and toolbar
         #self._apply_plot_theming()

@@ -353,6 +353,7 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
             FigureCanvasTkAgg, NavigationToolbar2Tk,
         )
         from iSLAT.Modules.Plotting.BasePlot import BasePlot
+        from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation
 
         outer = ttk.Frame(self)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -375,6 +376,7 @@ class FilteredPopulationDiagramWindow(tk.Toplevel, PopulationDiagramContextMixin
         self._canvas = FigureCanvasTkAgg(self._fig, master=outer)
         widget = self._canvas.get_tk_widget()
         widget.pack(fill=tk.BOTH, expand=True)
+        attach_trackpad_navigation(self._canvas)
         self._right_click_cid = self._canvas.mpl_connect(
             "button_press_event", self._on_canvas_button_press)
 

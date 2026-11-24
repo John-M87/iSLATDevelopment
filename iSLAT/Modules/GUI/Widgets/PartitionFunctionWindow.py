@@ -337,6 +337,7 @@ class PartitionFunctionWindow(tk.Toplevel):
     def _build_plot(self, parent) -> None:
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+        from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation
 
         bar = ttk.Frame(parent)
         bar.pack(fill=tk.X)
@@ -352,6 +353,7 @@ class PartitionFunctionWindow(tk.Toplevel):
         self._canvas = FigureCanvasTkAgg(self._fig, master=parent)
         widget = self._canvas.get_tk_widget()
         widget.pack(fill=tk.BOTH, expand=True)
+        attach_trackpad_navigation(self._canvas)
         self._right_click_cid = self._canvas.mpl_connect(
             "button_press_event", self._on_canvas_button_press)
         CreateToolTip(widget, "Right-click to save the figure")

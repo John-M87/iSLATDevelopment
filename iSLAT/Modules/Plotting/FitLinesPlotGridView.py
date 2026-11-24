@@ -36,6 +36,9 @@ from .FitLinesPlotGrid import FitLinesPlotGrid
 
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
+from iSLAT.Modules.GUI.TrackpadNavigation import (
+    attach_trackpad_navigation, bind_touchpad_scroll, touchpad_scroll_supported,
+)
 
 if TYPE_CHECKING:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -451,6 +454,8 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
         widget = fig_canvas.get_tk_widget()
         widget.config(width=px_w, height=px_h)
         widget.pack(fill="none", expand=False)
+        # Pinch / Ctrl+scroll zoom only: two-finger scrolling scrolls the grid.
+        attach_trackpad_navigation(fig_canvas, pan=False)
         self._tab_canvases.append(fig_canvas)
 
         # Attach right-click context menu to this canvas.
@@ -482,9 +487,13 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
 
         def bind_mousewheel(event):
             scroll_canvas.bind_all("<MouseWheel>", on_mousewheel)
+            # Tk 9 sends the trackpad as <TouchpadScroll>, not <MouseWheel>.
+            bind_touchpad_scroll(scroll_canvas, scroll_canvas, bind_all=True)
 
         def unbind_mousewheel(event):
             scroll_canvas.unbind_all("<MouseWheel>")
+            if touchpad_scroll_supported(scroll_canvas):
+                scroll_canvas.unbind_all("<TouchpadScroll>")
 
         scroll_canvas.bind("<Enter>", bind_mousewheel)
         scroll_canvas.bind("<Leave>", unbind_mousewheel)

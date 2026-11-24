@@ -2,6 +2,7 @@ import platform
 import tkinter as tk
 from tkinter import ttk, font
 from .Tooltips import CreateToolTip
+from .TrackpadNavigation import bind_touchpad_scroll
 
 # ---------- ttk style names ----------
 _TOGGLE_STYLE = "TopBar.TButton"
@@ -265,6 +266,9 @@ def create_scrollable_frame(parent, height = 150, width = 300, vertical = False,
                     widget.bind("<MouseWheel>", _on_horizontal, add="+")
                     widget.bind("<Button-4>", _on_horizontal, add="+")
                     widget.bind("<Button-5>", _on_horizontal, add="+")
+            # Tk 9 sends the trackpad as <TouchpadScroll>, not <MouseWheel>.
+            bind_touchpad_scroll(widget, canvasscroll,
+                                 vertical=vertical, horizontal=horizontal)
 
         # Track what is already bound: <Configure> fires every time a widget is
         # added or removed, and _bind_scroll uses add="+", so re-binding blindly

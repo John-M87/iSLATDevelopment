@@ -32,6 +32,8 @@ try:
 except ImportError:  # pragma: no cover - Tk is not available
     _FigureCanvasTkAgg = None
 
+from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation
+
 #: Pack options of a view's canvas widget inside its parent frame.
 CANVAS_PACK_OPTIONS: Dict[str, Any] = {"fill": "both", "expand": True, "padx": 0, "pady": 0}
 
@@ -89,6 +91,7 @@ class OwnedCanvasMixin:
         self._right_click_cid = self._canvas.mpl_connect(
             "button_press_event", self._on_canvas_button_press,
         )
+        attach_trackpad_navigation(self._canvas)
         self._notify_canvas_changed()
         self._on_canvas_created(self._canvas)
 
