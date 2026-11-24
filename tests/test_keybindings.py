@@ -183,6 +183,8 @@ _PREVIOUS_BINDINGS = [
     (("Z", SHIFT), "_double_plot_range"),
     (("d", CTRL), "_load_spectrum"),
     (("D", CTRL | SHIFT), "_open_sample_manager"),
+    (("C", CTRL | SHIFT), "_copy_view_to_clipboard"),
+    (("e", CTRL), "_export_models"),
 ]
 
 
@@ -402,6 +404,8 @@ class TestGuiActions:
         gui.file_interaction_pane.load_spectra.assert_called_once_with()
         h._open_sample_manager()
         gui.top_bar.manage_sample.assert_called_once_with()
+        h._export_models()
+        gui.top_bar.export_models.assert_called_once_with()
 
     def test_before_the_gui_exists_they_do_nothing(self):
         from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
@@ -410,7 +414,8 @@ class TestGuiActions:
         for method in ("_load_line_list", "_set_output_file", "_toggle_match_pixel_sampling",
                        "_add_molecule", "_filter_active_line_list", "_save_line", "_fit_line",
                        "_single_slab_fit", "_halve_plot_range", "_double_plot_range",
-                       "_load_spectrum", "_open_sample_manager"):
+                       "_load_spectrum", "_open_sample_manager", "_export_models",
+                       "_copy_view_to_clipboard"):
             getattr(h, method)()  # no error
 
     def test_gui_handlers_exist(self):
@@ -427,6 +432,7 @@ class TestGuiActions:
                           (TopBar, "fit_selected_line"),
                           (TopBar, "single_slab_fit"),
                           (TopBar, "manage_sample"),
+                          (TopBar, "export_models"),
                           (FileInteractionPane, "load_spectra")):
             assert callable(getattr(cls, name)), f"{cls.__name__}.{name}"
 
@@ -498,10 +504,21 @@ def test_double_plot_range_keeps_centre():
     assert (float(panel.plot_start_var.get()), float(panel.plot_range_var.get())) == pytest.approx((16.8, 0.8))
 
 
-def test_match_sampling_button_shows_its_shortcut():
+def test_match_sampling_button_label_has_no_shortcut_text():
     from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanel
-    assert ControlPanel._match_sampling_text(True) == f"✓ Match Pix. Sampling ({shortcut_text('toggle_match_pixel_sampling')})"
-    assert ControlPanel._match_sampling_text(False).startswith("  Match Pix. Sampling (")
+    assert ControlPanel._match_sampling_text(True) == "✓ Match Pix. Sampling"
+    assert ControlPanel._match_sampling_text(False) == "  Match Pix. Sampling"
+
+
+def test_copy_view_copies_the_active_view():
+    from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+    h = InteractionHandler.__new__(InteractionHandler)
+    view = MagicMock()
+    h.plot_manager = SimpleNamespace(active_view=view)
+    h._copy_view_to_clipboard()
+    view.copy_figure_to_clipboard.assert_called_once_with()
+    h.plot_manager = SimpleNamespace(active_view=None)
+    h._copy_view_to_clipboard()  # no view yet: no error
 
 
 def test_load_spectrum_click_and_shortcut_share_one_method():

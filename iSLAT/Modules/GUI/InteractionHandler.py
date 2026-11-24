@@ -581,6 +581,8 @@ class InteractionHandler:
         "double_plot_range": "_double_plot_range",
         "load_spectrum": "_load_spectrum",
         "open_sample_manager": "_open_sample_manager",
+        "copy_view_to_clipboard": "_copy_view_to_clipboard",
+        "export_models": "_export_models",
         "open_command_palette": "_open_command_palette",
     }
 
@@ -711,6 +713,21 @@ class InteractionHandler:
         top_bar = self._gui_part("top_bar")
         if top_bar is not None:
             top_bar.manage_sample()
+
+    def _copy_view_to_clipboard(self):
+        """Copy the main plot's current view to the clipboard as a PNG (Ctrl/Cmd+Shift+C).
+
+        Same image as the plot's right-click > Copy Figure to Clipboard.
+        """
+        view = getattr(getattr(self, "plot_manager", None), "active_view", None)
+        if view is not None and hasattr(view, "copy_figure_to_clipboard"):
+            view.copy_figure_to_clipboard()
+
+    def _export_models(self):
+        """Open the Export Models dialog (Ctrl/Cmd+E), as Manage Molecules > Export Models does."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.export_models()
 
     def _open_command_palette(self):
         """Open the command palette (Ctrl/Cmd+K), or bring it back to the front."""

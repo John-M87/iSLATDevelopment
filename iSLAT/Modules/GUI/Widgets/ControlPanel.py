@@ -437,14 +437,15 @@ class ControlPanel(ttk.Frame):
                 self._match_sampling_btn = ttk.Button(
                     parent, 
                     text=self._match_sampling_text(False),
-                    width=26,
+                    width=22,
                     command=self._toggle_match_spectral_sampling
                 )
                 self._match_sampling_btn.grid(row=row, column=start_col + 2, columnspan=2, padx=_MATCH_BTN_PADX, sticky="w")
                 match_tip = ("Toggle matched spectral sampling.\n"
                              "When enabled, model flux is interpolated\n"
                              "pixel-by-pixel to match the spectrum's\n"
-                             "wavelength grid") #(for data-model subtraction).\n"
+                             "wavelength grid\n"
+                             f"Keybind: {shortcut_text('toggle_match_pixel_sampling')}") #(for data-model subtraction).\n"
                              #"MIRI and other spectra have uneven\n"
                              #"pixel sampling that varies with wavelength.")
                 CreateToolTip(self._match_sampling_btn, match_tip)
@@ -758,8 +759,8 @@ class ControlPanel(ttk.Frame):
 
     @staticmethod
     def _match_sampling_text(on: bool) -> str:
-        """Label of the matched-sampling button, with its check mark and keyboard shortcut."""
-        return f"{'✓' if on else ' '} Match Pix. Sampling ({shortcut_text('toggle_match_pixel_sampling')})"
+        """Label of the matched-sampling button, with its check mark."""
+        return f"{'✓' if on else ' '} Match Pix. Sampling"
 
     def _toggle_match_spectral_sampling(self):
         """Toggle matched spectral sampling mode.

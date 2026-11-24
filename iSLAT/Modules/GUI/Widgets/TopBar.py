@@ -244,7 +244,8 @@ class TopBar(ResizableFrame):
         molecule_menu.add_command(label="Sort Molecules", command=self.sort_molecules)
         molecule_menu.add_command(label="Bulk Apply Properties", command=self.bulk_apply_properties)
         molecule_menu.add_command(label="Intensity Settings", command=self.intensity_settings)
-        molecule_menu.add_command(label="Export Models", command=self.export_models)
+        export_models_label = f"Export Models ({shortcut_text('export_models')})"
+        molecule_menu.add_command(label=export_models_label, command=self.export_models)
         molecule_menu.add_separator()
         save_params_label = f"Save Parameters ({shortcut_text('save_parameters')})"
         load_params_label = f"Load Parameters ({shortcut_text('load_parameters')})"
@@ -263,7 +264,7 @@ class TopBar(ResizableFrame):
             "Sort Molecules":                      "Sort the molecules in the control panel\nby a chosen property (temperature, radius,\ncolumn density, …), ascending or descending.",
             "Bulk Apply Properties":               "Set one or more properties on many molecules\nat once, optionally only the visible ones.",
             "Intensity Settings":                  "Choose how line intensities are calculated\nfrom the optical depth: curve of growth\n(with or without line overlap) or RADEX.\nApplies to all molecules and is saved\nas the default.",
-            "Export Models":                       "Export current model spectra\nto CSV files for external use.",
+            export_models_label:                   "Export current model spectra\nto CSV files for external use.",
             save_params_label:                     "Save current molecule parameters\nto the default save file\nfor this spectrum.",
             load_params_label:                     "Load molecule parameters from\nthe default save file\nfor this spectrum.",
             load_params_file_label:                "Load molecule parameters from\na user-selected CSV save file,\nreplacing existing molecules.",
@@ -413,11 +414,11 @@ class TopBar(ResizableFrame):
             f"\n\nOpen in new window: {shortcut_text('open_full_spectrum_window')}"
         )
         toggle_summed_tip = f"Toggle summed model flux on/off\n(gray fill in plot)\nKeybind: {shortcut_text('toggle_summed_spectrum')}"
-        create_button(self.button_frame, self.theme, f"Saved Lines ({shortcut_text('toggle_saved_lines')})", self.toggle_saved_lines, 0, 3, tip_text=saved_lines_tip)
-        create_button(self.button_frame, self.theme, f"Atomic Lines ({shortcut_text('toggle_atomic_lines')})", self.toggle_atomic_lines, 0, 4, tip_text=atomic_lines_tip)
-        create_button(self.button_frame, self.theme, f"Full Spectrum ({shortcut_text('toggle_full_spectrum')})", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
-        create_button(self.button_frame, self.theme, f"Total Model ({shortcut_text('toggle_summed_spectrum')})", self.toggle_summed_spectrum, 0, 6, tip_text=toggle_summed_tip)
-        create_button(self.button_frame, self.theme, f"Legend ({shortcut_text('toggle_legend')})", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
+        create_button(self.button_frame, self.theme, "Saved Lines", self.toggle_saved_lines, 0, 3, tip_text=saved_lines_tip)
+        create_button(self.button_frame, self.theme, "Atomic Lines", self.toggle_atomic_lines, 0, 4, tip_text=atomic_lines_tip)
+        create_button(self.button_frame, self.theme, "Full Spectrum", self.toggle_full_spectrum, 0, 5, tip_text=toggle_full_spectrum_tip)
+        create_button(self.button_frame, self.theme, "Total Model", self.toggle_summed_spectrum, 0, 6, tip_text=toggle_summed_tip)
+        create_button(self.button_frame, self.theme, "Legend", self.main_plot.toggle_legend, 0, 7, tip_text=toggle_legend_tip)
         
         # Navigate buttons - compact with minimal padding
         retreat_tip = f"Retreat the plot start\nby the current range value\nShortcut: {shortcut_text('retreat_plot_start')}"

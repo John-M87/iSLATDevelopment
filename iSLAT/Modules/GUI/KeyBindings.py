@@ -106,6 +106,8 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "double_plot_range": ("Shift+Z",),
     "load_spectrum": ("Ctrl+D",),
     "open_sample_manager": ("Ctrl+Shift+D",),  # not Cmd+Shift+M: macOS's "Open man Page in Terminal"
+    "copy_view_to_clipboard": ("Ctrl+Shift+C",),  # not Ctrl+C: keep the platform's text copy
+    "export_models": ("Ctrl+E",),
     "open_command_palette": ("Ctrl+K",),
 }
 
