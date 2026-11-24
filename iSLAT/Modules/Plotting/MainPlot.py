@@ -315,8 +315,8 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
                         spine.set_color(label_color)
 
             # Grid lines (GUI-only feature)
-            for ax in [self.ax1, self.ax2, self.ax3]:
-                if self.theme.get(f'ax{ax.get_gid()}_grid', False):
+            for i, ax in enumerate((self.ax1, self.ax2, self.ax3), start=1):
+                if self.theme.get(f'ax{i}_grid', False):
                     ax.grid(True, color=label_color, alpha=0.3, linestyle='-', linewidth=0.5)
 
             # Canvas widget background

@@ -240,7 +240,7 @@ class LineInspectionContextMixin:
         If a fill tagged ``_islat_summed`` is already present it is shown
         or hidden in-place.  If none exists the overlay is computed from
         the current molecules and rendered for the first time.  The canvas
-        is redrawn after the change.
+        that holds *insp_ax* is redrawn after the change.
 
         Parameters
         ----------
@@ -284,14 +284,7 @@ class LineInspectionContextMixin:
             except Exception:
                 return
 
-        # Redraw via the plot manager canvas if available, else fall back.
-        pm = getattr(self, '_pm', None)
-        canvas = getattr(pm, 'canvas', None) or getattr(self, '_canvas', None)
-        if canvas is not None:
-            try:
-                canvas.draw_idle()
-            except Exception:
-                pass
+        insp_ax.figure.canvas.draw_idle()
 
     def _build_line_inspection_menu(self, canvas_widget: Any, event: Any = None) -> Optional[Any]:
         """Return a populated ``tk.Menu`` for the line inspection panel.
