@@ -24,6 +24,10 @@ from .LineInspectionView import LineInspectionView
 from .FitLinesPlotGridView import FitLinesPlotGridView
 from .OpticalDepthView import OpticalDepthView, TAU_OPTION_DEFAULTS
 from iSLAT.Modules.DataTypes.Molecule import Molecule
+
+# Grid lines (H key): a neutral gray, faint enough for the light and dark themes.
+GRID_LINE_PROPS = {"color": "#808080", "alpha": 0.35, "linewidth": 0.5}
+GRID_STYLE = {f"grid.{key}": value for key, value in GRID_LINE_PROPS.items()}
 from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
 from iSLAT.Modules.DataProcessing.FittingEngine import FittingEngine
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
@@ -80,6 +84,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             "y_data_sync":  None,        # None or "global" / "view" / "panel": auto-scale to the data's exact min / max
             "y_limits":     None,        # manual (ymin, ymax) used when y_autoscale is False
             "observed":     True,        # observed-spectrum artists visible
+            "grid":         False,       # grid lines on every view's axes (see set_grid_visible)
             "wavelength_markers": [],    # user marks: [{"start", "end", "label", "color"}, ...]
             **TAU_OPTION_DEFAULTS,       # Optical Depth view: log axis, profile / stem, stacking
             **SAMPLE_STACK_DEFAULTS,     # Full Spectrum view: stack the sample's spectra (layout, models)
@@ -1022,6 +1027,36 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
     def toggle_legend(self):
         self.legend_toggle = not self.legend_toggle
         self.active_view.toggle_legend(self.legend_toggle)
+
+    def set_grid_visible(self, visible: bool) -> None:
+        """Show or hide grid lines on every view's axes.
+
+        Besides the axes that exist now, ``rcParams["axes.grid"]`` is set so
+        axes the views create or ``clear()`` later (a new line selection, a
+        rebuilt panel, an exported figure) follow the setting too.  Colorbars
+        are left alone.
+        """
+        visible = bool(visible)
+        self.toggle_state["grid"] = visible
+        matplotlib.rcParams["axes.grid"] = visible
+        matplotlib.rcParams.update(GRID_STYLE)
+        for view in self._views.values():
+            try:
+                fig = view.get_figure()
+            except Exception:
+                fig = None
+            for ax in getattr(fig, "axes", ()):
+                if hasattr(ax, "_colorbar"):
+                    continue
+                if visible:
+                    ax.grid(True, **GRID_LINE_PROPS)
+                else:
+                    ax.grid(False)
+        self._draw_active_view()
+
+    def toggle_grid(self) -> None:
+        """Flip the grid lines on / off."""
+        self.set_grid_visible(not self.toggle_state.get("grid", False))
 
     def remove_atomic_lines(self):
         """Remove atomic lines - delegates to the active view."""

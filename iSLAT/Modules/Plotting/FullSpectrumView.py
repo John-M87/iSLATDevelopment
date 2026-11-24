@@ -445,6 +445,11 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
             self._picked_range_artists.append(tag_artist(patch, PICKED_RANGE_TAG))
         self._redraw_figure()
 
+    def clear_selection(self) -> None:
+        """Hide the panels' selected spans (Escape)."""
+        self._clear_span_selections()
+        self._redraw_figure()
+
     def _clear_span_selections(self) -> None:
         """Hide every panel's selected span (a press inside one would move it instead of starting a range)."""
         for span in self.span_selectors.values():

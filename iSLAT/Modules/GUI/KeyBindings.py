@@ -89,8 +89,10 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "toggle_saved_lines": ("S",),
     "toggle_atomic_lines": ("A",),
     "toggle_legend": ("L",),
+    "toggle_grid": ("H",),
     "toggle_active_molecule_visibility": ("V",),
     "toggle_all_molecule_visibility": ("Shift+V",),
+    "toggle_active_molecule_bold": ("B",),
     "open_center_view_dialog": ("C",),
     "save_parameters": ("Ctrl+S",),
     "save_parameters_to_file": ("Ctrl+Shift+S",),
@@ -109,6 +111,7 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "toggle_match_pixel_sampling": ("P",),
     "add_molecule": ("Ctrl+N",),
     "filter_active_line_list": ("Shift+F",),
+    "clear_selection": ("Escape",),
     "save_line": ("Shift+S",),
     "fit_line": ("G",),
     "single_slab_fit": ("Shift+G",),
@@ -151,9 +154,16 @@ ACTION_DESCRIPTIONS: Dict[str, str] = {
     "toggle_saved_lines": "Show saved lines\nfrom the 'Input Line List'",
     "toggle_atomic_lines": "Show atomic lines\nusing separation threshold\nset in the 'Line Separ.' field",
     "toggle_legend": "Turn legend on/off",
+    "toggle_grid": "Show / hide grid lines\non the plots.",
     "toggle_active_molecule_visibility": "Show / hide the active molecule's\nmodel on the plots.",
     "toggle_all_molecule_visibility": (
         "Hide every molecule's model if any\nis visible, otherwise show them all."
+    ),
+    "toggle_active_molecule_bold": (
+        "Draw the active molecule's model\nwith a heavier line, or back to normal."
+    ),
+    "clear_selection": (
+        "Clear the selected wavelength range\nand the line inspection it shows."
     ),
     "open_center_view_dialog": (
         "Reposition the plot window: center + range,\ncenter + number of data points,\n"

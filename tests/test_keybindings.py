@@ -190,6 +190,9 @@ _PREVIOUS_BINDINGS = [
     (("Y", SHIFT), "_open_y_limits_dialog"),
     (("n", 0), "_next_line_list_line"),
     (("N", SHIFT), "_previous_line_list_line"),
+    (("h", 0), "_toggle_grid"),
+    (("b", 0), "_toggle_active_molecule_bold"),
+    (("Escape", 0), "_clear_selection"),
 ]
 
 
@@ -246,26 +249,63 @@ class TestInteractionHandlerDispatch:
 
 
 class TestToggleGrid:
-    def test_toggle_grid_flips_all_axes(self):
+    """H: grid lines on every view's axes, kept through ``ax.clear()``."""
+
+    @staticmethod
+    def _grid_on(ax):
+        return any(line.get_visible() for line in ax.xaxis.get_gridlines())
+
+    def _controller(self):
         import matplotlib
         matplotlib.use("Agg")
+        import numpy as np
         from matplotlib.figure import Figure
+        three, full = Figure(), Figure()
+        a1, a2 = three.add_subplot(121), three.add_subplot(122)
+        image = full.add_subplot().imshow(np.eye(3))
+        colorbar = full.colorbar(image)
+        controller = SimpleNamespace(
+            toggle_state={"grid": False},
+            _views={"Three Panel": SimpleNamespace(get_figure=lambda: three),
+                    "Full Spectrum": SimpleNamespace(get_figure=lambda: full)},
+            _draw_active_view=MagicMock(),
+        )
+        from iSLAT.Modules.Plotting.MainPlot import iSLATPlot
+        controller.set_grid_visible = lambda visible: iSLATPlot.set_grid_visible(controller, visible)
+        return controller, (a1, a2, full.axes[0]), colorbar
+
+    def test_toggles_every_view_and_survives_clear(self):
+        import matplotlib
+        from iSLAT.Modules.Plotting.MainPlot import iSLATPlot
+        with matplotlib.rc_context():
+            controller, axes, colorbar = self._controller()
+            iSLATPlot.toggle_grid(controller)
+            assert controller.toggle_state["grid"] is True
+            assert all(self._grid_on(ax) for ax in axes)
+            assert not self._grid_on(colorbar.ax)
+            axes[1].clear()                      # e.g. a new line selection
+            assert self._grid_on(axes[1])
+            iSLATPlot.toggle_grid(controller)
+            assert not any(self._grid_on(ax) for ax in axes)
+            axes[1].clear()
+            assert not self._grid_on(axes[1])
+            assert controller._draw_active_view.call_count == 2
+
+    def test_h_key_delegates_to_the_plot(self):
         from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
-
-        fig = Figure()
         h = InteractionHandler.__new__(InteractionHandler)
-        h.ax1, h.ax2 = fig.add_subplot(121), fig.add_subplot(122)
-        h.ax3 = None
-        h.canvas = MagicMock()
-
-        def grid_on(ax):
-            return any(line.get_visible() for line in ax.xaxis.get_gridlines())
-
+        h.plot_manager = MagicMock()
         h._toggle_grid()
-        assert grid_on(h.ax1) and grid_on(h.ax2)
-        h._toggle_grid()
-        assert not grid_on(h.ax1) and not grid_on(h.ax2)
-        assert h.canvas.draw_idle.call_count == 2
+        h.plot_manager.toggle_grid.assert_called_once_with()
+
+    def test_matplotlib_key_event_no_longer_toggles(self):
+        # Both the matplotlib and the tkinter key handlers see a key pressed on
+        # the canvas; only the tkinter one may toggle, or H would undo itself.
+        from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+        h = InteractionHandler.__new__(InteractionHandler)
+        h._toggle_grid = MagicMock()
+        h._on_key_press(SimpleNamespace(key="h"))
+        h._toggle_grid.assert_not_called()
 
 
 class TestLineListViewExportShortcut:
@@ -684,3 +724,75 @@ def test_palette_remembers_what_it_ran(palette, monkeypatch):
         assert not again.description.get().startswith(CommandPalette.RECENT_NOTE)
     finally:
         again.close()
+
+
+# ---------------------------------------------------------------------------
+# B (bold active molecule) and Escape (clear selection)
+# ---------------------------------------------------------------------------
+
+def test_bold_key_toggles_the_active_molecule():
+    from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+    h = InteractionHandler.__new__(InteractionHandler)
+    control_panel = MagicMock()
+    h.islat = SimpleNamespace(GUI=SimpleNamespace(control_panel=control_panel),
+                              active_molecule=SimpleNamespace(name="H2O"))
+    h._toggle_active_molecule_bold()
+    control_panel._toggle_molecule_bold_action.assert_called_once_with("H2O")
+
+    h.islat.active_molecule = None
+    h._toggle_active_molecule_bold()  # nothing to bold: no call, no error
+    assert control_panel._toggle_molecule_bold_action.call_count == 1
+
+
+def test_bold_handler_exists_on_control_panel():
+    from iSLAT.Modules.GUI.Widgets.ControlPanel import ControlPanel
+    assert callable(ControlPanel._toggle_molecule_bold_action)
+
+
+def test_escape_clears_the_selection_and_its_span():
+    from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+    h = InteractionHandler.__new__(InteractionHandler)
+    h.plot_manager = MagicMock()
+    h.span_selector = MagicMock()
+    h.selected_range = (4.9, 5.0)
+    h._clear_selection()
+    assert h.selected_range is None
+    h.plot_manager.clear_selection.assert_called_once_with()
+    h.span_selector.clear.assert_called_once_with()
+
+
+class TestEscapeOnlyInMainWindow:
+    def _handler_with_root(self):
+        h = _handler()
+        h._tk_root = object()
+        return h
+
+    def _event_in(self, toplevel):
+        event = _event("Escape")
+        event.widget.winfo_toplevel.return_value = toplevel
+        return event
+
+    def test_main_window(self):
+        h = self._handler_with_root()
+        assert h._on_tk_keypress(self._event_in(h._tk_root)) == "break"
+        h._clear_selection.assert_called_once_with()
+
+    def test_other_window_keeps_its_own_escape(self):
+        h = self._handler_with_root()
+        assert h._on_tk_keypress(self._event_in(object())) is None
+        h._clear_selection.assert_not_called()
+
+    def test_other_keys_still_work_in_other_windows(self):
+        h = self._handler_with_root()
+        event = _event("f")
+        event.widget.winfo_toplevel.return_value = object()
+        assert h._on_tk_keypress(event) == "break"
+        h._toggle_full_spectrum.assert_called_once_with()
+
+    def test_widget_destroyed_by_its_window_closing(self):
+        import tkinter as tk
+        h = self._handler_with_root()
+        event = _event("Escape")
+        event.widget.winfo_class.side_effect = tk.TclError("bad window path name")
+        assert h._on_tk_keypress(event) is None
+        h._clear_selection.assert_not_called()

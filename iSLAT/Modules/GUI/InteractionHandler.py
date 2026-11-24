@@ -1,5 +1,6 @@
 import numpy as np
 import time
+import tkinter as tk
 from matplotlib.widgets import SpanSelector
 from typing import Optional, Tuple, Callable, Dict, Any
 from .KeyBindings import ActionRegistry, CommandPalette, TEXT_INPUT_CLASSES, chord_from_event
@@ -382,11 +383,9 @@ class InteractionHandler:
     
     def _on_key_press(self, event):
         """Handle key press events"""
-        if event.key == 'h':
-            # Toggle grid
-            self._toggle_grid()
-        # Note: 'f', 'l', 's', etc. are handled by tkinter keybindings
-        # (_on_tk_keypress) — don't duplicate here to avoid double-triggering.
+        # Every shortcut (including H for the grid) is handled by the tkinter
+        # keybindings (_on_tk_keypress); don't duplicate one here, or it would
+        # run twice while the canvas has focus.
     
     def _on_key_release(self, event):
         """Handle key release events"""
@@ -503,12 +502,26 @@ class InteractionHandler:
                 self.canvas.draw_idle()
     
     def _toggle_grid(self):
-        """Toggle grid on/off"""
-        self._grid_visible = not getattr(self, "_grid_visible", False)
-        for ax in (self.ax1, self.ax2, self.ax3):
-            if ax is not None:
-                ax.grid(self._grid_visible)
-        self.canvas.draw_idle()
+        """Toggle grid lines on every view (H)."""
+        toggle = getattr(self.plot_manager, "toggle_grid", None)
+        if toggle is not None:
+            toggle()
+
+    def _toggle_active_molecule_bold(self):
+        """Bold / unbold the active molecule's model (B), as its right-click menu does."""
+        control_panel = self._gui_part("control_panel")
+        molecule = getattr(self.islat, "active_molecule", None)
+        if control_panel is not None and molecule is not None:
+            control_panel._toggle_molecule_bold_action(getattr(molecule, "name", str(molecule)))
+
+    def _clear_selection(self):
+        """Clear the selected range and hide its span on the main plot (Escape)."""
+        self.clear_current_selection()
+        if self.span_selector is not None:
+            try:
+                self.span_selector.clear()
+            except Exception:
+                pass
     
     def _setup_tkinter_keybindings(self):
         """Set up tkinter-level keybindings that work globally"""
@@ -554,8 +567,11 @@ class InteractionHandler:
         "toggle_saved_lines": "_toggle_saved_lines",
         "toggle_atomic_lines": "_toggle_atomic_lines",
         "toggle_legend": "_toggle_legend",
+        "toggle_grid": "_toggle_grid",
         "toggle_active_molecule_visibility": "_toggle_active_molecule_visibility",
         "toggle_all_molecule_visibility": "_toggle_all_molecule_visibility",
+        "toggle_active_molecule_bold": "_toggle_active_molecule_bold",
+        "clear_selection": "_clear_selection",
         "open_center_view_dialog": "_open_center_view_dialog",
         "save_parameters": "_save_parameters",
         "save_parameters_to_file": "_save_parameters_to_file",
@@ -591,6 +607,20 @@ class InteractionHandler:
         "open_command_palette": "_open_command_palette",
     }
 
+    # Actions whose keys only work in the main window.  Escape closes most of
+    # iSLAT's other windows, so it must not also clear the selection there.
+    _MAIN_WINDOW_ONLY = frozenset({"clear_selection"})
+
+    def _in_main_window(self, event) -> bool:
+        """Whether *event* came from a widget in the main iSLAT window."""
+        root = getattr(self, "_tk_root", None)
+        if root is None:
+            return True
+        try:
+            return event.widget.winfo_toplevel() is root
+        except (AttributeError, tk.TclError):
+            return False
+
     def _build_action_registry(self) -> ActionRegistry:
         """Bind every action in :data:`DEFAULT_KEYMAP` to its handler method."""
         registry = ActionRegistry()
@@ -625,18 +655,21 @@ class InteractionHandler:
         Returns ``'break'`` when an action handled the key, otherwise ``None``
         so the event propagates normally.
         """
-        # event.widget may be a string path if the widget was destroyed or during dialogs
+        # event.widget may be a string path if the widget was destroyed or during
+        # dialogs, or a destroyed widget (a dialog that closes on this key).
         try:
             widget_class = event.widget.winfo_class()
-        except AttributeError:
+        except (AttributeError, tk.TclError):
             return None
         chord = chord_from_event(event)
         registry = self._get_action_registry()
+        action = registry.action_for_chord(chord)
         if widget_class in TEXT_INPUT_CLASSES:
             # Let typing work; only the command palette opens from a text field.
-            action = registry.action_for_chord(chord)
             if action is None or action.id != "open_command_palette":
                 return None
+        if action is not None and action.id in self._MAIN_WINDOW_ONLY and not self._in_main_window(event):
+            return None
 
         if registry.dispatch(chord):
             return 'break'
