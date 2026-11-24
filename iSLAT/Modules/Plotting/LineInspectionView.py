@@ -6,6 +6,7 @@ When no selection has been made yet the view displays a placeholder.
 """
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -23,6 +24,9 @@ if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
     from iSLAT.Modules.DataProcessing.LineIdentity import LineRef
     from typing import Dict
+
+#: Control-panel key of the line-marker threshold entry.
+LINE_THRESHOLD_KEY = "line_threshold"
 
 class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     """
@@ -53,6 +57,10 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
 
         # matplotlib pick event connection id
         self._pick_cid: Optional[int] = None
+
+        # Marker threshold for this view only (None: the shared user setting), and the one last drawn.
+        self._line_threshold: Optional[float] = None
+        self._drawn_threshold: Optional[float] = None
 
     # ==================================================================
     # Internal helpers
@@ -115,7 +123,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
             )
             return
 
-        error = getattr(self._islat, "error_data", None)
+        error = getattr(self._islat, "err_data", None)
         mol = self._get_active_molecule()
         mols = self._get_molecules()
 
@@ -131,6 +139,7 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
                 )
 
         try:
+            # No line_data: the markers come from render_active_lines below.
             self._plot = LineInspectionPlot(
                 wave_data=wave,
                 flux_data=flux,
@@ -139,7 +148,6 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
                 error_data=error,
                 molecule=mol,
                 molecules=mols,
-                line_data=line_data,
                 ax=ax,
                 render_all_visible=True,
                 theme=self._pm.theme,
@@ -151,21 +159,13 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
                 self._render_summed_overlay()
 
             # Render active line vline markers when line data is available
+            self._drawn_threshold = self._get_line_threshold()
             if line_data and mol is not None:
-                import numpy as np
-                data_mask = (wave >= xmin) & (wave <= xmax)
-                data_region_y = flux[data_mask]
-                max_y = (
-                    float(np.nanmax(data_region_y))
-                    if len(data_region_y) > 0
-                    else 1.0
-                )
-                threshold = getattr(self._pm, '_line_threshold', 0.0)
-                mol_color = getattr(mol, 'color', None) or 'green'
+                mol_color = self._molecule_line_color(mol)
                 self._plot.render_active_lines(
                     line_data, self.active_lines,
-                    max_y=max_y,
-                    threshold=threshold,
+                    max_y=self._marker_max_y(xmin, xmax),
+                    threshold=self._drawn_threshold,
                     color=mol_color,
                     molecule_name=getattr(mol, 'name', ''),
                     molecule_color=mol_color,
@@ -275,21 +275,46 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         self.on_selection(float(start), float(end))
 
     def _register_control_fields(self) -> None:
-        """Register a :class:`DisplayRangeField` that routes the Plot Start / Plot Range controls in the control panel to this view's inspection window."""
+        """Route Plot Start / Plot Range to the inspection window and add the *Line Threshold* entry."""
         bus = getattr(self._pm, 'control_bus', None)
         if bus is None:
             return
-        from iSLAT.Modules.GUI.ControlField import DisplayRangeField
+        from iSLAT.Modules.GUI.ControlField import DisplayRangeField, EntryField
         bus.unregister_owner(self)
-        bus.register(
+        bus.register_many([
             DisplayRangeField(
                 "_liv_display_range",
                 getter=self._get_display_range,
                 setter=self._set_display_range,
                 owner=self,
             ),
-            "control_panel",
-        )
+            EntryField(
+                LINE_THRESHOLD_KEY, "Line Threshold:",
+                getter=self._get_line_threshold,
+                setter=self._set_line_threshold,
+                datatype="float", width=5, owner=self,
+                tip="Mark only lines at least this fraction (0-1) of the strongest line in range.\n"
+                    "Applies to this view only.",
+            ),
+        ], "control_panel")
+
+    def _get_line_threshold(self) -> float:
+        """This view's own threshold once set, else the shared user setting."""
+        if self._line_threshold is not None:
+            return self._line_threshold
+        return super()._get_line_threshold()
+
+    def _set_line_threshold(self, value: float) -> None:
+        """Set this view's threshold (not the user setting) and redraw; values outside 0-1 are refused."""
+        value = float(value)
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            notify_user(self._islat, "The line threshold must be a number from 0 to 1.")
+            return
+        changed = value != self._get_line_threshold()
+        self._line_threshold = value
+        if changed:
+            self._rebuild_and_show()
+            self.draw()
 
     # ==================================================================
     # Pick event - active line interaction
@@ -323,90 +348,19 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     def _on_pick_line(self, event: Any) -> None:
         """Highlight the clicked active-line vline and display its info."""
         picked_artist = event.artist
-        picked_value = None
+        picked_value = next(
+            (value for vline, text_obj, _sc, value in self.active_lines
+             if picked_artist is vline or picked_artist is text_obj),
+            None,
+        )
+        self._recolor_active_lines(picked_value)
 
-        # Reset all vlines to their default color
-        for vline, text_obj, _sc, value in self.active_lines:
-            mol_color = (
-                value.get('molecule_color', 'green') if value else 'green'
-            )
-            if vline is not None:
-                vline.set_color(mol_color)
-            if text_obj is not None:
-                text_obj.set_color(mol_color)
-            if picked_artist is vline or picked_artist is text_obj:
-                picked_value = value
-
-        # Highlight the picked vline
         if picked_value is not None:
-            for vline, text_obj, _sc, value in self.active_lines:
-                if value is picked_value:
-                    if vline is not None:
-                        vline.set_color('orange')
-                    if text_obj is not None:
-                        text_obj.set_color('orange')
-
             self.selected_line = picked_value
             self._display_line_info(picked_value)
 
         if self._canvas is not None:
             self._canvas.draw_idle()
-
-    def _display_line_info(self, value: "Dict[str, Any]") -> None:
-        """Push line info for *value* to the GUI data field."""
-        islat = self._islat
-        from .LineInspectionPlot import LineInspectionPlot as _LIP
-        from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral, opacity_integral
-
-        data_flux = None
-        model_flux = None
-        opacity_in_range = None
-        sel = self._current_selection
-        if sel is not None:
-            xmin, xmax = sel
-            err_data = getattr(islat, 'err_data', None)
-            line_flux, _ = flux_integral(
-                lam=islat.wave_data, flux=islat.flux_data,
-                lam_min=xmin, lam_max=xmax, err=err_data,
-            )
-            data_flux = line_flux[0] if isinstance(line_flux, (list, tuple)) else line_flux
-            active_mol = getattr(islat, 'active_molecule', None)
-            if active_mol is not None:
-                mol_wave, mol_flux_arr = active_mol.get_flux(return_wavelengths=True)
-                model_flux, _ = flux_integral(
-                    lam=mol_wave, flux=mol_flux_arr,
-                    lam_min=xmin, lam_max=xmax, err=None,
-                )
-                tau_wave, tau_profile = active_mol.get_tau(
-                    return_wavelengths=True, normalization="area",  # 1/um: integrates to the summed tau
-                )
-                opacity_in_range = opacity_integral(
-                    lam=tau_wave, tau=tau_profile, lam_min=xmin, lam_max=xmax,
-                )
-
-        class _L:
-            pass
-        _l = _L()
-        _l.lam      = value.get('lam')
-        _l.e_up     = value.get('e_up',     value.get('e'))
-        _l.e_low    = value.get('e_low')
-        _l.a_stein  = value.get('a_stein',  value.get('a'))
-        _l.g_up     = value.get('g_up',     value.get('g'))
-        _l.g_low    = value.get('g_low')
-        _l.lev_up   = value.get('up_lev')
-        _l.lev_low  = value.get('low_lev')
-
-        info = _LIP.get_line_info(
-            _l,
-            intensity=value.get('intensity', value.get('inten', 0)),
-            tau=value.get('tau'),
-            data_flux_in_range=data_flux,
-            model_flux_in_range=model_flux,
-            opacity_in_range=opacity_in_range,
-            molecule=getattr(islat, 'active_molecule', None),
-        )
-        info_str = _LIP.format_line_info(info)
-        notify_user(islat, info_str, clear_after=True)
 
     # ==================================================================
     # PlotView - lifecycle
@@ -419,6 +373,9 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         ctrl_sel = self._pm.toggle_state.get("current_selection")
         if ctrl_sel != self._current_selection:
             self._current_selection = ctrl_sel
+            self._needs_refresh = True
+        # The shared threshold this view follows may have changed while it was hidden.
+        if self._plot is not None and self._drawn_threshold != self._get_line_threshold():
             self._needs_refresh = True
 
         if self._initialised and self._shown_frame_is_current():

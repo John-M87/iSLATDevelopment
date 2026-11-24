@@ -173,12 +173,21 @@ def _printed(data_field):
     return data_field.insert_text.call_args[0][0]
 
 
+def _bare_view(view_cls, islat, **attrs):
+    """A *view_cls* instance with only a stub controller (``_pm``) and *attrs*, no GUI."""
+    view = view_cls.__new__(view_cls)
+    view._pm = SimpleNamespace(islat=islat, theme=None, toggle_state=attrs.pop("toggle_state", {}))
+    for name, value in attrs.items():
+        setattr(view, name, value)
+    return view
+
+
 class TestViewPrintout:
     def test_three_panel_view(self):
         from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
         islat, mol, data_field = _islat_for_views()
-        view = SimpleNamespace(_islat=islat, _pm=SimpleNamespace(toggle_state={"current_selection": (13.9, 14.1)}))
-        ThreePanelView._display_line_info(view, dict(_LINE))
+        view = _bare_view(ThreePanelView, islat, toggle_state={"current_selection": (13.9, 14.1)})
+        view._display_line_info(dict(_LINE))
         text = _printed(data_field)
         tau_sum, model_flux = _expected(mol, 13.9, 14.1)
         assert f"Model opacity in range (sum of line-center opacities) = {tau_sum:.4g}" in text
@@ -188,14 +197,14 @@ class TestViewPrintout:
     def test_three_panel_view_without_selection(self):
         from iSLAT.Modules.Plotting.ThreePanelView import ThreePanelView
         islat, _, data_field = _islat_for_views()
-        view = SimpleNamespace(_islat=islat, _pm=SimpleNamespace(toggle_state={"current_selection": None}))
-        ThreePanelView._display_line_info(view, dict(_LINE))  # used to raise UnboundLocalError
+        view = _bare_view(ThreePanelView, islat, toggle_state={"current_selection": None})
+        view._display_line_info(dict(_LINE))  # used to raise UnboundLocalError
         assert "Model opacity in range (sum of line-center opacities) = N/A" in _printed(data_field)
 
     def test_line_inspection_view(self):
         from iSLAT.Modules.Plotting.LineInspectionView import LineInspectionView
         islat, mol, data_field = _islat_for_views()
-        view = SimpleNamespace(_islat=islat, _current_selection=(13.9, 14.1))
-        LineInspectionView._display_line_info(view, dict(_LINE))
+        view = _bare_view(LineInspectionView, islat, _current_selection=(13.9, 14.1))
+        view._display_line_info(dict(_LINE))
         tau_sum, _ = _expected(mol, 13.9, 14.1)
         assert f"Model opacity in range (sum of line-center opacities) = {tau_sum:.4g}" in _printed(data_field)

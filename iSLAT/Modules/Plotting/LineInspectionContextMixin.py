@@ -16,7 +16,10 @@ Usage::
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from types import SimpleNamespace
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
 
 from iSLAT.Modules.DataProcessing.LineIdentity import LineRef, match_line
 
@@ -25,6 +28,9 @@ from .ModelOverlays import draw_summed_fill
 
 #: Menu label of "Show in Line List" when there is no line to show.
 SHOW_IN_LINE_LIST_LABEL = "Show in Line List"
+
+SELECTED_LINE_COLOR = "orange"
+DEFAULT_LINE_THRESHOLD = 0.3  # when user_settings has no line_threshold
 
 
 def show_in_line_list_label(ref: Optional[LineRef]) -> str:
@@ -37,10 +43,123 @@ def show_in_line_list_label(ref: Optional[LineRef]) -> str:
 class LineInspectionContextMixin:
     """Mixin that supplies the line inspection panel right-click menu.
 
-    Requires that the host class exposes ``self._islat`` (the main iSLAT application object with a ``GUI.top_bar`` attribute).
+    Requires ``self._islat`` (the iSLAT application) and ``self._pm`` (the plot manager).
     The line markers are read from ``self.active_lines`` (``[vline, text, scatter, info]`` entries)
-    and the selected line from ``self.selected_line``.
+    and the selected line from ``self.selected_line``.  Also holds the marker
+    threshold, colors, highlight and line printout the views share.
     """
+    def _get_line_threshold(self) -> float:
+        """Marker threshold (0-1, of the strongest line in range) from ``user_settings``."""
+        settings = getattr(self._islat, "user_settings", None) or {}
+        return settings.get("line_threshold", DEFAULT_LINE_THRESHOLD)
+
+    def _marker_max_y(self, xmin: float, xmax: float, fallback: float = 1.0) -> float:
+        """Peak observed flux in ``[xmin, xmax]``, the height the markers scale to."""
+        wave = self._islat.wave_data
+        region = self._islat.flux_data[(wave >= xmin) & (wave <= xmax)]
+        return float(np.nanmax(region)) if len(region) > 0 else fallback
+
+    def _molecule_line_color(self, molecule: Any = None) -> Any:
+        """*molecule*'s color, else the theme's active-line color."""
+        theme = getattr(getattr(self, "_pm", None), "theme", None) or {}
+        return getattr(molecule, "color", None) or theme.get("active_scatter_line_color", "green")
+
+    def _recolor_active_lines(
+        self,
+        selected: Optional[Dict[str, Any]] = None,
+        *,
+        match_wavelength: bool = False,
+        scatter_zorder: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Color every marker and scatter point by molecule, and the *selected* line orange.
+
+        *selected* is matched by identity, or by ``lam`` with *match_wavelength*
+        (after a re-render).  Returns the highlighted info dict, or ``None``.
+        """
+        import matplotlib.colors as mcolors
+
+        hit = None
+        if selected is not None:
+            hit = next((v for *_, v in self.active_lines if v is not None and (
+                v.get("lam") == selected.get("lam") if match_wavelength else v is selected)), None)
+
+        default = self._molecule_line_color()
+        for line, text_obj, _scatter, value in self.active_lines:
+            color = SELECTED_LINE_COLOR if hit is not None and value is hit else (
+                (value or {}).get("molecule_color") or default)
+            for artist in (line, text_obj):
+                if artist is not None:
+                    artist.set_color(color)
+
+        mol_dict = getattr(self._islat, "molecules_dict", None) or {}
+        hit_info = hit or {}
+        hit_index = hit_info.get("_scatter_point_index")
+        for mol_name, (sc, count) in (getattr(self, "_active_scatter_collections", None) or {}).items():
+            if count <= 0:
+                continue
+            colors = [mcolors.to_rgba(self._molecule_line_color(mol_dict.get(mol_name)))] * count
+            if mol_name == hit_info.get("molecule_name") and hit_index is not None and hit_index < count:
+                colors[hit_index] = mcolors.to_rgba(SELECTED_LINE_COLOR)
+            sc.set_facecolors(colors)
+            if scatter_zorder is not None:
+                sc.set_zorder(scatter_zorder)
+        return hit
+
+    def _line_info_selection(self) -> Optional[Tuple[float, float]]:
+        """The range the line printout integrates over (``None``: none)."""
+        return self._current_selection
+
+    def _display_line_info(self, value: Dict[str, Any], clear_data_field: bool = True) -> None:
+        """Print the line *value*, with flux and opacity integrals over the selection, to the data field."""
+        from iSLAT.Modules.DataProcessing.spectral_utils import flux_integral, opacity_integral
+        from .LineInspectionPlot import LineInspectionPlot
+        from .PlotView import notify_user
+
+        islat = self._islat
+        active_mol = getattr(islat, "active_molecule", None)
+        data_flux = model_flux = opacity_in_range = None
+        selection = self._line_info_selection()
+        if selection is not None:
+            xmin, xmax = selection
+            line_flux, _ = flux_integral(
+                lam=islat.wave_data, flux=islat.flux_data,
+                lam_min=xmin, lam_max=xmax, err=getattr(islat, "err_data", None),
+            )
+            data_flux = line_flux[0] if isinstance(line_flux, (list, tuple)) else line_flux
+            if active_mol is not None:
+                mol_wave, mol_flux = active_mol.get_flux(return_wavelengths=True)
+                model_flux, _ = flux_integral(
+                    lam=mol_wave, flux=mol_flux, lam_min=xmin, lam_max=xmax, err=None,
+                )
+                tau_wave, tau_profile = active_mol.get_tau(
+                    return_wavelengths=True, normalization="area",  # 1/um: integrates to the summed tau
+                )
+                opacity_in_range = opacity_integral(
+                    lam=tau_wave, tau=tau_profile, lam_min=xmin, lam_max=xmax,
+                )
+
+        # Marker info dicts use either set of key names.
+        line = SimpleNamespace(
+            lam=value.get("lam"),
+            e_up=value.get("e_up", value.get("e")),
+            e_low=value.get("e_low"),
+            a_stein=value.get("a_stein", value.get("a")),
+            g_up=value.get("g_up", value.get("g")),
+            g_low=value.get("g_low"),
+            lev_up=value.get("up_lev"),
+            lev_low=value.get("low_lev"),
+        )
+        info = LineInspectionPlot.get_line_info(
+            line,
+            intensity=value.get("intensity", value.get("inten", 0)),
+            tau=value.get("tau"),
+            data_flux_in_range=data_flux,
+            model_flux_in_range=model_flux,
+            opacity_in_range=opacity_in_range,
+            molecule=active_mol,
+        )
+        notify_user(islat, LineInspectionPlot.format_line_info(info), clear_after=clear_data_field)
+
     def _inspection_line_at(self, event: Any) -> Optional[LineRef]:
         """The line whose inspection marker (dashed line or label) is under *event*, or ``None``.
 
