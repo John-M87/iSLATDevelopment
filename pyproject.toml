@@ -49,6 +49,17 @@ notebooks = ["ipython", "ipywidgets"]
 macos = ["pyobjc-framework-Cocoa; sys_platform == 'darwin'"]
 dev = ["pytest", "pytest-cov"]
 
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+    "ipython",
+    "ipywidgets",
+    "ipykernel",
+    "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+]
+
 [project.urls]
 Homepage = "https://github.com/spexod/iSLAT"
 Repository = "https://github.com/spexod/iSLAT"

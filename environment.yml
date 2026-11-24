@@ -1,0 +1,22 @@
+name: islat
+channels:
+  - conda-forge
+dependencies:
+  - python=3.15
+  - numpy>=2.0
+  - scipy>=1.13
+  - astropy>=6.1
+  - pandas>=2.2.2
+  - matplotlib-base>=3.10.7
+  - pillow
+  - lmfit
+  - astroquery
+  - pytest
+  - pytest-cov
+  - pytest-xdist
+  - ipython
+  - ipywidgets
+  - ipykernel
+  - pip
+  - pip:
+      - -e ".[macos]"
