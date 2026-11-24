@@ -108,6 +108,11 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "open_sample_manager": ("Ctrl+Shift+D",),  # not Cmd+Shift+M: macOS's "Open man Page in Terminal"
     "copy_view_to_clipboard": ("Ctrl+Shift+C",),  # not Ctrl+C: keep the platform's text copy
     "export_models": ("Ctrl+E",),
+    "toggle_observed_data": ("O",),
+    "toggle_y_autoscale": ("Y",),
+    "open_y_limits_dialog": ("Shift+Y",),
+    "next_line_list_line": ("N",),
+    "previous_line_list_line": ("Shift+N",),
     "open_command_palette": ("Ctrl+K",),
 }
 

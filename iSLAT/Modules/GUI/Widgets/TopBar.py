@@ -366,7 +366,8 @@ class TopBar(ResizableFrame):
             activebackground=btn_theme.get("active_background", "gray"),
             activeforeground=self.theme.get("foreground", "#F0F0F0"),
         )
-        views_menu.add_command(label="Set Y Limits\u2026", command=self.open_y_limits_dialog)
+        y_limits_label = f"Set Y Limits\u2026 ({shortcut_text('open_y_limits_dialog')})"
+        views_menu.add_command(label=y_limits_label, command=self.open_y_limits_dialog)
         views_menu.add_checkbutton(
             label="Show Observed Data",
             variable=self._observed_var,
@@ -390,11 +391,11 @@ class TopBar(ResizableFrame):
             "Optical Depth":      "Multi-panel optical depth τ(λ)\nof the visible molecules over\nthe entire wavelength range.",
             "Population Diagram": "Standalone Boltzmann / rotation\ndiagram for the active molecule.",
             "Line Grid":          "Grid of individual line fits\nfrom the most recent fit run.",
-            "Auto-scale Y Axis":  "ON: the main plot's Y axis follows\nthe data in view.\nOFF: it stays at the current / set limits.",
+            "Auto-scale Y Axis":  f"ON: the main plot's Y axis follows\nthe data in view.\nOFF: it stays at the current / set limits.\nKeybind: {shortcut_text('toggle_y_autoscale')}",
             "Auto-scale Y to Model Flux": "When auto-scaling, fit the Y axis to the\nplotted model (molecule lines and sum)\ninstead of the observed data.",
             Y_DATA_SYNC_MENU_LABEL: Y_DATA_SYNC_MENU_TIP,
-            "Set Y Limits\u2026":  "Pin the main plot's Y axis to\nspecific values (turns auto-scale off).",
-            "Show Observed Data": "Show / hide the observed spectrum\non the main plot.",
+            y_limits_label:       "Pin the main plot's Y axis to\nspecific values (turns auto-scale off).",
+            "Show Observed Data": f"Show / hide the observed spectrum\non the main plot.\nKeybind: {shortcut_text('toggle_observed_data')}",
             "Show Saved Line Labels": "Show / hide the saved-line labels\nin the current view (each view\nremembers its own setting).",
             "Saved Line Labels\u2026": "Choose which column of the input\nline list labels the saved lines,\nwith an optional prefix / suffix,\nand the views that show labels.",
         }

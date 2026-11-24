@@ -583,6 +583,11 @@ class InteractionHandler:
         "open_sample_manager": "_open_sample_manager",
         "copy_view_to_clipboard": "_copy_view_to_clipboard",
         "export_models": "_export_models",
+        "toggle_observed_data": "_toggle_observed_data",
+        "toggle_y_autoscale": "_toggle_y_autoscale",
+        "open_y_limits_dialog": "_open_y_limits_dialog",
+        "next_line_list_line": "_next_line_list_line",
+        "previous_line_list_line": "_previous_line_list_line",
         "open_command_palette": "_open_command_palette",
     }
 
@@ -728,6 +733,52 @@ class InteractionHandler:
         top_bar = self._gui_part("top_bar")
         if top_bar is not None:
             top_bar.export_models()
+
+    def _toggle_observed_data(self):
+        """Show or hide the observed spectrum (O)."""
+        self.plot_manager.toggle_observed_data()
+
+    def _toggle_y_autoscale(self):
+        """Toggle Y auto-scaling (Y)."""
+        self.plot_manager.toggle_y_autoscale()
+
+    def _open_y_limits_dialog(self):
+        """Open the Set Y Limits dialog (Shift+Y)."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.open_y_limits_dialog()
+
+    def _next_line_list_line(self):
+        """Select the next line of the input line list (N)."""
+        self._step_line_list(1)
+
+    def _previous_line_list_line(self):
+        """Select the previous line of the input line list (Shift+N)."""
+        self._step_line_list(-1)
+
+    def _step_line_list(self, step: int):
+        """Select the input line list's nearest line in the direction of *step* (+1 / -1).
+
+        Steps from the line last stepped to while its selection is unchanged,
+        otherwise from the centre of the selection or of the plot.
+        """
+        from iSLAT.Modules.DataProcessing.LineIdentity import LineRef
+        import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
+
+        lines = ifh.read_line_saves(file_name=getattr(self.islat, "input_line_list", None))
+        refs = [r for r in (LineRef.from_row(row) for _, row in lines.iterrows()) if r is not None]
+        last = getattr(self, "_stepped_line", None)
+        selection = getattr(self, "selected_range", None)
+        if last is not None and selection == last[1]:
+            here = last[0]
+        else:
+            here = sum(selection or self._get_active_plot_range()) / 2
+        ahead = [r for r in refs if (r.lam - here) * step > 0]
+        if not ahead:
+            return
+        ref = min(ahead, key=lambda r: abs(r.lam - here))
+        self.plot_manager.show_line_in_spectrum(ref)
+        self._stepped_line = (ref.lam, getattr(self, "selected_range", None))
 
     def _open_command_palette(self):
         """Open the command palette (Ctrl/Cmd+K), or bring it back to the front."""

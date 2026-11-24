@@ -185,6 +185,11 @@ _PREVIOUS_BINDINGS = [
     (("D", CTRL | SHIFT), "_open_sample_manager"),
     (("C", CTRL | SHIFT), "_copy_view_to_clipboard"),
     (("e", CTRL), "_export_models"),
+    (("o", 0), "_toggle_observed_data"),
+    (("y", 0), "_toggle_y_autoscale"),
+    (("Y", SHIFT), "_open_y_limits_dialog"),
+    (("n", 0), "_next_line_list_line"),
+    (("N", SHIFT), "_previous_line_list_line"),
 ]
 
 
@@ -530,3 +535,46 @@ def test_load_spectrum_click_and_shortcut_share_one_method():
     pane.islat_class.load_spectrum.assert_not_called()
     FileInteractionPane._handle_load_spectrum_click(pane, SimpleNamespace(state=CTRL | CMD))
     pane.islat_class.load_spectrum.assert_called_once_with(load_parameters=True, force_dialog=True)
+
+
+class TestStepLineList:
+    LAMS = [17.30, 17.10, 17.20]  # unsorted on purpose
+
+    def _handler(self, monkeypatch, selection=None, plot_range=(17.0, 17.4)):
+        import pandas as pd
+        from iSLAT.Modules.GUI.InteractionHandler import InteractionHandler
+        monkeypatch.setattr("iSLAT.Modules.FileHandling.iSLATFileHandling.read_line_saves",
+                            lambda **_: pd.DataFrame({"lam": self.LAMS}))
+        h = InteractionHandler.__new__(InteractionHandler)
+        h.islat = SimpleNamespace(input_line_list="lines.csv")
+        h.selected_range = selection
+        h._get_active_plot_range = lambda: plot_range
+
+        def show(ref):  # selects a window that is not centred on the line
+            h.selected_range = (ref.lam - 0.01, ref.lam + 0.05)
+        h.plot_manager = SimpleNamespace(show_line_in_spectrum=MagicMock(side_effect=show))
+        return h
+
+    def _shown(self, h):
+        return h.plot_manager.show_line_in_spectrum.call_args.args[0].lam
+
+    def test_steps_from_plot_centre_then_from_the_last_line(self, monkeypatch):
+        h = self._handler(monkeypatch, plot_range=(17.0, 17.3))
+        h._next_line_list_line()
+        assert self._shown(h) == pytest.approx(17.20)
+        h._next_line_list_line()
+        assert self._shown(h) == pytest.approx(17.30)
+        h._previous_line_list_line()
+        assert self._shown(h) == pytest.approx(17.20)
+
+    def test_steps_from_a_new_selection(self, monkeypatch):
+        h = self._handler(monkeypatch)
+        h._next_line_list_line()
+        h.selected_range = (17.0, 17.1)  # user selects elsewhere
+        h._next_line_list_line()
+        assert self._shown(h) == pytest.approx(17.10)
+
+    def test_stops_at_the_ends(self, monkeypatch):
+        h = self._handler(monkeypatch, selection=(17.25, 17.35))
+        h._next_line_list_line()
+        h.plot_manager.show_line_in_spectrum.assert_not_called()
