@@ -9,7 +9,8 @@ import pytest
 
 from iSLAT.Modules.DataTypes.Molecule import Molecule
 from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
-from iSLAT.Modules.DataTypes.ParameterSet import APPLIED_PARAMETERS, SAVE_COLUMNS, ParameterSet
+from iSLAT.Modules.DataTypes.ParameterSet import (APPLIED_PARAMETERS, SAVE_COLUMNS, ParameterSet,
+                                                   ParameterSetStore)
 
 ROOT = Path(__file__).resolve().parents[1]
 HITRAN = ROOT / "iSLAT" / "DATAFILES" / "HITRANdata"
@@ -227,6 +228,7 @@ class TestIslatLoadPaths:
         obj._user_settings = {"default_active_molecule": "COb", "intensity_calculation_method": "curve_growth"}
         obj._initial_molecule_parameters = {}
         obj.molecules_dict = dicts(ROWS)
+        obj.parameter_sets = ParameterSetStore()
         obj.GUI = None
         return obj
 
@@ -246,3 +248,150 @@ class TestIslatLoadPaths:
 
         assert islat._load_parameters_from_explicit_file(path)
         assert dict(md) == objects and md["CO"].temp == 1111.0
+
+
+# ---------------------------------------------------------------------------
+# ParameterSetStore
+# ---------------------------------------------------------------------------
+
+class TestStore:
+    @pytest.fixture
+    def setup(self, dicts):
+        md = dicts(ROWS)
+        store = ParameterSetStore()
+        apply = lambda pset: pset.apply_to(md, {})
+        return md, store, apply
+
+    def test_open_makes_an_unmodified_active_set(self, setup):
+        md, store, apply = setup
+        name = store.open(ParameterSet(ROWS, name="A.csv"), md, apply, path="/saves/A.csv")
+        assert name == store.active == "A.csv" and store.path() == "/saves/A.csv"
+        assert not store.is_modified(md)
+        md["CO"].temp = 700.0
+        assert store.is_modified(md)
+        md["CO"].temp = 600.0
+        assert not store.is_modified(md)  # compared with the saved version, not a flag
+
+    def test_edits_survive_switching(self, setup):
+        md, store, apply = setup
+        store.open(ParameterSet(ROWS, name="A.csv"), md, apply, path="/saves/A.csv")
+        md["CO"].temp = 777.0
+        store.open(ParameterSet([_row("CO", 400.0)], name="B.csv"), md, apply, path="/saves/B.csv")
+        assert list(md) == ["CO"] and md["CO"].temp == 400.0 and not store.is_modified(md)
+        assert store.is_modified(name="A.csv")
+
+        # Opening A's file again returns to its in-memory version, edits included
+        assert store.open(ParameterSet(ROWS, name="A.csv"), md, apply, path="/saves/A.csv") == "A.csv"
+        assert md["CO"].temp == 777.0 and list(md) == ["CO", "COb", "COc"]
+        assert store.is_modified(md) and store.names == ["A.csv", "B.csv"]
+
+    def test_revert(self, setup):
+        md, store, apply = setup
+        store.open(ParameterSet(ROWS, name="A.csv"), md, apply, path="/saves/A.csv")
+        md["CO"].temp = 777.0
+        del md["COc"]
+        assert store.revert(md, apply)
+        assert md["CO"].temp == 600.0 and "COc" in md and not store.is_modified(md)
+
+    def test_changes_without_callbacks_count(self, setup):
+        md, store, apply = setup
+        store.open(ParameterSet(ROWS, name="A.csv"), md, apply, path="/saves/A.csv")
+        md["COb"].color = "purple"           # plain attribute: no change callback
+        assert store.is_modified(md)
+        store.revert(md, apply)
+        md.bulk_update_parameters({"temp": 1234.0})  # notifications skipped
+        assert store.is_modified(md)
+
+    def test_saving_moves_the_edits_to_the_saved_set(self, setup):
+        md, store, apply = setup
+        store.open(ParameterSet(ROWS, name="A.csv"), md, apply, path="/saves/A.csv")
+        md["CO"].temp = 777.0
+        assert store.mark_saved(md, "/saves/spectrum-molsave.csv") == "spectrum-molsave.csv"
+        assert store.active == "spectrum-molsave.csv" and not store.is_modified(md)
+        assert not store.is_modified(name="A.csv")  # A is back to its own saved version
+        store.switch("A.csv", md, apply)
+        assert md["CO"].temp == 600.0
+
+    def test_saving_back_to_the_open_file(self, setup):
+        md, store, apply = setup
+        store.open(ParameterSet(ROWS, name="A.csv"), md, apply, path="/saves/A.csv")
+        md["CO"].temp = 777.0
+        assert store.mark_saved(md, "/saves/./A.csv") == "A.csv" and store.names == ["A.csv"]
+        assert not store.is_modified(md)
+
+    def test_pathless_sets_open_fresh_and_names_stay_unique(self, setup):
+        md, store, apply = setup
+        store.open(ParameterSet(ROWS, name="Defaults"), md, apply)
+        md["CO"].temp = 777.0
+        store.open(ParameterSet(ROWS, name="Defaults"), md, apply)
+        assert md["CO"].temp == 600.0 and store.names == ["Defaults"]
+        store.open(ParameterSet(ROWS, name="set.csv"), md, apply, path="/a/set.csv")
+        assert store.open(ParameterSet(ROWS, name="set.csv"), md, apply, path="/b/set.csv") == "set.csv (2)"
+
+    def test_unknown_set(self, setup):
+        md, store, apply = setup
+        with pytest.raises(KeyError):
+            store.switch("nope", md, apply)
+        assert not store.revert(md, apply) and not store.is_modified(md)
+
+
+class TestIslatParameterSets:
+    @pytest.fixture
+    def islat(self, dicts):
+        from iSLAT.iSLATClass import iSLAT
+        obj = iSLAT.__new__(iSLAT)
+        obj._user_settings = {"default_active_molecule": "CO", "intensity_calculation_method": "curve_growth"}
+        obj._initial_molecule_parameters = {}
+        obj.molecules_dict = dicts(ROWS)
+        obj.parameter_sets = ParameterSetStore()
+        obj.GUI = None
+        return obj
+
+    def test_save_open_and_revert(self, islat, tmp_path):
+        a = str(tmp_path / "A-molsave.csv")
+        assert islat.save_parameters_to(a) == a
+        assert islat.parameter_sets.active == "A-molsave.csv"
+
+        islat.molecules_dict["CO"].temp = 1500.0
+        b = str(tmp_path / "B.csv")
+        islat.save_parameters_to(b)
+        islat.molecules_dict["CO"].temp = 1600.0
+
+        assert islat._load_parameters_from_explicit_file(a)  # B's edit stays in memory
+        assert islat.molecules_dict["CO"].temp == 600.0
+        islat.open_parameter_set(ParameterSet.from_csv(b), path=b)
+        assert islat.molecules_dict["CO"].temp == 1600.0
+        assert islat.revert_parameters() and islat.molecules_dict["CO"].temp == 1500.0
+
+
+class TestTopBarSave:
+    @pytest.fixture
+    def top_bar(self, monkeypatch):
+        mod = importlib.import_module("iSLAT.Modules.GUI.Widgets.TopBar")
+        bar = mod.TopBar.__new__(mod.TopBar)
+        bar.islat = MagicMock()
+        bar.islat.GUI = None
+        bar.islat.parameter_sets = ParameterSetStore()
+        ask = MagicMock(return_value="yes")
+        monkeypatch.setattr(mod.messagebox, "askquestion", ask)
+        return bar, ask
+
+    def test_no_question_when_saving_the_set_being_edited(self, top_bar, tmp_path):
+        bar, ask = top_bar
+        target = tmp_path / "spec-molsave.csv"
+        target.write_text("x")
+        bar.islat.spectrum_parameter_file.return_value = str(target)
+        bar.islat.parameter_sets._set("spec-molsave.csv", ParameterSet([]), str(target))
+        bar.save_parameters()
+        ask.assert_not_called()
+        bar.islat.save_parameters_to.assert_called_once_with(str(target))
+
+    def test_asks_before_replacing_another_sets_file(self, top_bar, tmp_path):
+        bar, ask = top_bar
+        target = tmp_path / "spec-molsave.csv"
+        target.write_text("x")
+        bar.islat.spectrum_parameter_file.return_value = str(target)
+        ask.return_value = "no"
+        bar.save_parameters()
+        ask.assert_called_once()
+        bar.islat.save_parameters_to.assert_not_called()

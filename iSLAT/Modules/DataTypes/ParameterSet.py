@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Union
 
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
     from .Molecule import Molecule
     from .MoleculeDict import MoleculeDict
 
-__all__ = ["APPLIED_PARAMETERS", "SAVE_COLUMNS", "ApplyResult", "ParameterSet"]
+__all__ = ["APPLIED_PARAMETERS", "SAVE_COLUMNS", "ApplyResult", "ParameterSet", "ParameterSetStore"]
 
 SAVE_COLUMNS = (
     "Molecule Name", "File Path", "Molecule Label", "Temp", "Rad", "N_Mol", "Color", "Vis",
@@ -199,3 +200,120 @@ def _copy_parameters(source: "Molecule", target: "Molecule") -> bool:
             setattr(target, attribute, value)
             display_changed = True
     return bool(changes) or display_changed
+
+
+class ParameterSetStore:
+    """The parameter sets of a session, each with its in-memory edits and last saved version.
+
+    One set is active: the molecules show it.  Opening or switching to another
+    set first keeps the active set's current parameters in memory, so no edits
+    are lost; saving and reverting work on the active set.  A set is modified
+    when its parameters differ from its last saved (or opened) version.
+    """
+
+    def __init__(self) -> None:
+        self._current: Dict[str, ParameterSet] = {}
+        self._saved: Dict[str, ParameterSet] = {}
+        self._paths: Dict[str, Optional[str]] = {}
+        self.active: Optional[str] = None
+
+    @property
+    def names(self) -> List[str]:
+        return list(self._current)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._current
+
+    def path(self, name: Optional[str] = None) -> Optional[str]:
+        return self._paths.get(name or self.active)
+
+    def find(self, path: Optional[str]) -> Optional[str]:
+        """The set opened from or saved to *path*, if any."""
+        if not path:
+            return None
+        key = _path_key(path)
+        return next((n for n, p in self._paths.items() if p and _path_key(p) == key), None)
+
+    def is_modified(self, molecules_dict: Optional["MoleculeDict"] = None, name: Optional[str] = None) -> bool:
+        """Whether set *name* (default: the active one, read from *molecules_dict*) has unsaved changes."""
+        name = name or self.active
+        if name not in self._saved:
+            return False
+        if name == self.active and molecules_dict is not None:
+            current = ParameterSet.capture(molecules_dict)
+        else:
+            current = self._current[name]
+        return current.rows() != self._saved[name].rows()
+
+    def open(self, parameter_set: ParameterSet, molecules_dict: "MoleculeDict", apply,
+             path: Optional[str] = None) -> str:
+        """Make *parameter_set* (read from *path*) the active set; returns its name.
+
+        A set already opened from *path* is switched to instead, keeping its
+        in-memory edits.  A set without a path (e.g. the defaults) is applied
+        fresh, replacing a path-less set of the same name.  *apply* applies a
+        set to the molecules (``iSLAT.apply_parameter_set``).
+        """
+        existing = self.find(path)
+        if existing:
+            self.switch(existing, molecules_dict, apply)
+            return existing
+        self._stash_active(molecules_dict)
+        apply(parameter_set)
+        name = parameter_set.name or (os.path.basename(path) if path else "Parameters")
+        if path or self._paths.get(name, "") is not None:
+            name = self._unique_name(name)
+        self._set(name, ParameterSet.capture(molecules_dict, name), path)
+        return name
+
+    def switch(self, name: str, molecules_dict: "MoleculeDict", apply) -> None:
+        """Show set *name*, keeping the active set's current parameters in memory."""
+        if name not in self._current:
+            raise KeyError(f"No parameter set named {name!r}")
+        if name == self.active:
+            return
+        self._stash_active(molecules_dict)
+        apply(self._current[name])
+        self.active = name
+
+    def mark_saved(self, molecules_dict: "MoleculeDict", path: str) -> str:
+        """Record that the molecules' parameters were written to *path*; returns that set's name.
+
+        The set for *path* (created if new) becomes active and unmodified.  When
+        another set was active, its edits now live in the saved set, so it goes
+        back to its own last saved version.
+        """
+        target = self.find(path)
+        if self.active and self.active != target:
+            self._current[self.active] = self._saved[self.active]
+        name = target or self._unique_name(os.path.basename(path))
+        self._set(name, ParameterSet.capture(molecules_dict, name), path)
+        return name
+
+    def revert(self, molecules_dict: "MoleculeDict", apply) -> bool:
+        """Restore the active set's last saved version; returns whether there was one."""
+        if self.active not in self._saved:
+            return False
+        saved = self._saved[self.active]
+        apply(saved)
+        self._current[self.active] = saved
+        return True
+
+    def _set(self, name: str, snapshot: ParameterSet, path: Optional[str]) -> None:
+        self._current[name] = self._saved[name] = snapshot
+        self._paths[name] = path
+        self.active = name
+
+    def _stash_active(self, molecules_dict: "MoleculeDict") -> None:
+        if self.active in self._current:
+            self._current[self.active] = ParameterSet.capture(molecules_dict, self.active)
+
+    def _unique_name(self, name: str) -> str:
+        candidate, n = name, 2
+        while candidate in self._current:
+            candidate, n = f"{name} ({n})", n + 1
+        return candidate
+
+
+def _path_key(path: str) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))

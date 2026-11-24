@@ -577,6 +577,7 @@ class InteractionHandler:
         "save_parameters_to_file": "_save_parameters_to_file",
         "load_parameters": "_load_parameters",
         "load_parameters_from_file": "_load_parameters_from_file",
+        "revert_parameters": "_revert_parameters",
         "select_previous_molecule": "_select_previous_molecule",
         "select_next_molecule": "_select_next_molecule",
         "cycle_spectrum_previous": "_cycle_spectrum_previous",
@@ -1454,6 +1455,12 @@ class InteractionHandler:
             if hasattr(self.islat.GUI.top_bar, 'load_parameters'):
                 self.islat.GUI.top_bar.load_parameters()
     
+    def _revert_parameters(self):
+        """Discard unsaved parameter changes (command palette), as the Manage Molecules menu does."""
+        top_bar = self._gui_part("top_bar")
+        if top_bar is not None:
+            top_bar.revert_parameters()
+
     def _load_parameters_from_file(self):
         """Load parameters from a user-selected file in the SAVES folder"""
         if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'top_bar'):

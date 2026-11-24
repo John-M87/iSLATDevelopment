@@ -257,6 +257,7 @@ class TopBar(ResizableFrame):
         molecule_menu.add_command(label=load_params_file_label, command=self.load_parameters_from_file)
         molecule_menu.add_command(label="Import Parameters From File", command=self.import_parameters_from_file)
         molecule_menu.add_command(label=save_params_file_label, command=self.save_parameters_to_file)
+        molecule_menu.add_command(label="Revert Parameters", command=self.revert_parameters)
         molecule_drpdwn.config(menu=molecule_menu)
         MenuToolTip(molecule_menu, {
             "HITRAN Query":                        "Open the HITRAN molecule selector\nto query and add molecules by species.",
@@ -271,6 +272,7 @@ class TopBar(ResizableFrame):
             load_params_file_label:                action_description("load_parameters_from_file"),
             "Import Parameters From File":         "Load molecules from a CSV save file\nand add them to the existing set\nwithout replacing current molecules.",
             save_params_file_label:                action_description("save_parameters_to_file"),
+            "Revert Parameters":                   action_description("revert_parameters"),
         })
 
         spec_functions_drpwn = create_menu_btn(self.button_frame, self.theme, "Spectral Functions", 0, 1)
@@ -1322,65 +1324,56 @@ class TopBar(ResizableFrame):
         LineSearchWindow.open(self.master, self.islat, self.theme, self.main_plot)
 
     def save_parameters(self, file_path = None, auto = False):
-        """
-        Save current molecule parameters to CSV file.
-        """
-        # Display confirmation dialog
-        confirmed = messagebox.askquestion(
-            "Confirmation",
-            "Sure you want to save? This will overwrite any previous save for this spectrum file."
-        )
-        if confirmed == "no":
-            return
-        
-        # Get the loaded spectrum name for filename
-        spectrum_name = getattr(self.islat, 'loaded_spectrum_name', 'unknown')
-        
-        from iSLAT.Modules.FileHandling import molsave_file_name
+        """Save the molecule parameters to the loaded spectrum's save file (Ctrl/Cmd+S).
 
+        Asks first only when that file holds a different parameter set than
+        the one being edited.
+        """
+        target = file_path or self.islat.spectrum_parameter_file()
+        store = self.islat.parameter_sets
+        editing_target = store.active is not None and store.find(target) == store.active
+        if (not auto and os.path.exists(target) and not editing_target
+                and messagebox.askquestion(
+                    "Confirmation",
+                    f"Replace the saved parameters in {os.path.basename(target)} "
+                    "with the current ones?") == "no"):
+            return
+        self._save_parameters_to(target)
+
+    def _save_parameters_to(self, target):
         try:
-            # Save the current molecule parameters
-            saved_file = write_molecules_to_csv(
-                self.islat.molecules_dict, 
-                loaded_spectrum_name=spectrum_name,
-                file_name=molsave_file_name
-            )
-                
-            # Also save to the general molecules list for session persistence
-            #write_molecules_list_csv(self.islat.molecules_dict, loaded_spectrum_name=spectrum_name)
-            
-            if saved_file:
-                # Update the data field to show success message
-                if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'data_field'):
-                    self.islat.GUI.data_field.insert_text(
-                        f'Molecule parameters saved to: {saved_file}',
-                        clear_after=True
-                    )
-                print(f"Molecule parameters saved successfully to: {saved_file}")
-            else:
-                print("Failed to save molecule parameters")
-                
+            saved_file = self.islat.save_parameters_to(target)
+            message = (f'Molecule parameters saved to: {saved_file}' if saved_file
+                       else 'Failed to save molecule parameters')
         except Exception as e:
-            print(f"Error saving parameters: {e}")
-            if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'data_field'):
-                self.islat.GUI.data_field.insert_text(
-                    f'Error saving parameters: {str(e)}',
-                    clear_after=True
-                )
-    
+            message = f'Error saving parameters: {e}'
+        print(message)
+        self._show_message(message)
+
+    def _show_message(self, message, clear_after=True):
+        data_field = getattr(getattr(self.islat, 'GUI', None), 'data_field', None)
+        if data_field is not None:
+            data_field.insert_text(message, clear_after=clear_after)
+
+    def revert_parameters(self):
+        """Discard the unsaved changes to the active parameter set."""
+        store = self.islat.parameter_sets
+        if store.active is None or not store.is_modified(self.islat.molecules_dict):
+            self._show_message('No unsaved parameter changes to revert.')
+            return
+        if messagebox.askquestion(
+                "Revert Parameters",
+                f"Discard the unsaved changes to {store.active}?") == "no":
+            return
+        self.islat.revert_parameters()
+        self.islat._refresh_gui_after_parameter_change()
+        self._show_message(f'Reverted to the saved parameters of {store.active}.')
+
     def load_parameters(self):
         """
         Load molecule parameters from CSV file for the current spectrum.
         Uses the iSLAT class's _load_spectrum_parameters method.
         """
-        # Display confirmation dialog
-        confirmed = messagebox.askquestion(
-            "Confirmation",
-            "Are you sure you want to load parameters? Make sure to save any unsaved changes!"
-        )
-        if confirmed == "no":
-            return
-        
         # Show loading message
         if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'data_field'):
             self.islat.GUI.data_field.insert_text(
@@ -1413,14 +1406,6 @@ class TopBar(ResizableFrame):
         if not selected_file:
             return  # User cancelled
         
-        # Display confirmation dialog
-        confirmed = messagebox.askquestion(
-            "Confirmation",
-            f"Are you sure you want to load parameters from:\n{os.path.basename(selected_file)}?\n\nMake sure to save any unsaved changes!"
-        )
-        if confirmed == "no":
-            return
-        
         # Show loading message
         if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'data_field'):
             self.islat.GUI.data_field.insert_text(
@@ -1450,7 +1435,7 @@ class TopBar(ResizableFrame):
                     )
                 return
             
-            self.islat.apply_parameter_set(ParameterSet(mole_save_data, name=file_name))
+            self.islat.open_parameter_set(ParameterSet(mole_save_data, name=file_name), path=selected_file)
             
             # Update GUI components
             if hasattr(self.islat, 'GUI'):
@@ -1574,33 +1559,7 @@ class TopBar(ResizableFrame):
         if not selected_file:
             return  # User cancelled
 
-        try:
-            file_dir = os.path.dirname(selected_file)
-            file_name = os.path.basename(selected_file)
-
-            saved_file = write_molecules_to_csv(
-                self.islat.molecules_dict,
-                file_path=file_dir,
-                file_name=file_name
-            )
-
-            if saved_file:
-                if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'data_field'):
-                    self.islat.GUI.data_field.insert_text(
-                        f'Molecule parameters saved to: {saved_file}',
-                        clear_after=True
-                    )
-                print(f"Molecule parameters saved successfully to: {saved_file}")
-            else:
-                print("Failed to save molecule parameters")
-
-        except Exception as e:
-            print(f"Error saving parameters to file: {e}")
-            if hasattr(self.islat, 'GUI') and hasattr(self.islat.GUI, 'data_field'):
-                self.islat.GUI.data_field.insert_text(
-                    f'Error saving parameters: {str(e)}',
-                    clear_after=True
-                )
+        self._save_parameters_to(selected_file)
 
     def retreat_plot_start(self, extra_amount: Optional[float] = None):
         """Retreat the plot start by the current range value."""

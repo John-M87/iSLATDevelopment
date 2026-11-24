@@ -18,7 +18,7 @@ from .Modules.FileHandling.line_list_paths import to_portable_line_list_path
 from . import Constants as c
 from .Modules.DataTypes.Molecule import Molecule
 from .Modules.DataTypes.MoleculeDict import MoleculeDict
-from .Modules.DataTypes.ParameterSet import ApplyResult, ParameterSet
+from .Modules.DataTypes.ParameterSet import ApplyResult, ParameterSet, ParameterSetStore
 from .Modules.Debug.DebugConfig import debug_config
 
 from iSLAT import __version__ as iSLAT_version
@@ -72,6 +72,9 @@ class iSLAT:
         self._line_list_change_callbacks: list = []
         self.output_line_measurements = None
         
+        # Parameter sets opened or saved this session (see open_parameter_set)
+        self.parameter_sets = ParameterSetStore()
+
         # === SAMPLE SPECTRA ===
         self.sample_spectra: list[str] = []       # file paths of all spectra in the sample
         self.sample_spectra_index: int = 0        # index into sample_spectra for currently displayed spectrum
@@ -164,6 +167,37 @@ class iSLAT:
             print(f"Error loading molecule '{name}': {error}")
         print(f"Applied parameters {parameter_set.name or ''}: {result.summary()}")
         return result
+
+    def open_parameter_set(self, parameter_set: ParameterSet, path: Optional[str] = None) -> str:
+        """Show *parameter_set* (read from *path*) as the active set; returns its name.
+
+        The active set's current parameters stay in memory, so switching never
+        loses edits; a set already opened from *path* is switched back to.
+        """
+        if not hasattr(self, "molecules_dict"):
+            self.molecules_dict = MoleculeDict()
+        return self.parameter_sets.open(parameter_set, self.molecules_dict, self.apply_parameter_set, path=path)
+
+    def spectrum_parameter_file(self) -> str:
+        """The save file of the loaded spectrum's parameters (it may not exist yet)."""
+        spectrum_name = getattr(self, 'loaded_spectrum_name', 'unknown')
+        base = os.path.splitext(spectrum_name)[0] if spectrum_name != "unknown" else "default"
+        save_file = os.path.join(save_folder_path, f"{base}-{molsave_file_name}")
+        old_style = os.path.join(save_folder_path, f"{base}.csv-{molsave_file_name}")
+        return old_style if not os.path.exists(save_file) and os.path.exists(old_style) else save_file
+
+    def save_parameters_to(self, path: str) -> Optional[str]:
+        """Write the molecules' parameters to *path*; that file's set becomes the active, saved set."""
+        from .Modules.FileHandling.iSLATFileHandling import write_molecules_to_csv
+        saved_file = write_molecules_to_csv(self.molecules_dict, file_path=os.path.dirname(path) or ".",
+                                            file_name=os.path.basename(path))
+        if saved_file:
+            self.parameter_sets.mark_saved(self.molecules_dict, saved_file)
+        return saved_file
+
+    def revert_parameters(self) -> bool:
+        """Restore the active parameter set to its last saved version; returns whether it did."""
+        return self.parameter_sets.revert(self.molecules_dict, self.apply_parameter_set)
 
     def init_molecules(self, mole_save_data=None, use_parallel=False):
         """
@@ -443,7 +477,7 @@ class iSLAT:
                 return
 
             if reset:
-                self.apply_parameter_set(ParameterSet(self.default_molecule_csv_data, name="defaults"))
+                self.open_parameter_set(ParameterSet(self.default_molecule_csv_data, name="Defaults"))
             else:
                 use_parallel_loading = use_parallel or self.use_parallel_processing
                 self.init_molecules(self.default_molecule_csv_data, use_parallel=use_parallel_loading)
@@ -538,14 +572,7 @@ class iSLAT:
             self._initialize_molecules_for_spectrum()
             return
         
-        # Build the expected save file path
-        spectrum_name = getattr(self, 'loaded_spectrum_name', 'unknown')
-        spectrum_base_name = os.path.splitext(spectrum_name)[0] if spectrum_name != "unknown" else "default"
-        save_file = os.path.join(save_folder_path, f"{spectrum_base_name}-{molsave_file_name}")
-        
-        # Try alternative naming convention
-        if not os.path.exists(save_file):
-            save_file = os.path.join(save_folder_path, f"{spectrum_base_name}.csv-{molsave_file_name}")
+        save_file = self.spectrum_parameter_file()
         
         if not os.path.exists(save_file):
             print(f"No save file found at: {save_file}")
@@ -567,7 +594,7 @@ class iSLAT:
                 raise ValueError("the save file holds no molecules")
 
             start_time = time.time()
-            self.apply_parameter_set(ParameterSet(mole_save_data, name=os.path.basename(save_file)))
+            self.open_parameter_set(ParameterSet(mole_save_data, name=os.path.basename(save_file)), path=save_file)
             elapsed_time = time.time() - start_time
 
             print(f"Successfully loaded {len(mole_save_data)} molecules from: {save_file}")
@@ -615,7 +642,7 @@ class iSLAT:
                 print(f"[SampleManager] No molecule data in {param_file}")
                 return False
 
-            self.apply_parameter_set(ParameterSet(mole_save_data, name=os.path.basename(param_file)))
+            self.open_parameter_set(ParameterSet(mole_save_data, name=os.path.basename(param_file)), path=param_file)
 
             msg = f"Loaded parameters from: {os.path.basename(param_file)}"
             print(f"[SampleManager] {msg}")

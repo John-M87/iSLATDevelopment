@@ -98,6 +98,7 @@ DEFAULT_KEYMAP: Dict[str, Tuple[str, ...]] = {
     "save_parameters_to_file": ("Ctrl+Shift+S",),
     "load_parameters": ("Ctrl+L",),
     "load_parameters_from_file": ("Ctrl+Shift+L",),
+    "revert_parameters": (),  # no default key: it discards edits
     "select_previous_molecule": ("Up",),
     "select_next_molecule": ("Down",),
     "cycle_spectrum_previous": ("Left",),
@@ -175,6 +176,7 @@ ACTION_DESCRIPTIONS: Dict[str, str] = {
     "load_parameters_from_file": (
         "Load molecule parameters from\na user-selected CSV save file,\nreplacing existing molecules."
     ),
+    "revert_parameters": "Discard the unsaved changes to the\nactive parameter set (back to its\nlast saved version).",
     "select_previous_molecule": "Make the molecule above the active one\nin the control panel active.",
     "select_next_molecule": "Make the molecule below the active one\nin the control panel active.",
     "cycle_spectrum_previous": "Switch to the previous spectrum\nin the loaded sample.",
