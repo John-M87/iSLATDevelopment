@@ -23,6 +23,7 @@ from .OpticalDepthPanel import (
     FRACTION_YLIM,
     tau_axis_label,
     tau_normalization,
+    tau_ylim,
 )
 from .BasePlot import BasePlot
 from .ModelOverlays import build_molecule_traces
@@ -89,6 +90,9 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     **kwargs
         Forwarded to :class:`StackedSpectralPanel`.
     """
+    #: Per-cell Y limits of the flux sub-panels (``None``: no flux sub-panels).
+    _flux_ylims: Optional[List[Tuple[float, float]]] = None
+
     default_fig_width = 12.0
 
     def __init__(
@@ -225,59 +229,19 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
     # Y-limit functions
     # ------------------------------------------------------------------
     def _tau_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
-        """Per-panel y-limit function driven by pre-computed tau cache.
-
-        Falls back to a simple default if the cache is not yet available.
-        Shares (``"fraction"`` mode) always span 0 to 1.
-        """
+        """Per-panel τ limits from the cached traces (see :func:`tau_ylim`); shares always span 0 to 1."""
         if self.display_mode == "fraction":
             return FRACTION_YLIM
         cache = getattr(self, "_mol_tau_cache", [])
-        if not cache:
+        if not cache or not np.any(mask):
             return (self.tau_floor, 1.0) if self.log_scale else (0.0, 1.0)
-
-        xmin = float(np.nanmin(self.wave_data[mask])) if np.any(mask) else 0.0
-        xmax = float(np.nanmax(self.wave_data[mask])) if np.any(mask) else 1.0
-
-        max_tau = 0.0
-        for m_lam, m_tau, *_ in cache:
-            m_mask = (m_lam >= xmin) & (m_lam <= xmax)
-            if np.any(m_mask):
-                finite = np.isfinite(m_tau[m_mask])
-                if np.any(finite):
-                    # Use sum if stacked to get total height
-                    max_tau = max(max_tau, float(np.nanmax(m_tau[m_mask][finite])))
-
-        # For stacked fill, sum contributions at peak
-        if self.stacked_fill and len(cache) > 1:
-            sum_tau = None
-            for m_lam, m_tau, *_ in cache:
-                m_mask = (m_lam >= xmin) & (m_lam <= xmax)
-                if np.any(m_mask):
-                    seg = m_tau[m_mask]
-                    if sum_tau is None:
-                        sum_tau = np.zeros_like(seg)
-                    if len(seg) == len(sum_tau):
-                        sum_tau = sum_tau + seg
-            if sum_tau is not None and len(sum_tau) > 0:
-                finite = np.isfinite(sum_tau)
-                if np.any(finite):
-                    max_tau = float(np.nanmax(sum_tau[finite]))
-
-        if max_tau <= 0:
-            max_tau = 1.0
-
-        if self.log_scale:
-            return (self.tau_floor, max_tau * 2.0)
-        return (0.0, max_tau * 1.1)
-
-    def _flux_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
-        """Per-panel flux sub-panel limits: the observed flux, as in :class:`FullSpectrumPlot`."""
-        return self._default_ylim_fn(self.wave_data, self.flux_data, mask, self.ymax_factor)
+        wave = self.wave_data[mask]
+        return tau_ylim(cache, float(np.nanmin(wave)), float(np.nanmax(wave)),
+                        stacked=self.stacked_fill, log_scale=self.log_scale, tau_floor=self.tau_floor)
 
     def compute_flux_ylims(self) -> List[Tuple[float, float]]:
         """Return the automatic ``(ymin, ymax)`` of every flux sub-panel (each scaled independently)."""
-        return self._compute_panel_ylims(uniform=False, ylim_fn=self._flux_ylim_fn)
+        return self._compute_panel_ylims(uniform=False)
 
     def _apply_stem_ylims(self) -> None:
         """Fit each panel's y-limits to its tallest stem (``"stem"`` mode).
@@ -363,18 +327,13 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
         return panels
 
     # ------------------------------------------------------------------
-    def _post_render_cell(
-        self,
-        idx: int,
-        cell_panels: List[SpectralPanel],
-        is_last: bool,
-    ) -> None:
+    def _apply_cell_ylims(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        for panel, ylims in zip(cell_panels, (self._panel_ylims, self._flux_ylims)):
+            if ylims is not None and idx < len(ylims):
+                panel.ax.set_ylim(*ylims[idx])
+
+    def _style_cell(self, cell_panels: List[SpectralPanel], is_last: bool) -> None:
         fg = self._get_theme_value("foreground", "black")
-
-        ylims = getattr(self, "_panel_ylims", None)
-        if ylims is not None and idx < len(ylims):
-            cell_panels[0].ax.set_ylim(*ylims[idx])
-
         ax = cell_panels[0].ax
         flux_ax = cell_panels[1].ax if len(cell_panels) > 1 else None
 
@@ -392,16 +351,9 @@ class OpticalDepthSpectrumPlot(StackedSpectralPanel):
             # Drop τ's bottom tick label so it does not collide with the
             # flux panel's top one at the shared edge.
             ax.yaxis.set_major_locator(MaxNLocator(nbins=self._y_tick_bins(ax), prune="lower"))
-            flux_ylims = getattr(self, "_flux_ylims", None)
-            if flux_ylims is not None and idx < len(flux_ylims):
-                flux_ax.set_ylim(*flux_ylims[idx])
             flux_ax.set_ylabel("Jy", fontsize=8, color=fg)
             self._style_cell_axes(flux_ax, is_last=is_last, x_nbins=6, y_nbins=None)
             flux_ax.yaxis.set_major_locator(MaxNLocator(nbins=self._y_tick_bins(flux_ax), prune="both"))
-
-        if self.gap_mode is GapMode.SKIP:
-            for panel in cell_panels:
-                panel.draw_gap_indicators()
 
     def _y_tick_bins(self, ax: Axes) -> int:
         """2-4 y-tick intervals depending on *ax*'s height, so short sub-panels stay legible."""

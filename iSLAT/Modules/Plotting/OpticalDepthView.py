@@ -352,9 +352,7 @@ class OpticalDepthView(FullSpectrumView):
             return
         pm = self._pm
         if getattr(pm, "active_view", None) is self:
-            # Mirror toggle_three_panel so the back-toggle returns here.
-            pm._pre_threepanel_view_name = self.VIEW_NAME
-            pm.switch_view("Three Panel")
+            pm.open_three_panel()
             root = getattr(self._islat, "root", None)
             if root is not None:
                 root.after(100, lambda: self._apply_selection(xmin, xmax))

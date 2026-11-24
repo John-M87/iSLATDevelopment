@@ -1059,21 +1059,9 @@ class ThreePanelView(ToggleMixin, PlotView, PopulationDiagramContextMixin, LineI
             pm = self._pm
 
             def _open_in_full_spectrum():
-                try:
-                    xmin, xmax = pm.ax1.get_xlim()
-                except Exception:
-                    xmin, xmax = None, None
-                # Mirror the toggle_full_spectrum logic so the back-button works.
-                pm._pre_fullspectrum_view_name = "Three Panel"
-                pm.switch_view("Full Spectrum")
-                if xmin is not None:
-                    try:
-                        pm._full_spectrum_view._set_display_range(xmin, xmax)
-                    except Exception as exc:
-                        debug_config.warning(
-                            "three_panel_view",
-                            f"build_context_menu: _set_display_range failed: {exc}",
-                        )
+                xmin, xmax = pm.ax1.get_xlim()
+                pm.toggle_full_spectrum()
+                pm.active_view._set_display_range(xmin, xmax)
 
             menu.add_command(
                 label="Open in Full Spectrum view",

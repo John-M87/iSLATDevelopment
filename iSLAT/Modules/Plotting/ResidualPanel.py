@@ -17,6 +17,15 @@ from .SpectralPanel import SpectralPanel, GapMode
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
 
+def residual_ylim(flux: np.ndarray, model: np.ndarray, error: Optional[np.ndarray] = None) -> Tuple[float, float]:
+    """Symmetric ``(-pad, pad)`` limits: the largest finite |flux - model| or error, plus 30%."""
+    values = [np.abs(flux - model)] + ([error] if error is not None else [])
+    finite = [v[np.isfinite(v)] for v in values]
+    top = max((float(v.max()) for v in finite if v.size), default=0.0)
+    pad = top * 1.3 if top > 0 else 0.01
+    return (-pad, pad)
+
+
 class ResidualPanel(SpectralPanel):
     """
     Single-axes panel showing ``(data - model)`` residuals.
@@ -216,28 +225,7 @@ class ResidualPanel(SpectralPanel):
 
     # ------------------------------------------------------------------
     def compute_ylim(self, ymax_factor: float = 0.3) -> Tuple[float, float]:
-        """Symmetric y-limits based on the worst-case residual / error.
-
-        Returns ``(-pad, +pad)`` so the zero line sits at the center.
-        """
+        """Symmetric y-limits around zero (see :func:`residual_ylim`)."""
         mask = self.get_panel_mask()
-        panel_flux = self.flux_data[mask]
-        panel_model = self.model_flux_adj[mask]
-        panel_err = (
-            self.error_adj[mask] if self.error_adj is not None else None
-        )
-        if len(panel_flux) > 0:
-            residuals = panel_flux - panel_model
-            finite = np.isfinite(residuals)
-            if np.any(finite):
-                res_abs_max = float(np.nanmax(np.abs(residuals[finite])))
-            else:
-                res_abs_max = 0.0
-            if panel_err is not None and len(panel_err) > 0:
-                finite_err = np.isfinite(panel_err)
-                if np.any(finite_err):
-                    err_max = float(np.nanmax(panel_err[finite_err]))
-                    res_abs_max = max(res_abs_max, err_max)
-            res_pad = res_abs_max * 1.3 if res_abs_max > 0 else 0.01
-            return (-res_pad, res_pad)
-        return (-0.01, 0.01)
+        error = self.error_adj[mask] if self.error_adj is not None else None
+        return residual_ylim(self.flux_data[mask], self.model_flux_adj[mask], error)

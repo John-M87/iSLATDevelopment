@@ -19,7 +19,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from .StackedSpectralPanel import StackedSpectralPanel
-from .SpectralPanel import SpectralPanel, GapMode, peak_ylim
+from .SpectralPanel import SpectralPanel, GapMode
 from .SpectrumPanel import SpectrumPanel
 from .ArtistTags import (
     MOLECULE_TAG, OBSERVED_TAG, SUMMED_TAG,
@@ -208,23 +208,6 @@ class FullSpectrumPlot(StackedSpectralPanel):
         )
 
     # ------------------------------------------------------------------
-    def _spectrum_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
-        """Default per-panel y-limit function (observed spectrum).
-
-        Parameters
-        ----------
-        mask : np.ndarray
-            Boolean mask into :attr:`wave_data` / :attr:`flux_data`
-            selecting the points that fall within the current panel.
-
-        Returns
-        -------
-        tuple[float, float]
-            ``(ymin, ymax)`` for the panel.
-        """
-        return peak_ylim(self.flux_data[mask], self.ymax_factor)
-
-    # ------------------------------------------------------------------
     # StackedSpectralPanel factory
     # ------------------------------------------------------------------
     def _create_cell(
@@ -328,38 +311,25 @@ class FullSpectrumPlot(StackedSpectralPanel):
         return data_y_range(self.wave_data, self.flux_data, ranges)
 
     # ------------------------------------------------------------------
-    def _post_render_cell(
-        self,
-        idx: int,
-        cell_panels: List[SpectralPanel],
-        is_last: bool,
-    ) -> None:
-        """Apply per-panel y-limits, tick formatting, and annotations."""
+    def _apply_cell_ylims(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        """Hide what the display options hide (a hidden fill must not count towards a model Y fit), then set the Y limits."""
         ax = cell_panels[0].ax
-
-        # Visibility first: a hidden summed fill must not count towards a
-        # model-based Y fit.  Limits are then set before the annotations,
-        # whose labels are positioned from the final Y range.
         self._apply_display_visibility(ax)
         ylim = self._resolve_panel_ylim(idx, ax)
         if ylim is not None:
             ax.set_ylim(*ylim)
 
-        self._style_cell_axes(ax, is_last=is_last, x_nbins=6, y_nbins=None)
+    def _style_cell(self, cell_panels: List[SpectralPanel], is_last: bool) -> None:
+        self._style_cell_axes(cell_panels[0].ax, is_last=is_last, x_nbins=6, y_nbins=None)
 
-        # --- Gap indicators (BEFORE annotations so that xlim tightening
-        #     is not undone by annotation artists outside the visible range)
-        if self.gap_mode is GapMode.SKIP:
-            for panel in cell_panels:
-                panel.draw_gap_indicators()
-
-        # --- Draw annotations AFTER gap indicators (use the tightened
-        #     xlim so annotations are clipped to the visible range) ------
+    def _annotate_cell(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        """Mark the atomic and saved lines on the panels that have them (not the residual panels)."""
         for panel in cell_panels:
-            if hasattr(panel, "atomic_lines") and panel.atomic_lines is not None and len(panel.atomic_lines) > 0:
-                panel.plot_atomic_lines(panel.atomic_lines)
-            if hasattr(panel, "line_list") and panel.line_list is not None and len(panel.line_list) > 0:
-                panel.plot_saved_lines(panel.line_list, show_labels=self._saved_line_labels_shown())
+            atomic, saved = getattr(panel, "atomic_lines", None), getattr(panel, "line_list", None)
+            if atomic is not None and len(atomic) > 0:
+                panel.plot_atomic_lines(atomic)
+            if saved is not None and len(saved) > 0:
+                panel.plot_saved_lines(saved, show_labels=self._saved_line_labels_shown())
 
     # ------------------------------------------------------------------
     # Render hooks

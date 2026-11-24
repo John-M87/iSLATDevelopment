@@ -812,16 +812,17 @@ class BasePlot(ABC):
         return None
 
     def clear_active_lines(self, active_lines: List[Any]) -> None:
-        """Remove all active-line artists and clear *active_lines*.
+        """Remove the artists of *active_lines* (``[vline, text, scatter, info]`` entries) and clear it.
 
-        The default implementation simply clears the list without removing matplotlib artists.
-        Subclasses override this to also call ``artist.remove()`` on each stored artist before clearing.
-
-        Parameters
-        ----------
-        active_lines : list
-            The mutable active-lines list to clear (same object that was passed to :meth:`render_active_lines`).
+        Entries may share one scatter artist; each artist is removed once.
         """
+        artists = {id(a): a for entry in active_lines for a in entry[:3] if a is not None}
+        for artist in artists.values():
+            if getattr(artist, "axes", None) is not None:
+                try:
+                    artist.remove()
+                except (ValueError, AttributeError):
+                    pass
         active_lines.clear()
 
     # ------------------------------------------------------------------

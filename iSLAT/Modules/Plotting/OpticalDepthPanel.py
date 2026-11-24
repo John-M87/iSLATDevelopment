@@ -59,6 +59,27 @@ def tau_normalization(display_mode: str) -> str:
     return "area" if display_mode == "density" else "peak"
 
 
+def tau_ylim(cache: List, xmin: float, xmax: float, *, stacked: bool = False,
+             log_scale: bool = False, tau_floor: float = 0.0) -> Tuple[float, float]:
+    """Y limits for the ``(wave, tau, ...)`` traces of *cache* in [*xmin*, *xmax*].
+
+    The top follows the tallest trace, or the traces' sum when they are
+    drawn *stacked*.
+    """
+    segments = [tau[(lam >= xmin) & (lam <= xmax)] for lam, tau, *_ in cache]
+    segments = [seg for seg in segments if seg.size]
+    finite = [seg[np.isfinite(seg)] for seg in segments]
+    max_tau = max((float(seg.max()) for seg in finite if seg.size), default=0.0)
+    if stacked and len(segments) > 1:
+        total = np.sum([seg for seg in segments if len(seg) == len(segments[0])], axis=0)
+        total = total[np.isfinite(total)]
+        if total.size:
+            max_tau = float(total.max())
+    if max_tau <= 0:
+        max_tau = 1.0
+    return (tau_floor, max_tau * 2.0) if log_scale else (0.0, max_tau * 1.1)
+
+
 def tau_axis_label(display_mode: str, short: bool = False) -> str:
     """The y-axis label of *display_mode* (*short* for stacked sub-panels)."""
     if display_mode == "fraction":
@@ -417,22 +438,8 @@ class OpticalDepthPanel(SpectralPanel):
 
     # ------------------------------------------------------------------
     def compute_ylim(self, ymax_factor: float = 0.2) -> Tuple[float, float]:
-        """Compute appropriate y-limits for the optical-depth panel."""
+        """Compute appropriate y-limits for the optical-depth panel (see :func:`tau_ylim`)."""
         if self.display_mode == "fraction":
             return FRACTION_YLIM
-        max_tau = 0.0
-
-        for entry in self.mol_tau_cache:
-            m_lam, m_tau = entry[0], entry[1]
-            m_mask = (m_lam >= self.xlim[0]) & (m_lam <= self.xlim[1])
-            if np.any(m_mask):
-                finite = np.isfinite(m_tau[m_mask])
-                if np.any(finite):
-                    max_tau = max(max_tau, float(np.nanmax(m_tau[m_mask][finite])))
-
-        if max_tau <= 0:
-            max_tau = 1.0
-
-        if self.log_scale:
-            return (self.tau_floor, max_tau * 2.0)
-        return (0.0, max_tau * 1.1)
+        return tau_ylim(self.mol_tau_cache, *self.xlim, stacked=self.stacked_fill,
+                        log_scale=self.log_scale, tau_floor=self.tau_floor)

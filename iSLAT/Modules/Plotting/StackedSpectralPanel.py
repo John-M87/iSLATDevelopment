@@ -153,6 +153,9 @@ class StackedSpectralPanel(CompositePlot):
     **kwargs
         Forwarded to :class:`BasePlot`.
     """
+    #: Per-cell Y limits (set when rendering).
+    _panel_ylims: Optional[List[Tuple[float, float]]] = None
+
     #: Shared y-axis label drawn down the left side of the figure.
     y_axis_label: str = "Flux Density (Jy)"
     #: Figure width (inches) when no *figsize* is given.
@@ -685,41 +688,41 @@ class StackedSpectralPanel(CompositePlot):
         cell_panels: List[SpectralPanel],
         is_last: bool,
     ) -> None:
-        """Called after all panels in a cell have been generated.
+        """Finish a rendered cell: Y limits, axis styling, gap indicators, then annotations.
 
-        Subclasses can override this to add per-row tick formatting,
-        labels, annotations, chi-squared boxes, etc.  The default
-        implementation applies common tick locators and hides x-axis
-        labels on all but the last row.
+        The order matters: gap indicators are drawn once the Y limits are
+        final and may tighten the X limits, which the annotations then clip
+        to.  Subclasses override the steps, not this method.
         """
-        for p_idx, panel in enumerate(cell_panels):
-            ax = panel.ax
-            if ax is None:
-                continue
-            self._style_cell_axes(
-                ax,
-                is_bottom=(p_idx == len(cell_panels) - 1),
-                is_last=is_last,
-                xlabel_fontsize=8,
-            )
-
-        # --- Gap indicators (drawn after y-limits are finalised) -------
+        self._apply_cell_ylims(idx, cell_panels)
+        self._style_cell(cell_panels, is_last)
         if self.gap_mode is GapMode.SKIP:
-            for panel in cell_panels:
-                panel.draw_gap_indicators()
+            self._draw_cell_gaps(cell_panels)
+        self._annotate_cell(idx, cell_panels)
+
+    def _apply_cell_ylims(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        """Set the cell's Y limits.  Default: leave the panels' own."""
+
+    def _style_cell(self, cell_panels: List[SpectralPanel], is_last: bool) -> None:
+        """Tick locators and labels; the X label goes under the cell's bottom panel of the last row."""
+        for p_idx, panel in enumerate(cell_panels):
+            if panel.ax is not None:
+                self._style_cell_axes(panel.ax, is_bottom=(p_idx == len(cell_panels) - 1),
+                                      is_last=is_last, xlabel_fontsize=8)
+
+    def _draw_cell_gaps(self, cell_panels: List[SpectralPanel]) -> None:
+        for panel in cell_panels:
+            panel.draw_gap_indicators()
+
+    def _annotate_cell(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        """Draw line annotations on the cell.  Default: none."""
 
     # ------------------------------------------------------------------
     # y-limit computation
     # ------------------------------------------------------------------
-    @staticmethod
-    def _default_ylim_fn(
-        wave_data: np.ndarray,
-        flux_data: np.ndarray,
-        mask: np.ndarray,
-        ymax_factor: float = 0.2,
-    ) -> Tuple[float, float]:
-        """Compute default ``(ymin, ymax)`` from observed flux (see :func:`peak_ylim`)."""
-        return peak_ylim(flux_data[mask], ymax_factor)
+    def _spectrum_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
+        """One panel's limits from the observed flux under *mask* (see :func:`peak_ylim`)."""
+        return peak_ylim(self.flux_data[mask], self.ymax_factor)
 
     def _compute_panel_ylims(
         self,
@@ -736,17 +739,13 @@ class StackedSpectralPanel(CompositePlot):
             When *True* all entries share a global min/max.  Defaults to
             :attr:`uniform_ylim`.
         ylim_fn : callable, optional
-            ``fn(mask) -> (ymin, ymax)``.  Defaults to a closure around
-            :meth:`_default_ylim_fn`.
+            ``fn(mask) -> (ymin, ymax)``.  Defaults to :meth:`_spectrum_ylim_fn`.
         """
         if uniform is None:
             uniform = self.uniform_ylim
 
         if ylim_fn is None:
-            def ylim_fn(mask: np.ndarray) -> Tuple[float, float]:
-                return self._default_ylim_fn(
-                    self.wave_data, self.flux_data, mask, self.ymax_factor,
-                )
+            ylim_fn = self._spectrum_ylim_fn
 
         ylims: List[Tuple[float, float]] = []
         for idx, xlim_start in enumerate(self._panel_edges):

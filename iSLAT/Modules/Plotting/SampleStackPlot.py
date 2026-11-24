@@ -485,36 +485,31 @@ class SampleStackPlot(FullSpectrumPlot):
         self.subplots[idx] = tuple(axes)
         return panels
 
-    def _post_render_cell(
-        self,
-        idx: int,
-        cell_panels: List[SpectralPanel],
-        is_last: bool,
-    ) -> None:
+    def _apply_cell_ylims(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        for panel in cell_panels:
+            if panel.ax is not None:
+                self._apply_display_visibility(panel.ax)
+                lims = self._stack_panel_ylim(panel)
+                if lims is not None:
+                    panel.ax.set_ylim(*lims)
+
+    def _style_cell(self, cell_panels: List[SpectralPanel], is_last: bool) -> None:
         rows = self.layout == "rows"
         for p_idx, panel in enumerate(cell_panels):
-            ax = panel.ax
-            if ax is None:
+            if panel.ax is None:
                 continue
-            self._apply_display_visibility(ax)
-            lims = self._stack_panel_ylim(panel)
-            if lims is not None:
-                ax.set_ylim(*lims)
             self._style_cell_axes(
-                ax,
-                is_bottom=(p_idx == len(cell_panels) - 1),
-                is_last=is_last,
-                x_nbins=6,
-                y_nbins=3 if rows else None,
-                y_labelsize=6 if rows else 7,
+                panel.ax, is_bottom=(p_idx == len(cell_panels) - 1), is_last=is_last,
+                x_nbins=6, y_nbins=3 if rows else None, y_labelsize=6 if rows else 7,
             )
             if rows:
-                self._draw_row_label(ax, self._axes_spectrum.get(ax))
+                self._draw_row_label(panel.ax, self._axes_spectrum.get(panel.ax))
 
-        if self.gap_mode is GapMode.SKIP and rows:
-            for panel in cell_panels:
-                panel.draw_gap_indicators()
+    def _draw_cell_gaps(self, cell_panels: List[SpectralPanel]) -> None:
+        if self.layout == "rows":
+            super()._draw_cell_gaps(cell_panels)
 
+    def _annotate_cell(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
         if self.atomic_lines is not None and len(self.atomic_lines) > 0:
             self._plot_cell_atomic_lines(cell_panels, self.atomic_lines, "_islat_atomic_line")
         if self.line_list is not None and len(self.line_list) > 0:

@@ -509,6 +509,40 @@ class MainPlotGrid(CompositePlot):
         return True
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _obs_or(wave_data_obs: Optional[np.ndarray], wave_data: np.ndarray) -> np.ndarray:
+        return np.asarray(wave_data_obs) if wave_data_obs is not None else wave_data
+
+    def _reuse_panel(self, panel: "BasePlot", ax: Axes, **attrs: Any) -> "BasePlot":
+        """Point the reused *panel* at *ax* with this grid's theme and the given attributes."""
+        for name, value in attrs.items():
+            setattr(panel, name, value)
+        panel.theme = self.theme
+        panel._external_ax = ax
+        return panel
+
+    def _inspection_plot(self, ax: Axes, **attrs: Any) -> LineInspectionPlot:
+        """The inspection panel on *ax* with *attrs*: created on first use, then reused."""
+        if self.inspection_panel is None:
+            self.inspection_panel = LineInspectionPlot(ax=ax, fig=self.fig, theme=self.theme, **attrs)
+            self._register_panel("inspection", self.inspection_panel)
+            return self.inspection_panel
+        return self._reuse_panel(self.inspection_panel, ax, **attrs)
+
+    def _population_plot(self, ax: Axes, mode: str, **attrs: Any) -> "PopulationDiagramPlot":
+        """The population panel on *ax* with *attrs*, rebuilt when *mode* changes.
+
+        *mode* is ``"molecule"`` or ``"molecules"``: a panel takes only one
+        source, fixed when it is created.
+        """
+        if self.pop_diagram_panel is None or self._pdp_mode != mode:
+            self._close_pop_diagram_panel()
+            self.pop_diagram_panel = PopulationDiagramPlot(ax=ax, fig=self.fig, theme=self.theme, **attrs)
+            self._pdp_mode = mode
+            self._register_panel("popdiagram", self.pop_diagram_panel)
+            return self.pop_diagram_panel
+        return self._reuse_panel(self.pop_diagram_panel, ax, **attrs)
+
     def _render_inspection_panel(self) -> None:
         ax = self.ax_inspection
 
@@ -551,41 +585,11 @@ class MainPlotGrid(CompositePlot):
             # Default (None / False): only the active molecule
             lip_molecule = self.active_molecule
 
-        # Create the LineInspectionPlot on the first call; on subsequent
-        # calls mutate its attributes so the same panel object is reused.
-        if self.inspection_panel is None:
-            self.inspection_panel = LineInspectionPlot(
-                wave_data=self.wave_data,
-                flux_data=self.flux_data,
-                xmin=xmin,
-                xmax=xmax,
-                error_data=self.error_data,
-                molecule=lip_molecule,
-                molecules=lip_molecules,
-                line_data=self.line_data,
-                wave_data_obs=self.wave_data_obs,
-                ax=ax,
-                theme=self.theme,
-            )
-            self._register_panel("inspection", self.inspection_panel)
-        else:
-            self.inspection_panel.wave_data = self.wave_data
-            self.inspection_panel.flux_data = self.flux_data
-            self.inspection_panel.xmin = xmin
-            self.inspection_panel.xmax = xmax
-            self.inspection_panel.error_data = self.error_data
-            self.inspection_panel.molecule = lip_molecule
-            self.inspection_panel.molecules = lip_molecules
-            self.inspection_panel.line_data = self.line_data
-            self.inspection_panel.wave_data_obs = (
-                np.asarray(self.wave_data_obs)
-                if self.wave_data_obs is not None
-                else self.wave_data
-            )
-            self.inspection_panel.theme = self.theme
-            # Ensure the panel targets the correct axes object.
-            self.inspection_panel._external_ax = ax
-
+        self._inspection_plot(
+            ax, wave_data=self.wave_data, flux_data=self.flux_data, xmin=xmin, xmax=xmax,
+            error_data=self.error_data, molecule=lip_molecule, molecules=lip_molecules,
+            line_data=self.line_data, wave_data_obs=self._obs_or(self.wave_data_obs, self.wave_data),
+        )
         self.inspection_panel.generate_plot()
 
     # ------------------------------------------------------------------
@@ -626,30 +630,8 @@ class MainPlotGrid(CompositePlot):
             ax.set_title("Population Diagram -- no molecule selected")
             return
 
-        # Recreate the panel only when the mode switches (molecule ↔ molecules),
-        # since PopulationDiagramPlot enforces mutual exclusivity at construction.
-        # Otherwise reuse the existing instance by mutating its attributes.
-        if self.pop_diagram_panel is None or self._pdp_mode != new_mode:
-            self._close_pop_diagram_panel()
-            self.pop_diagram_panel = PopulationDiagramPlot(
-                molecule=pdp_molecule,
-                molecules=pdp_molecules,
-                highlight_lines=self.line_data,
-                ax=ax,
-                theme=self.theme,
-            )
-            self._pdp_mode = new_mode
-            self._register_panel("popdiagram", self.pop_diagram_panel)
-        else:
-            if new_mode == "molecule":
-                self.pop_diagram_panel.molecule = pdp_molecule
-            else:
-                self.pop_diagram_panel.molecules = pdp_molecules
-            self.pop_diagram_panel.highlight_lines = self.line_data
-            self.pop_diagram_panel.theme = self.theme
-            # Ensure the panel targets the correct axes object.
-            self.pop_diagram_panel._external_ax = ax
-
+        source = {"molecule": pdp_molecule} if new_mode == "molecule" else {"molecules": pdp_molecules}
+        self._population_plot(ax, new_mode, highlight_lines=self.line_data, **source)
         self.pop_diagram_panel.generate_plot()
 
     # ------------------------------------------------------------------
@@ -1006,34 +988,11 @@ class MainPlotGrid(CompositePlot):
         if wave_data_obs is None:
             wave_data_obs = self.wave_data_obs
 
-        # Reuse / create a LineInspectionPlot delegate
-        if self.inspection_panel is None:
-            self.inspection_panel = LineInspectionPlot(
-                wave_data=wave_data,
-                flux_data=flux_data,
-                xmin=xmin,
-                xmax=xmax,
-                molecule=active_molecule,
-                molecules=molecules,
-                wave_data_obs=wave_data_obs,
-                ax=ax,
-                fig=self.fig,
-                theme=self.theme,
-                render_all_visible=False,
-            )
-        else:
-            self.inspection_panel.wave_data = wave_data
-            self.inspection_panel.flux_data = flux_data
-            self.inspection_panel.xmin = xmin
-            self.inspection_panel.xmax = xmax
-            self.inspection_panel.molecule = active_molecule
-            self.inspection_panel.molecules = molecules
-            self.inspection_panel.wave_data_obs = (
-                np.asarray(wave_data_obs) if wave_data_obs is not None
-                else wave_data
-            )
-            self.inspection_panel.render_all_visible = False
-            self.inspection_panel.theme = self.theme
+        self._inspection_plot(
+            ax, wave_data=wave_data, flux_data=flux_data, xmin=xmin, xmax=xmax,
+            molecule=active_molecule, molecules=molecules,
+            wave_data_obs=self._obs_or(wave_data_obs, wave_data), render_all_visible=False,
+        )
         self.inspection_panel.generate_plot()
 
         # Overlay additional (comparison) molecules in their own colors
@@ -1049,8 +1008,6 @@ class MainPlotGrid(CompositePlot):
 
         # Overlay fit results if present
         if fit_result is not None:
-            current_ylim = ax.get_ylim()
-            max_y = current_ylim[1] / 1.1 if current_ylim[1] > 0 else 0.15
             self.inspection_panel.render_fit_results(
                 ax, fit_result, xmin, xmax,
                 legend_visible=legend_visible,
@@ -1081,20 +1038,9 @@ class MainPlotGrid(CompositePlot):
             return
 
         try:
-            panel = self.pop_diagram_panel
-            if panel is None or self._pdp_mode != "molecule":
-                self._close_pop_diagram_panel()
-                panel = self.pop_diagram_panel = PopulationDiagramPlot(
-                    molecule=molecule,
-                    ax=ax,
-                    fig=self.fig,
-                    theme=self.theme,
-                )
-                self._pdp_mode = "molecule"
-            else:
-                if not getattr(panel, "_all_molecules_mode", False):
-                    panel.molecule = molecule
-                panel.theme = self.theme
+            # A panel switched to all molecules (its context menu) keeps its molecules.
+            all_mode = self._pdp_mode == "molecule" and getattr(self.pop_diagram_panel, "_all_molecules_mode", False)
+            panel = self._population_plot(ax, "molecule", **({} if all_mode else {"molecule": molecule}))
             panel.refresh(force=force_redraw)
         except Exception as e:
             ax.clear()
@@ -1135,39 +1081,7 @@ class MainPlotGrid(CompositePlot):
             _SP._clear_old_fit_results(ax, xmin, xmax)
 
     def clear_active_lines(self, active_lines: List[Any]) -> None:
-        """Remove all active-line artists (vlines, text, scatter) and clear the list.
-
-        Overrides :meth:`BasePlot.clear_active_lines` to handle all three
-        artist types (vline, text, scatter) stored across both the
-        inspection and population-diagram panels.
-
-        Parameters
-        ----------
-        active_lines : list
-            Mutable list of ``[line_artist, text_artist, scatter_artist, info_dict]``
-            entries.  The list is cleared in-place.
-        """
-        seen_scatter = set()
-        for entry in active_lines:
-            vline, text = entry[0], entry[1]
-            sc = entry[2] if len(entry) > 2 else None
-            for artist in (vline, text):
-                if artist is not None and getattr(artist, 'axes', None) is not None:
-                    try:
-                        artist.remove()
-                    except (ValueError, AttributeError):
-                        pass
-            if sc is not None and id(sc) not in seen_scatter:
-                seen_scatter.add(id(sc))
-                if getattr(sc, 'axes', None) is not None:
-                    try:
-                        sc.remove()
-                    except (ValueError, AttributeError):
-                        pass
-        active_lines.clear()
-
-        # Clear the pop-diagram scatter cache so the next generate_plot() call
-        # (e.g. from _render_population_diagram_base) does NOT re-render the
-        # active-line scatter that was just removed.
+        """Remove the active-line artists of both lower panels and drop the population diagram's cache."""
+        super().clear_active_lines(active_lines)
         if self.pop_diagram_panel is not None:
             self.pop_diagram_panel._active_lines_cache = None

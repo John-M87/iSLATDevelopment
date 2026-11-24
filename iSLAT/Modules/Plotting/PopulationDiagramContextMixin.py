@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional
 
+from .OwnedCanvasMixin import add_view_switch_items
+
 class PopulationDiagramContextMixin:
     """Mixin that supplies the population-diagram right-click menu and dialogs.
 
@@ -146,47 +148,8 @@ class PopulationDiagramContextMixin:
             state="normal" if _active_info else "disabled",
         )
 
-        # ------------------------------------------------------------------
-        # View switching
-        # ------------------------------------------------------------------
-        pm = getattr(self, '_pm', None)
-        if pm is not None and hasattr(pm, 'switch_view'):
-            menu.add_separator()
-
-            active_name = getattr(pm, 'active_view_name', None)
-
-            if active_name == "Three Panel":
-                # Inside the three-panel layout - offer to pop out to standalone views
-                def _to_population_diagram():
-                    pm.switch_view("Population Diagram")
-
-                def _to_line_inspection():
-                    pm.switch_view("Line Inspection")
-
-                menu.add_command(
-                    label="Switch to Population Diagram View",
-                    command=_to_population_diagram,
-                )
-                menu.add_command(
-                    label="Switch to Line Inspection View",
-                    command=_to_line_inspection,
-                )
-            else:
-                # Already in a standalone view - offer to go back or cross-navigate
-                def _to_three_panel():
-                    pm.switch_view("Three Panel")
-
-                def _to_line_inspection():
-                    pm.switch_view("Line Inspection")
-
-                menu.add_command(
-                    label="Switch to Three Panel View",
-                    command=_to_three_panel,
-                )
-                menu.add_command(
-                    label="Switch to Line Inspection View",
-                    command=_to_line_inspection,
-                )
+        add_view_switch_items(menu, getattr(self, "_pm", None),
+                              ("Population Diagram", "Three Panel", "Line Inspection"))
 
         return menu
 

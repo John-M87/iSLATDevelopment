@@ -25,6 +25,7 @@ from iSLAT.Modules.DataProcessing.LineIdentity import LineRef, match_line
 
 from .ArtistTags import SUMMED_TAG, iter_tagged
 from .ModelOverlays import draw_summed_fill
+from .OwnedCanvasMixin import add_view_switch_items
 
 #: Menu label of "Show in Line List" when there is no line to show.
 SHOW_IN_LINE_LIST_LABEL = "Show in Line List"
@@ -425,48 +426,6 @@ class LineInspectionContextMixin:
                 command=_center_spectrum_on_inspection,
             )
 
-        # ------------------------------------------------------------------
-        # View switching
-        # ------------------------------------------------------------------
-        if pm is not None and hasattr(pm, 'switch_view'):
-            menu.add_separator()
-
-            active_name = getattr(pm, 'active_view_name', None)
-
-            if active_name == "Three Panel":
-                # Inside the three-panel layout - offer to pop out to standalone views
-                def _to_line_inspection():
-                    pm.switch_view("Line Inspection")
-
-                def _to_population_diagram():
-                    pm.switch_view("Population Diagram")
-
-                menu.add_command(
-                    label="Switch to Line Inspection View",
-                    command=_to_line_inspection,
-                )
-                menu.add_command(
-                    label="Switch to Population Diagram View",
-                    command=_to_population_diagram,
-                )
-            else:
-                # Already in a standalone view - offer to go back or cross-navigate
-                def _to_three_panel():
-                    pm.switch_view("Three Panel")
-
-                def _to_population_diagram():
-                    pm.switch_view("Population Diagram")
-
-                in_line_inspection = (active_name == "Line Inspection")
-
-                menu.add_command(
-                    label="Switch to Three Panel View",
-                    command=_to_three_panel,
-                )
-                menu.add_command(
-                    label="Switch to Population Diagram View",
-                    command=_to_population_diagram,
-                    state="disabled" if in_line_inspection and active_name == "Population Diagram" else "normal",
-                )
+        add_view_switch_items(menu, pm, ("Line Inspection", "Three Panel", "Population Diagram"))
 
         return menu

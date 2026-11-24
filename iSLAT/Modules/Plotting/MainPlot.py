@@ -865,7 +865,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
         xmin, xmax = sorted(float(v) for v in window)
 
         if self.active_view_name not in self.LINE_SELECTION_VIEWS:
-            self.switch_view("Three Panel")
+            self.open_three_panel()
         if self.active_view is self._three_panel_view:
             self._center_spectrum_on(lam, xmax - xmin)
 
@@ -1316,8 +1316,7 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
           ``"Full Spectrum"`` if that view is no longer available).
         """
         if self.active_view_name != "Three Panel":
-            self._pre_threepanel_view_name = self.active_view_name
-            self.switch_view("Three Panel")
+            self.open_three_panel()
         else:
             return_to = getattr(self, '_pre_threepanel_view_name', None)
             if return_to not in self._views or return_to == "Three Panel":
@@ -1328,3 +1327,12 @@ class iSLATPlot(WavelengthMarkerStoreMixin):
             "main_plot",
             f"toggle_three_panel: active view \u2192 '{self.active_view_name}'",
         )
+
+    def open_three_panel(self, xmin: Optional[float] = None, xmax: Optional[float] = None) -> None:
+        """Switch to Three Panel (remembering the view to toggle back to), showing [*xmin*, *xmax*] if given."""
+        if self.active_view_name != "Three Panel":
+            self._pre_threepanel_view_name = self.active_view_name
+            self.switch_view("Three Panel")
+        if xmin is not None and xmax is not None:
+            self.islat.display_range = (xmin, xmax)
+            self.match_display_range(match_y=True)

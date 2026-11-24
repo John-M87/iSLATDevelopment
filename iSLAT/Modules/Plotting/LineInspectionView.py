@@ -9,8 +9,6 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
-import matplotlib.pyplot as plt
-
 from .ArtistTags import SUMMED_TAG, iter_tagged, remove_tagged
 from .SpectrumPanelView import SpectrumPanelView
 from .LineInspectionPlot import LineInspectionPlot
@@ -20,7 +18,6 @@ from .PlotView import notify_user
 
 if TYPE_CHECKING:
     from iSLAT.Modules.DataTypes.Molecule import Molecule
-    from iSLAT.Modules.DataTypes.MoleculeDict import MoleculeDict
     from iSLAT.Modules.DataTypes.MoleculeLine import MoleculeLine
     from iSLAT.Modules.DataProcessing.LineIdentity import LineRef
     from typing import Dict
@@ -62,67 +59,23 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         self._line_threshold: Optional[float] = None
         self._drawn_threshold: Optional[float] = None
 
-    # ==================================================================
-    # Internal helpers
-    # ==================================================================
-    def _get_active_molecule(self) -> Optional["Molecule"]:
-        return getattr(self._islat, "active_molecule", None)
-
-    def _get_molecules(self) -> Optional["MoleculeDict"]:
-        return getattr(self._islat, "molecules_dict", None)
-
     def _build_plot(self) -> None:
-        """Draw the plot for the current selection into the owned figure.
-
-        The figure is created once and then cleared and redrawn, so the canvas
-        showing it is kept.  A new figure would need a new canvas widget, which
-        must wait for Tk to lay it out before its first draw.  Clearing the
-        figure and adding a new axes gives the same plot as a new figure:
-        ``Axes.clear()`` alone would keep state such as autoscaling switched
-        off by manual Y limits.
-        """
+        """Draw the plot for the current selection into the owned figure."""
         self._plot = None
-
-        # Clear active lines from any previous render
         self.active_lines.clear()
         self.selected_line = None
-
-        if self._fig is None:
-            self._fig = plt.Figure(figsize=(10, 5), constrained_layout=True)
-        else:
-            self._fig.clear()
-        ax = self._fig.add_subplot(111)
+        ax = self._fresh_axes((10, 5))
 
         sel = self._current_selection
-        if sel is None:
-            # No selection yet - draw a placeholder
-            ax.set_title("Line Inspection")
-            ax.set_xlabel("Wavelength (µm)")
-            ax.set_ylabel("Flux density (Jy)")
-            ax.text(
-                0.5, 0.5,
-                "Drag to select a wavelength range\nin the main spectrum",
-                ha="center", va="center",
-                transform=ax.transAxes,
-                color="gray", fontsize=12,
-            )
+        wave = getattr(self._islat, "wave_data", None)
+        flux = getattr(self._islat, "flux_data", None)
+        if sel is None or wave is None or flux is None or len(wave) == 0:
+            message = ("Drag to select a wavelength range\nin the main spectrum" if sel is None
+                       else "No spectral data available")
+            self._draw_placeholder(ax, "Line Inspection", "Wavelength (µm)", "Flux density (Jy)", message)
             return
 
         xmin, xmax = sel
-        wave = getattr(self._islat, "wave_data", None)
-        flux = getattr(self._islat, "flux_data", None)
-        if wave is None or flux is None or len(wave) == 0:
-            ax.set_title("Line Inspection")
-            ax.set_xlabel("Wavelength (µm)")
-            ax.set_ylabel("Flux density (Jy)")
-            ax.text(
-                0.5, 0.5, "No spectral data available",
-                ha="center", va="center",
-                transform=ax.transAxes,
-                color="gray", fontsize=12,
-            )
-            return
-
         error = getattr(self._islat, "err_data", None)
         mol = self._get_active_molecule()
         mols = self._get_molecules()
@@ -365,64 +318,15 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
     # ==================================================================
     # PlotView - lifecycle
     # ==================================================================
-    def activate(self, parent_frame: Any) -> None:
-        """Pack the line-inspection canvas into *parent_frame*."""
-        self._parent_frame = parent_frame
-
-        # Sync selection from the controller's shared state
+    def _before_activate(self) -> None:
+        """Follow the controller's selection and the shared threshold, and listen for marker clicks again."""
         ctrl_sel = self._pm.toggle_state.get("current_selection")
         if ctrl_sel != self._current_selection:
             self._current_selection = ctrl_sel
             self._needs_refresh = True
-        # The shared threshold this view follows may have changed while it was hidden.
         if self._plot is not None and self._drawn_threshold != self._get_line_threshold():
             self._needs_refresh = True
-
-        if self._initialised and self._shown_frame_is_current():
-            # Unchanged while hidden: re-pack the canvas (it keeps its last frame) without redrawing.
-            self._register_control_fields()
-            self._connect_pick_event()
-            self._show_canvas()
-            self._repaint_shown_frame()
-            return
-
-        rebuilt_on = None
-        if not self._initialised or self._needs_refresh:
-            rebuilt_on = self._canvas
-            self._build_plot()
-            self._initialised = True
-            self._needs_refresh = False
-
-        self._ensure_canvas()
-        if rebuilt_on is not None and self._canvas is rebuilt_on:
-            # New content on the kept canvas: its zoom history no longer applies.
-            self._notify_canvas_changed()
-        self.apply_theme(self._pm.theme)
-        self.sync_toggle_state(self._pm.toggle_state)
-        self._register_control_fields()
         self._connect_pick_event()
-        self._show_canvas()
-        self.draw()
-
-    def _rebuild_and_show(self) -> None:
-        """Redraw the plot (once the view has been shown) on its canvas, themed.
-
-        Before the first activation the view is only marked stale; the
-        next :meth:`activate` builds it.  The canvas is kept, so the main
-        toolbar is told the content changed: zoom history from the previous
-        selection no longer applies, and the new axes need its pan / zoom mode.
-        """
-        self._needs_refresh = True
-        if not self._initialised:
-            return
-        canvas = self._canvas
-        self._build_plot()
-        self._needs_refresh = False
-        self._show_canvas()
-        self.apply_theme(self._pm.theme)
-        if canvas is not None and self._canvas is canvas:
-            # A new canvas has already told the toolbar (_ensure_canvas).
-            self._notify_canvas_changed()
 
     # ==================================================================
     # PlotView - interaction context
@@ -436,7 +340,6 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
 
     def deactivate(self) -> None:
         """Disconnect the pick event, then unregister controls and unpack the canvas."""
-        self._remember_shown_frame()
         self._disconnect_pick_event()
         super().deactivate()
 
@@ -447,20 +350,6 @@ class LineInspectionView(SpectrumPanelView, LineInspectionContextMixin):
         else:
             self.active_lines.clear()
         self.selected_line = None
-
-    # ==================================================================
-    # PlotView - core rendering
-    # ==================================================================
-    def update_model_plot(
-        self,
-        wave_data: Any = None,
-        flux_data: Any = None,
-        molecules_dict: "MoleculeDict" = None,
-        error_data: Optional[Any] = None,
-        **kwargs: Any,
-    ) -> None:
-        """Rebuild the inspection plot from current iSLAT data."""
-        self._rebuild_and_show()
 
     # ==================================================================
     # PlotView - selection (override base no-ops)

@@ -10,10 +10,11 @@ This mixin gives them one implementation of the canvas lifecycle:
 * :meth:`_show_canvas` / :meth:`_show_canvas_if_replaced` - and pack it
   into the parent frame
 * :meth:`_on_canvas_button_press` - the right-click context menu
-* :meth:`deactivate`, :meth:`draw` and :meth:`get_canvas`
+* :meth:`activate`, :meth:`deactivate`, :meth:`draw` and :meth:`get_canvas`
 
 The host is a :class:`PlotView`: it provides ``get_figure()`` (the figure
-to show), ``build_context_menu()``, ``_notify_canvas_changed()`` and the
+to show), ``_build_plot()`` (called by :meth:`activate` when the view is new
+or stale), ``build_context_menu()``, ``_notify_canvas_changed()`` and the
 ``_pm`` / ``_canvas`` / ``_parent_frame`` attributes.  List the mixin
 before :class:`PlotView` in the bases so its methods are used.
 
@@ -25,7 +26,7 @@ Usage::
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 try:
     from .HoldableCanvas import HoldableFigureCanvasTkAgg as _FigureCanvasTkAgg
@@ -36,6 +37,16 @@ from iSLAT.Modules.GUI.TrackpadNavigation import attach_trackpad_navigation, is_
 
 #: Pack options of a view's canvas widget inside its parent frame.
 CANVAS_PACK_OPTIONS: Dict[str, Any] = {"fill": "both", "expand": True, "padx": 0, "pady": 0}
+
+
+def add_view_switch_items(menu: Any, pm: Any, names: Tuple[str, ...]) -> None:
+    """Add a "Switch to <name> View" item for each of *names* except *pm*'s active view."""
+    if pm is None:
+        return
+    menu.add_separator()
+    for name in names:
+        if name != pm.active_view_name:
+            menu.add_command(label=f"Switch to {name} View", command=lambda n=name: pm.switch_view(n))
 
 
 def popup_menu(menu: Any, canvas_widget: Any, event: Any) -> bool:
@@ -140,8 +151,32 @@ class OwnedCanvasMixin:
     # ------------------------------------------------------------------
     # PlotView methods
     # ------------------------------------------------------------------
+    def activate(self, parent_frame: Any) -> None:
+        """Show the view in *parent_frame*, building it first when it is new or stale."""
+        self._parent_frame = parent_frame
+        self._before_activate()
+        if self._initialised and self._shown_frame_is_current():
+            # Unchanged while hidden: re-pack the canvas (it keeps its last frame) without redrawing.
+            self._register_control_fields()
+            self._show_canvas()
+            self._repaint_shown_frame()
+            return
+        if not self._initialised or self._needs_refresh:
+            self._build_plot()
+            self._initialised = True
+            self._needs_refresh = False
+        self._show_canvas()
+        self.apply_theme(self._pm.theme)
+        self.sync_toggle_state(self._pm.toggle_state)
+        self._register_control_fields()
+        self.draw()
+
+    def _before_activate(self) -> None:
+        """Hook run first by :meth:`activate`, e.g. to mark the view stale.  Default: nothing."""
+
     def deactivate(self) -> None:
-        """Unregister this view's ControlBus fields and unpack the canvas (it is kept for the next activation)."""
+        """Remember the shown frame, unregister this view's ControlBus fields and unpack the canvas (kept for the next activation)."""
+        self._remember_shown_frame()
         bus = getattr(self._pm, "control_bus", None)
         if bus is not None:
             bus.unregister_owner(self)

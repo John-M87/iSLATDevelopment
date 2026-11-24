@@ -335,8 +335,7 @@ class TestControlsAndInteraction:
         view, pm, islat, _ = rendered
         pm.active_view = view
         view._on_span_select(12.0, 12.5, 0)
-        pm.switch_view.assert_called_once_with("Three Panel")
-        assert pm._pre_threepanel_view_name == "Optical Depth"
+        pm.open_three_panel.assert_called_once_with()
         islat.GUI.plot.onselect.assert_called_once_with(12.0, 12.5)
 
     def test_tiny_span_is_ignored(self, rendered):

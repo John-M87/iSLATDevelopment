@@ -6,10 +6,9 @@ Provides the common infrastructure shared by :class:`LineInspectionView` and :cl
 * The private :class:`~matplotlib.figure.Figure` (``_fig``) shown in a
   canvas whose lifecycle comes from :class:`OwnedCanvasMixin`
   (``_ensure_canvas``, the right-click menu, ``deactivate``, ``draw``)
-* Concrete ``apply_theme``, ``toggle_legend``, ``get_figure`` and
-  molecule-lifecycle callbacks (each rebuilds via ``update_model_plot``),
-  so subclasses only need to supply ``activate``, ``_build_plot``, and
-  ``update_model_plot``.
+* Concrete ``apply_theme``, ``toggle_legend``, ``get_figure``,
+  ``update_model_plot`` and molecule-lifecycle callbacks (each rebuilds via
+  ``update_model_plot``), so subclasses only need to supply ``_build_plot``.
 
 Selection and the remaining overlay toggles use the no-op defaults from :class:`PlotView`.
 """
@@ -17,6 +16,8 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Optional, Tuple
+
+import matplotlib.pyplot as plt
 
 from .OwnedCanvasMixin import OwnedCanvasMixin
 from .PlotView import PlotView
@@ -31,8 +32,7 @@ class SpectrumPanelView(OwnedCanvasMixin, PlotView):
     """
     Intermediate abstract base for standalone spectrum-panel views.
 
-    Concrete subclasses must implement :meth:`activate`,
-    :meth:`_build_plot`, and :meth:`update_model_plot`.  All other
+    Concrete subclasses must implement :meth:`_build_plot`.  All other
     :class:`PlotView` abstract methods are given sensible defaults here
     (the canvas ones by :class:`OwnedCanvasMixin`) so subclasses only need
     to override the behaviour that is genuinely different.
@@ -43,30 +43,58 @@ class SpectrumPanelView(OwnedCanvasMixin, PlotView):
     * ``_pm``, ``_islat``, ``_parent_frame``, ``_canvas``, ``_initialised``,
       ``_needs_refresh`` - see :class:`PlotView`
     * ``_fig`` - :class:`~matplotlib.figure.Figure` (or ``None``)
-    * ``_right_click_cid`` - matplotlib connection id (or ``None``), see
-      :class:`OwnedCanvasMixin`
     """
     def __init__(self, plot_manager: Any) -> None:
         super().__init__(plot_manager)
         self._fig: Optional["Figure"] = None
 
-        # Connection id for the right-click handler on this view's canvas
-        self._right_click_cid: Optional[int] = None
-
     # ==================================================================
-    # Abstract - subclasses must implement
+    # Building
     # ==================================================================
-    @abstractmethod
-    def activate(self, parent_frame: Any) -> None:  # pragma: no cover
-        """Pack the view's canvas into *parent_frame* and ensure content is fresh."""
-        ...
-
     @abstractmethod
     def _build_plot(self) -> None:  # pragma: no cover
-        """(Re)create ``self._fig`` and populate it with fresh content."""
-        ...
+        """Draw fresh content into ``self._fig`` (see :meth:`_fresh_axes`)."""
 
-    @abstractmethod
+    def _get_active_molecule(self) -> Optional["Molecule"]:
+        return getattr(self._islat, "active_molecule", None)
+
+    def _get_molecules(self) -> Optional["MoleculeDict"]:
+        return getattr(self._islat, "molecules_dict", None)
+
+    def _fresh_axes(self, figsize: Tuple[float, float]) -> Any:
+        """Clear the owned figure (created on first use) and return a new axes on it.
+
+        Keeping the figure keeps its canvas: a new canvas widget must wait for
+        Tk to lay it out before its first draw.  Clearing the figure, rather
+        than only the axes, also drops state such as autoscaling switched off
+        by manual Y limits.  The toolbar is told, as its zoom history no
+        longer applies.
+        """
+        if self._fig is None:
+            self._fig = plt.Figure(figsize=figsize, constrained_layout=True)
+        else:
+            self._fig.clear()
+            if self._canvas is not None:
+                self._notify_canvas_changed()
+        return self._fig.add_subplot(111)
+
+    @staticmethod
+    def _draw_placeholder(ax: Any, title: str, xlabel: str, ylabel: str, message: str) -> None:
+        """Label *ax* and show *message* in its centre, for when there is nothing to plot."""
+        ax.set(title=title, xlabel=xlabel, ylabel=ylabel)
+        ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes,
+                color="gray", fontsize=12)
+
+    def _rebuild_and_show(self) -> None:
+        """Rebuild the plot on its canvas, themed; before the first activation only mark the view stale."""
+        self._needs_refresh = True
+        if not self._initialised:
+            return
+        self._build_plot()
+        self._needs_refresh = False
+        self._show_canvas()
+        self.apply_theme(self._pm.theme)
+
     def update_model_plot(
         self,
         wave_data: Any = None,
@@ -74,9 +102,9 @@ class SpectrumPanelView(OwnedCanvasMixin, PlotView):
         molecules_dict: "MoleculeDict" = None,
         error_data: Optional[Any] = None,
         **kwargs: Any,
-    ) -> None:  # pragma: no cover
-        """Full re-render triggered by global data or parameter changes."""
-        ...
+    ) -> None:
+        """Rebuild the plot from the current iSLAT data."""
+        self._rebuild_and_show()
 
     # ==================================================================
     # Theme

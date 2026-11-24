@@ -21,7 +21,7 @@ from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 from .ErrorBars import fast_errorbar
 from .FullSpectrumPlot import FullSpectrumPlot
 from .SpectralPanel import SpectralPanel, GapMode
-from .ResidualPanel import ResidualPanel
+from .ResidualPanel import ResidualPanel, residual_ylim
 from .BasePlot import BasePlot
 
 if TYPE_CHECKING:
@@ -126,6 +126,10 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
     figsize : tuple, optional
         Figure size.  Auto-scaled if *None*.
     """
+    #: Per-cell Y limits of the spectrum and residual sub-panels (set when rendering).
+    _spec_ylims: Optional[List[Tuple[float, float]]] = None
+    _res_ylims: Optional[List[Tuple[float, float]]] = None
+
     #: The global chi^2 box from :meth:`_render_global_chi2_annotation`, if drawn.
     _global_chi2_text: Optional[Text] = None
     default_fig_width = 14.0
@@ -356,40 +360,9 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
 
     # ------------------------------------------------------------------
     def _residual_ylim_fn(self, mask: np.ndarray) -> Tuple[float, float]:
-        """Per-panel y-limit function for residual sub-panels.
-
-        Computes a symmetric ``(-pad, +pad)`` range based on the maximum absolute residual and (if available) the maximum adjusted error within the panel.
-
-        Parameters
-        ----------
-        mask : np.ndarray
-            Boolean mask into :attr:`wave_data` selecting the points that fall within the current panel.
-
-        Returns
-        -------
-        tuple[float, float]
-            ``(-pad, +pad)`` for the residual panel.
-        """
-        panel_flux = self.flux_data[mask]
-        panel_model = self._model_flux_adj[mask]
-        panel_err = (
-            self._error_adj[mask] if self._error_adj is not None else None
-        )
-        if len(panel_flux) > 0:
-            residuals = panel_flux - panel_model
-            finite = np.isfinite(residuals)
-            if np.any(finite):
-                res_abs_max = float(np.nanmax(np.abs(residuals[finite])))
-            else:
-                res_abs_max = 0.0
-            if panel_err is not None and len(panel_err) > 0:
-                finite_err = np.isfinite(panel_err)
-                if np.any(finite_err):
-                    err_max = float(np.nanmax(panel_err[finite_err]))
-                    res_abs_max = max(res_abs_max, err_max)
-            res_pad = res_abs_max * 1.3 if res_abs_max > 0 else 0.01
-            return (-res_pad, res_pad)
-        return (-0.01, 0.01)
+        """Residual sub-panel limits (see :func:`residual_ylim`)."""
+        error = self._error_adj[mask] if self._error_adj is not None else None
+        return residual_ylim(self.flux_data[mask], self._model_flux_adj[mask], error)
 
     # ------------------------------------------------------------------
     # StackedSpectralPanel factory (overrides FSP)
@@ -437,13 +410,6 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
             mol_cache=kwargs.get("mol_cache", []),
             summed_wave=summed_w,
             summed_flux=summed_f,
-        )
-        # Attach model_components for rendering in _post_render_cell
-        spectrum_panel._model_components = self.model_components
-        spectrum_panel._has_continuum = self._has_continuum
-        spectrum_panel._continuum_params = (
-            (self.continuum_c0, self.continuum_c1, self.lam_ref)
-            if self._has_continuum else None
         )
 
         # --- Residual panel (bottom) -----------------------------------
@@ -578,101 +544,59 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
         )
 
     # ------------------------------------------------------------------
-    def _post_render_cell(
-        self,
-        idx: int,
-        cell_panels: List[SpectralPanel],
-        is_last: bool,
-    ) -> None:
-        """Apply y-limits, tick formatting, model components, chi^2, and
-        excluded-range shading to the spectrum + residual pair."""
-        fg = self._get_theme_value("foreground", "black")
-        n = len(self._panel_edges)
-        xmin = self._panel_edges[idx]
-        xmax = self._panel_ends[idx]
-        xr = (xmin, xmax)
+    def _apply_cell_ylims(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        for panel, ylims in zip(cell_panels, (self._spec_ylims, self._res_ylims)):
+            if ylims is not None and idx < len(ylims):
+                panel.ax.set_ylim(*ylims[idx])
 
-        spectrum_panel = cell_panels[0]
-        residual_panel = cell_panels[1]
-        ax_spec = spectrum_panel.ax
-        ax_res = residual_panel.ax
+    def _style_cell(self, cell_panels: List[SpectralPanel], is_last: bool) -> None:
+        self._style_cell_axes(cell_panels[0].ax, is_bottom=False, is_last=is_last)
+        self._style_residual_axes(cell_panels[1].ax, is_last)
 
-        # --- Spectrum y-limits (pre-computed) --------------------------
-        spec_ylims = getattr(self, "_spec_ylims", None)
-        if spec_ylims is not None and idx < len(spec_ylims):
-            ax_spec.set_ylim(*spec_ylims[idx])
-
-        # --- Residual y-limits (pre-computed) --------------------------
-        res_ylims = getattr(self, "_res_ylims", None)
-        if res_ylims is not None and idx < len(res_ylims):
-            ax_res.set_ylim(*res_ylims[idx])
-
-        # --- Gap indicators (BEFORE annotations and shading so that xlim tightening is not undone by artists drawn in gap regions)
-        if self.gap_mode is GapMode.SKIP:
-            shared_gaps = spectrum_panel.detect_gaps()
-            for panel in cell_panels:
-                panel.draw_gap_indicators(gaps=shared_gaps)
-
-        # Re-read the (potentially tightened) x-limits for subsequent annotation and shading operations.
-        xr = tuple(ax_spec.get_xlim())
-
-        # --- Draw annotations AFTER gap indicators (use the tightened
-        #     xlim so annotations are clipped to the visible range) ------
+    def _draw_cell_gaps(self, cell_panels: List[SpectralPanel]) -> None:
+        """Both sub-panels mark the spectrum's gaps."""
+        shared_gaps = cell_panels[0].detect_gaps()
         for panel in cell_panels:
-            if hasattr(panel, "atomic_lines") and panel.atomic_lines is not None and len(panel.atomic_lines) > 0:
-                panel.plot_atomic_lines(panel.atomic_lines)
-            if hasattr(panel, "line_list") and panel.line_list is not None and len(panel.line_list) > 0:
-                panel.plot_saved_lines(panel.line_list, show_labels=self._saved_line_labels_shown())
+            panel.draw_gap_indicators(gaps=shared_gaps)
 
-        # --- Explicit model components on spectrum panel ---------------
-        model_components = getattr(spectrum_panel, "_model_components", None)
-        if model_components:
-            for comp in model_components:
-                c_wave = np.asarray(comp["wave"])
-                c_flux = np.asarray(comp["flux"])
-                c_mask = (c_wave >= xr[0]) & (c_wave <= xr[1])
-                if np.any(c_mask):
-                    ax_spec.plot(
-                        c_wave[c_mask],
-                        c_flux[c_mask],
-                        color=comp.get("color", "blue"),
-                        linewidth=comp.get("linewidth", 0.7),
-                        alpha=comp.get("alpha", 0.6),
-                        label=comp.get("label", ""),
-                        zorder=self._get_theme_value("zorder_model", 3),
-                    )
+    def _annotate_cell(self, idx: int, cell_panels: List[SpectralPanel]) -> None:
+        """Line marks, model components, the continuum offset, exclusion shading and the panel's chi^2."""
+        super()._annotate_cell(idx, cell_panels)
+        fg = self._get_theme_value("foreground", "black")
+        spectrum_panel = cell_panels[0]
+        ax_spec = spectrum_panel.ax
+        xr = tuple(ax_spec.get_xlim())  # tightened by the gap indicators
 
-        # --- Continuum offset overlay ---------------------------------
-        continuum_params = getattr(spectrum_panel, "_continuum_params", None)
-        if continuum_params is not None:
-            c0, c1, lam_ref = continuum_params
-            mask = spectrum_panel.get_panel_mask()
-            panel_wave = self.wave_data[mask]
-            if len(panel_wave) > 0:
-                cont_panel = c0 + c1 * (panel_wave - lam_ref)
+        for comp in self.model_components or ():
+            c_wave = np.asarray(comp["wave"])
+            c_flux = np.asarray(comp["flux"])
+            c_mask = (c_wave >= xr[0]) & (c_wave <= xr[1])
+            if np.any(c_mask):
                 ax_spec.plot(
-                    panel_wave, cont_panel,
+                    c_wave[c_mask],
+                    c_flux[c_mask],
+                    color=comp.get("color", "blue"),
+                    linewidth=comp.get("linewidth", 0.7),
+                    alpha=comp.get("alpha", 0.6),
+                    label=comp.get("label", ""),
+                    zorder=self._get_theme_value("zorder_model", 3),
+                )
+
+        if self._has_continuum:
+            c0, c1, lam_ref = self.continuum_c0, self.continuum_c1, self.lam_ref
+            panel_wave = self.wave_data[spectrum_panel.get_panel_mask()]
+            if len(panel_wave) > 0:
+                ax_spec.plot(
+                    panel_wave, c0 + c1 * (panel_wave - lam_ref),
                     color="dimgray", ls="-.", lw=1.0, alpha=0.7,
                     label="Continuum offset" if idx == 0 else "",
                     zorder=self._get_theme_value("zorder_model", 3) - 1,
                 )
 
-        # --- Tick formatting -------------------------------------------
-        self._style_cell_axes(ax_spec, is_bottom=False, is_last=is_last)
-        self._style_residual_axes(ax_res, is_last)
-
-        # --- Shade excluded ranges on BOTH sub-panels ------------------
+        # Excluded ranges (the residual panel shades its own) and atomic-line exclusion windows.
         for exc_lo, exc_hi in self.excluded_ranges:
             if exc_hi >= xr[0] and exc_lo <= xr[1]:
-                for _ax in (ax_spec, ax_res):
-                    _ax.axvspan(
-                        max(exc_lo, xr[0]),
-                        min(exc_hi, xr[1]),
-                        color="lightcoral",
-                        alpha=0.15,
-                    )
-
-        # Shade atomic-line exclusion windows on spectrum panel too
+                ax_spec.axvspan(max(exc_lo, xr[0]), min(exc_hi, xr[1]), color="lightcoral", alpha=0.15)
         if (
             self.exclude_lines_half_width is not None
             and self.atomic_lines is not None
@@ -683,14 +607,8 @@ class ResidualSpectrumPlot(FullSpectrumPlot):
                 wl = arow["wave"]
                 a_lo, a_hi = wl - hw, wl + hw
                 if a_hi >= xr[0] and a_lo <= xr[1]:
-                    ax_spec.axvspan(
-                        max(a_lo, xr[0]),
-                        min(a_hi, xr[1]),
-                        color="lightsalmon",
-                        alpha=0.12,
-                    )
+                    ax_spec.axvspan(max(a_lo, xr[0]), min(a_hi, xr[1]), color="lightsalmon", alpha=0.12)
 
-        # --- Per-panel chi-squared -------------------------------------
         self._render_per_panel_chi2(ax_spec, xr[0], xr[1], fg)
 
     def _style_residual_axes(self, ax_res: Axes, is_last: bool) -> None:

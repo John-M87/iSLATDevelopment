@@ -303,23 +303,6 @@ class LineInspectionPlot(SpectrumPanel):
 
             active_lines.append([vline, text, None, info])
 
-    def clear_active_lines(self, active_lines: List[Any]) -> None:
-        """Remove vline and text artists from *active_lines* and clear the list.
-
-        Parameters
-        ----------
-        active_lines : list
-            Mutable list of ``[vline, text, scatter, info]`` entries.
-        """
-        for entry in active_lines:
-            for artist in entry[:2]:  # vline and text only
-                if artist is not None and getattr(artist, 'axes', None) is not None:
-                    try:
-                        artist.remove()
-                    except (ValueError, AttributeError):
-                        pass
-        active_lines.clear()
-
     # ------------------------------------------------------------------
     # Line information helpers
     # ------------------------------------------------------------------

@@ -1202,34 +1202,9 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
                 panel_idx = None
 
         if panel_idx is not None:
-            def _open_in_three_panel():
-                pm.islat.display_range = (xmin, xmax)
-                # Mirror toggle_three_panel so the back-button works.
-                pm._pre_threepanel_view_name = self.VIEW_NAME
-                pm.switch_view("Three Panel")
-                try:
-                    pm.ax1.set_xlim(xmin, xmax)
-                    pm.match_display_range(match_y=True)
-                except Exception as exc:
-                    debug_config.warning(
-                        "full_spectrum_view",
-                        f"build_context_menu: range update failed: {exc}",
-                    )
-                '''# Fire the span-selector so line inspection populates.
-                try:
-                    ih = getattr(pm, "interaction_handler", None)
-                    if ih is not None:
-                        ih.show_span(xmin, xmax)
-                    pm.onselect(xmin, xmax)
-                except Exception as exc:
-                    debug_config.warning(
-                        "full_spectrum_view",
-                        f"build_context_menu: onselect failed: {exc}",
-                    )'''
-
             menu.add_command(
                 label="Open in Three Panel view",
-                command=_open_in_three_panel,
+                command=lambda: pm.open_three_panel(xmin, xmax),
             )
 
         # Sample stack: switch to the spectrum that was clicked.
@@ -1293,50 +1268,18 @@ class FullSpectrumView(ToggleMixin, OwnedCanvasMixin, PlotView):
         return values, objects + (load_atomic_lines(),)
 
     def deactivate(self) -> None:
-        """Remember what the panels show, close the Panel Ranges dialog, unregister the controls and unpack the canvas."""
-        self._remember_shown_frame()
+        """Close the Panel Ranges dialog, then hide the view."""
         self._close_panel_ranges_dialog()
         super().deactivate()
 
-    def activate(self, parent_frame: Any) -> None:
-        self._parent_frame = parent_frame
-
-        if self._initialised and self._shown_frame_is_current():
-            # Nothing it draws changed while another view was shown: re-pack
-            # the canvas, which still holds its last frame, without
-            # re-syncing or redrawing.
-            self._show_canvas()
-            self._repaint_shown_frame()
-            self._register_control_fields()
-            return
-
-        if not self._initialised:
-            # First activation - build the composed plot
-            self._plot = self._new_plot()
-            self._plot.generate_plot()
-            self._install_span_selectors()
-            self._initialised = True
-            self._needs_refresh = False
-        elif self._needs_refresh:
-            # Data changed while we were inactive - full refresh
+    def _build_plot(self) -> None:
+        """Build the stacked plot on first activation, else rebuild it from current data."""
+        if self._initialised:
             self._rebuild_plot()
-            self._needs_refresh = False
-        # else: simple view toggle - just repack the existing canvas
-
-        # (Re)builds the canvas when the figure was replaced, then packs it.
-        self._show_canvas()
-
-        # Sync theme in case it changed while the other view was active.
-        self.apply_theme(self._pm.theme)
-
-        # Reconcile overlays with the controller's toggle dict
-        self.sync_toggle_state(self._pm.toggle_state)
-
-        # Register view-specific controls with the ControlBus
-        self._register_control_fields()
-
-        if self._canvas is not None:
-            self._canvas.draw_idle()
+            return
+        self._plot = self._new_plot()
+        self._plot.generate_plot()
+        self._install_span_selectors()
 
     def _register_control_fields(self) -> None:
         """Register this view's :class:`ControlField` objects on the :class:`ControlBus`.

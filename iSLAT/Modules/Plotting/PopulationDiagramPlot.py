@@ -391,25 +391,8 @@ class PopulationDiagramPlot(BasePlot):
         return sc
 
     def clear_active_lines(self, active_lines: List[Any]) -> None:
-        """Remove scatter artists from *active_lines* and clear the list.
-
-        Parameters
-        ----------
-        active_lines : list
-            Mutable list of ``[vline, text, scatter, info]`` entries.
-        """
-        seen_scatter = set()
-        for entry in active_lines:
-            sc = entry[2] if len(entry) > 2 else None
-            if sc is not None and id(sc) not in seen_scatter:
-                seen_scatter.add(id(sc))
-                if getattr(sc, 'axes', None) is not None:
-                    try:
-                        sc.remove()
-                    except (ValueError, AttributeError):
-                        pass
-        active_lines.clear()
-        # Clear the cache so generate_plot won't re-render stale scatter.
+        """Remove the active-line artists and drop the cache, so :meth:`generate_plot` does not redraw them."""
+        super().clear_active_lines(active_lines)
         self._active_lines_cache = None
 
     # ------------------------------------------------------------------

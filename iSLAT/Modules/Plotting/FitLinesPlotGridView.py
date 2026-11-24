@@ -35,6 +35,7 @@ from .ToggleMixin import ToggleMixin
 from .FitLinesPlotGrid import FitLinesPlotGrid
 
 import iSLAT.Modules.FileHandling.iSLATFileHandling as ifh
+from iSLAT.Modules.DataProcessing.LineIdentity import LineRef
 from iSLAT.Modules.FileHandling.iSLATFileHandling import load_atomic_lines
 from iSLAT.Modules.GUI.TrackpadNavigation import (
     attach_trackpad_navigation, bind_touchpad_scroll, is_right_click, touchpad_scroll_supported,
@@ -798,8 +799,8 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
         * **Open in Line Inspection** - switches to the standalone Line
           Inspection view and calls ``on_selection(xmin, xmax)`` so the
           panel's wavelength range is shown immediately.
-        * **Open in Three Panel (centered)** - switches to the Three Panel
-          view and centers the spectrum overview on the panel's line.
+        * **Open in Three Panel** - selects the panel's line there
+          (:meth:`iSLATPlot.show_line_in_spectrum`).
         """
         if tk is None or fig_canvas is None or plot_grid.axs is None:
             return
@@ -833,39 +834,7 @@ class FitLinesPlotGridView(ToggleMixin, PlotView):
                     )
 
             def _open_three_panel():
-                # center ax1 on the line; keep the current span if possible.
-                half_span = (xmax - xmin) / 2.0
-                try:
-                    cur_lo, cur_hi = pm.ax1.get_xlim()
-                    cur_half = (cur_hi - cur_lo) / 2.0
-                    if cur_half > 0:
-                        half_span = cur_half
-                except Exception:
-                    pass
-                new_lo = lam - half_span
-                new_hi = lam + half_span
-                pm.islat.display_range = (new_lo, new_hi)
-                pm.switch_view("Three Panel")
-                try:
-                    pm.ax1.set_xlim(new_lo, new_hi)
-                    pm.match_display_range(match_y=True)
-                except Exception as exc:
-                    debug_config.warning(
-                        "fit_lines_grid_view",
-                        f"_open_three_panel: range update failed: {exc}",
-                    )
-
-                # Create a span matching the grid panel's wavelength range so the line inspection panels populate immediately.
-                try:
-                    ih = getattr(pm, "interaction_handler", None)
-                    if ih is not None:
-                        ih.show_span(xmin, xmax)
-                    pm.onselect(xmin, xmax)
-                except Exception as exc:
-                    debug_config.warning(
-                        "fit_lines_grid_view",
-                        f"_open_three_panel: span creation failed: {exc}",
-                    )
+                pm.show_line_in_spectrum(LineRef.from_row({**entry, "lam": lam}))
 
             try:
                 canvas_widget = fig_canvas.get_tk_widget()

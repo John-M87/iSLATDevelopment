@@ -161,6 +161,7 @@ class TestViewsNotify:
         pm = self._pm()
         view = PopulationDiagramView(pm)
         view._initialised, view._fig = True, Figure()
+        view._canvas = MagicMock(figure=view._fig)  # shown: the refresh redraws on the kept canvas
         view.update_model_plot()
         pm.on_view_canvas_changed.assert_called_once_with(view)
         view.on_molecule_parameter_changed("CO", "temp")
